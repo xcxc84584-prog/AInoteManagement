@@ -179,6 +179,21 @@ def asset_url(asset_id,assets):
     try:return c.storage.from_('note-images').create_signed_url(a['storage_path'],3600)['signedURL']
     except Exception:return None
 
+def signed_markdown(content,assets):
+    # Signed URLs are generated only for assets owned by the logged-in user.
+    def replace(match):
+        alt,asset_id=match.group(1),match.group(2)
+        url=asset_url(asset_id,assets)
+        return f'![{alt}]({url})' if url else f'**[圖片無法讀取：{alt}]**'
+    return re.sub(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',replace,content or '')
+
+def table_markdown(rows,cols):
+    if not (1<=rows<=50 and 1<=cols<=30):raise ValueError('表格尺寸必須為 1–50 列、1–30 欄')
+    header='| '+' | '.join(f'欄位 {i+1}' for i in range(cols))+' |'
+    separator='| '+' | '.join('---' for _ in range(cols))+' |'
+    body=['| '+' | '.join(' ' for _ in range(cols))+' |' for _ in range(rows)]
+    return '\n'.join([header,separator,*body])
+
 def show_markdown(content,assets):
     # Resolve private asset identifiers without embedding unsafe HTML.
     parts=re.split(r'(!\[[^\]]*\]\(asset://[0-9a-fA-F-]{36}\))',content)
@@ -342,6 +357,40 @@ with st.sidebar:
                 except Exception as exc:
                     logging.getLogger(__name__).exception('Restore failed')
                     st.error('還原失敗：'+type(exc).__name__)
+    with st.expander('帳號設定 · 永久註銷'):
+        st.warning('此操作不可復原：永久刪除帳號、筆記、資料夾、圖片與附件。請先下載 .ainote 備份。')
+        st.caption('為安全起見，需要再次輸入密碼並透過已部署的 Supabase Edge Function 執行。')
+        with st.form('delete_account_form'):
+            confirm_text=st.text_input('輸入「永久刪除帳號」',key='delete_account_confirm')
+            confirm_password=st.text_input('再次輸入登入密碼',type='password',key='delete_account_password')
+            confirm_check=st.checkbox('我了解此操作不可復原',key='delete_account_ack')
+            delete_submit=st.form_submit_button('永久註銷帳號',type='primary')
+        if delete_submit:
+            if confirm_text!='永久刪除帳號' or not confirm_password or not confirm_check:
+                st.error('請完成所有確認欄位。')
+            else:
+                import requests
+                try:
+                    response=requests.post(
+                        url.rstrip('/')+'/functions/v1/delete-account',
+                        headers={'Authorization':'Bearer '+st.session_state['access_token'],
+                                 'apikey':key,'Content-Type':'application/json'},
+                        json={'password':confirm_password},timeout=45)
+                    if response.ok:
+                        for session_key in ['user_id','access_token','refresh_token','selected','open_tabs']:
+                            st.session_state.pop(session_key,None)
+                        st.success('帳號已永久註銷，請重新整理頁面。')
+                        st.stop()
+                    else:
+                        logging.getLogger(__name__).warning('Account deletion failed: HTTP %s',response.status_code)
+                        try:
+                            error_code=response.json().get('error','delete_failed')
+                        except Exception:
+                            error_code='delete_failed'
+                        st.error('註銷未完成：'+str(error_code)+'。請檢查 Edge Function Logs。')
+                except requests.RequestException:
+                    logging.getLogger(__name__).exception('Account deletion request failed')
+                    st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
     st.divider()
     if st.button('登出',use_container_width=True):
         for k in ['user_id','access_token','refresh_token','selected']:st.session_state.pop(k,None)
@@ -352,52 +401,132 @@ if not selected:
     st.info('請在左側「功能選單」建立第一個組別，或匯入 .ainote 檔案。')
     st.stop()
 
-tabs=[tid for tid in st.session_state.setdefault('open_tabs',[]) if tid in {n['id'] for n in active_notes}]
-st.session_state.open_tabs=tabs
-if selected['id'] not in tabs:tabs.append(selected['id'])
-# A responsive selector replaces a row of unbounded tab buttons.
-if tabs:
-    labels={tid:byid[tid]['title'] for tid in tabs}
-    chosen=st.selectbox('開啟的文件',options=tabs,index=tabs.index(selected['id']),format_func=lambda tid:labels[tid],key='document_tab_selector_'+selected['id'])
-    if chosen!=selected['id']:
-        st.session_state.selected=chosen
-        st.rerun()
-    if st.button('× 關閉目前文件',key='close_tab'):
-        tabs.remove(selected['id'])
-        st.session_state.selected=tabs[-1] if tabs else (roots[0]['id'] if roots else None)
-        st.session_state.pop('document_tab_selector_'+selected['id'],None)
-        st.rerun()
-st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(selected['id'],byid))))
-st.title(selected['title'])
+# A workspace is the container's own Markdown plus its immediate non-container children.
+# Selecting a leaf opens the same workspace as its siblings.
+workspace=selected if selected['kind'] in CONTAINERS else byid.get(selected['parent_id'],selected)
+workspace_id=workspace['id']
+workspace_blocks=sorted(
+    [n for n in active_notes if n.get('parent_id')==workspace_id and n['kind'] not in CONTAINERS],
+    key=lambda n:(n.get('position',0),n.get('created_at',''))
+)
+assets={}
+try:
+    assets={a['id']:a for a in c.table('assets').select('*').eq('owner_id',uid).execute().data}
+except Exception:
+    logging.getLogger(__name__).exception('Asset list failed')
 
-# A single Markdown source editor for every node. All file operations belong in Explorer.
-st.caption('Markdown 原始碼 · '+selected['kind'])
-with st.form('markdown_editor_'+selected['id'],clear_on_submit=False):
-    content=st.text_area('Markdown (.md)',value=selected.get('content') or '',height=520,label_visibility='collapsed',placeholder='# 在這裡撰寫 Markdown…')
-    if st.form_submit_button('儲存 Markdown',use_container_width=False):
-        try:
-            update_note(selected['id'],content=content,has_page=True if selected['kind'] in CONTAINERS else selected['has_page'])
-            st.success('已儲存')
-            st.rerun()
-        except Exception as exc:
-            logging.getLogger(__name__).exception('Save markdown failed')
-            st.error('儲存失敗：'+type(exc).__name__)
-if selected['kind']=='GRAPH':
-    with st.sidebar.expander('圖片上傳／貼上'):
-        upload=st.file_uploader('上傳圖片',type=['png','jpg','jpeg','webp','gif'],key='image_'+selected['id'])
-        paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
-        pasted=paste(key='paste_'+selected['id'],default=None)
-        incoming=upload.getvalue() if upload else None
-        if incoming is None and pasted and pasted.get('data'):
-            try:incoming=base64.b64decode(pasted['data'].split(',',1)[1])
-            except Exception:st.warning('圖片資料無效')
-        if incoming and st.button('插入圖片 Markdown'):
+st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(workspace_id,byid))))
+left,right=st.columns([5,2],vertical_alignment='center')
+with left:st.title(workspace['title'])
+with right:
+    mode=st.segmented_control('工作模式',['瀏覽','編輯'],default='瀏覽',key='workspace_mode',label_visibility='collapsed')
+st.caption('同一層級的 Markdown、圖片及表格共用此工作區；子資料夾另開工作區。')
+
+def render_block(note):
+    content=note.get('content') or ''
+    if note['kind']=='GRAPH' and not content.strip():
+        st.caption('尚未插入圖片')
+    elif content.strip():
+        st.markdown(signed_markdown(content,assets))
+    else:
+        st.caption('尚無內容')
+
+if mode=='瀏覽':
+    if workspace.get('content','').strip():
+        render_block(workspace)
+    for block in workspace_blocks:
+        with st.container(border=False):
+            if block['title'] and block['kind'] in ('GRAPH','TABLE'):
+                st.caption(('🖼️ ' if block['kind']=='GRAPH' else '▦ ')+block['title'])
+            render_block(block)
+    if not workspace.get('content','').strip() and not workspace_blocks:
+        st.info('這個工作區尚無筆記。切換至「編輯」模式即可開始。')
+else:
+    st.caption('Markdown 編輯 · 儲存後可切換瀏覽模式預覽排版')
+    # Edit the container's own Markdown; every direct child is another block in this page.
+    with st.form('editor_workspace_'+workspace_id):
+        st.markdown('**頁面正文 (.md)**')
+        page_content=st.text_area('頁面 Markdown',value=workspace.get('content') or '',
+                                  height=250,key='workspace_content_'+workspace_id,
+                                  label_visibility='collapsed',placeholder='# 在這裡撰寫 Markdown…')
+        if st.form_submit_button('儲存頁面正文'):
             try:
-                aid=upload_image(incoming,selected['id'])
-                update_note(selected['id'],content=(selected.get('content') or '')+'\n\n![圖片](asset://'+aid+')')
+                update_note(workspace_id,content=page_content,has_page=True)
                 st.rerun()
             except Exception as exc:
-                logging.getLogger(__name__).exception('Upload image failed')
-                st.error('圖片儲存失敗：'+type(exc).__name__)
+                logging.getLogger(__name__).exception('Save workspace failed')
+                st.error('儲存失敗：'+type(exc).__name__)
+
+    for block in workspace_blocks:
+        with st.expander(('🖼️ ' if block['kind']=='GRAPH' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'],expanded=True):
+            with st.form('editor_block_'+block['id']):
+                text=st.text_area('Markdown (.md)',value=block.get('content') or '',height=170,
+                                  key='block_content_'+block['id'],label_visibility='collapsed')
+                if st.form_submit_button('儲存此區塊'):
+                    try:
+                        update_note(block['id'],content=text)
+                        st.rerun()
+                    except Exception as exc:
+                        logging.getLogger(__name__).exception('Save block failed')
+                        st.error('儲存失敗：'+type(exc).__name__)
+
+    st.divider()
+    st.subheader('插入內容')
+    t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown 區塊'])
+    with t1:
+        st.caption('支援本地圖片、Ctrl+V 貼上截圖及拖曳圖片。上傳後儲存在私人 Supabase Storage。')
+        upload=st.file_uploader('從本地選擇圖片',type=['png','jpg','jpeg','webp','gif'],
+                                key='image_upload_'+workspace_id)
+        paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
+        pasted=paste(key='paste_workspace_'+workspace_id,default=None)
+        incoming=upload.getvalue() if upload else None
+        name=upload.name if upload else '貼上的圖片'
+        if incoming is None and isinstance(pasted,dict) and pasted.get('data'):
+            try:
+                incoming=base64.b64decode(pasted['data'].split(',',1)[1],validate=True)
+                name=pasted.get('name') or name
+            except Exception:st.warning('剪貼簿圖片格式無效')
+        if st.button('插入圖片至此工作區',disabled=not bool(incoming),key='insert_img_'+workspace_id):
+            try:
+                # Each image gets its own GRAPH block; all blocks render on the same page.
+                created=insert_note('GRAPH',name[:200],workspace_id,position=len(workspace_blocks))
+                try:
+                    asset_id=upload_image(incoming,created['id'])
+                    update_note(created['id'],content=f'![{name.replace(chr(93),"")}](asset://{asset_id})')
+                except Exception:
+                    # Avoid leaving an empty GRAPH block after a failed upload.
+                    c.table('notes').delete().eq('id',created['id']).eq('owner_id',uid).execute()
+                    raise
+                st.success('圖片已加入工作區')
+                st.rerun()
+            except Exception as exc:
+                logging.getLogger(__name__).exception('Insert image failed')
+                st.error('圖片上傳失敗：'+type(exc).__name__+'。請查看 Manage app → Logs')
+    with t2:
+        st.caption('輸入 M × N，其中 M 為資料列數，N 為欄數。')
+        col_m,col_n=st.columns(2)
+        m=col_m.number_input('M：資料列數',min_value=1,max_value=50,value=3,step=1,key='rows_'+workspace_id)
+        n=col_n.number_input('N：欄數',min_value=1,max_value=30,value=3,step=1,key='cols_'+workspace_id)
+        table_name=st.text_input('表格名稱',value='新表格',key='table_name_'+workspace_id)
+        st.markdown(table_markdown(m,n))
+        if st.button('建立 M × N 表格',key='insert_table_'+workspace_id):
+            try:
+                insert_note('TABLE',table_name.strip() or '新表格',workspace_id,
+                            content=table_markdown(m,n),position=len(workspace_blocks))
+                st.rerun()
+            except Exception as exc:
+                logging.getLogger(__name__).exception('Insert table failed')
+                st.error('新增表格失敗：'+type(exc).__name__)
+    with t3:
+        text_name=st.text_input('區塊名稱',value='新段落',key='text_name_'+workspace_id)
+        if st.button('新增 Markdown 區塊',key='insert_text_'+workspace_id):
+            try:
+                insert_note('MARKDOWN',text_name.strip() or '新段落',workspace_id,
+                            position=len(workspace_blocks))
+                st.rerun()
+            except Exception as exc:
+                logging.getLogger(__name__).exception('Insert Markdown block failed')
+                st.error('新增失敗：'+type(exc).__name__)
+
 st.divider()
-st.caption('AInoteManagement v1.2 · Streamlit + Supabase · 每次修改請按儲存 · 建議定期下載 .ainote 備份')
+st.caption('AInoteManagement v1.4 · 共用工作區 · Markdown 編輯／瀏覽 · 圖片與 M×N 表格')

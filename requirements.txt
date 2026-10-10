@@ -3,3 +3,4 @@ supabase>=2.7,<3
 Pillow>=10,<13
 bleach>=6,<7
 markdown>=3.6,<4
+\nrequests>=2.32,<3\n
