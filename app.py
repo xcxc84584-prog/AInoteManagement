@@ -20,6 +20,7 @@ st.set_page_config(page_title='AInoteManagement',page_icon='📚',layout='wide',
 KINDS=['GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE']
 CONTAINERS=['GROUP','SUBFILE']
 MAX_IMAGE=10*1024*1024
+local_component=components.declare_component('ainote_local_save',path=str(Path(__file__).parent/'components'/'local_save'))
 
 def config(key):
     try:return st.secrets.get(key) or os.getenv(key)
@@ -330,10 +331,14 @@ def markdown_dataframe(markdown):
 
 def image_editor(note,assets,uid_key):
     if st.session_state.pop('image_saved_'+uid_key,False):st.success('圖片已成功儲存至 Supabase。')
-    for match in re.finditer(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',note.get('content') or ''):
-        raw=asset_image(match.group(2),assets)
-        if raw:st.image(raw,caption=match.group(1),width='stretch')
-        else:st.warning('圖片無法載入：請檢查 Storage 與 assets 權限')
+    matches=list(re.finditer(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',note.get('content') or ''))
+    if matches:
+        visible=st.toggle('顯示圖片 · '+note['title'],value=True,key='show_graph_'+uid_key)
+        if visible:
+            for match in matches:
+                raw=asset_image(match.group(2),assets)
+                if raw:st.image(raw,caption=match.group(1),width='stretch')
+                else:st.warning('圖片無法載入：請檢查 Storage 與 assets 權限')
     upload=st.file_uploader('選擇或拖曳圖片',type=['png','jpg','jpeg','webp','gif'],key='upload_'+uid_key)
     paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
     pasted=paste(key='paste_'+uid_key,default=None)
@@ -384,15 +389,16 @@ def show_markdown(content,assets):
             else:st.warning('圖片不存在或無法存取')
         elif part:st.markdown(part)
 
-def export_group(root,notes):
+def export_group(root,notes,overrides=None):
+    overrides=overrides or {}
     ids=subtree(root['id'],notes)
     selected=[n for n in notes if n['id'] in ids]
     assets=c.table('assets').select('*').eq('owner_id',uid).execute().data
     mem=io.BytesIO()
     with zipfile.ZipFile(mem,'w',compression=zipfile.ZIP_DEFLATED) as z:
         z.writestr('manifest.json',json.dumps({'format':'ainote','version':1,'root_id':root['id'],'name':root['title']},ensure_ascii=False,indent=2))
-        z.writestr('structure.json',json.dumps(selected,ensure_ascii=False,indent=2))
-        for n in selected:z.writestr('documents/'+n['id']+'.md',n['content'])
+        z.writestr('structure.json',json.dumps([{**n,'content':overrides.get(n['id'],n.get('content') or '')} for n in selected],ensure_ascii=False,indent=2))
+        for n in selected:z.writestr('documents/'+n['id']+'.md',overrides.get(n['id'],n.get('content') or ''))
         for a in assets:
             if a.get('note_id') in ids:
                 try:z.writestr('assets/'+a['id']+Path(a['storage_path']).suffix,c.storage.from_('note-images').download(a['storage_path']))
@@ -594,6 +600,9 @@ with st.sidebar:
                 except Exception as exc:
                     logging.getLogger(__name__).exception('Restore failed')
                     st.error('還原失敗：'+type(exc).__name__)
+    with st.expander('帳號設定 · 預設儲存路徑'):
+        st.caption('在支援的瀏覽器選擇本機資料夾，之後優先寫入該資料夾。瀏覽器可能要求重新授權；手機或不支援的瀏覽器改用下載。')
+        local_component(mode='settings',key='local_save_settings_v1',default=None)
     with st.expander('帳號設定 · 永久註銷'):
         st.warning('此操作不可復原：永久刪除帳號、筆記、資料夾、圖片與附件。請先下載 .ainote 備份。')
         st.caption('為安全起見，需要再次輸入密碼並透過已部署的 Supabase Edge Function 執行。')
@@ -666,6 +675,8 @@ mode=st.radio('工作模式',['瀏覽模式','編輯模式'],horizontal=True,key
 report_key='save_report_'+workspace_id
 report=st.session_state.get(report_key)
 if report:
+    if report.get('local_status'):
+        st.info('本地備份優先：'+('已寫入選定資料夾' if report['local_status']=='folder' else '已觸發瀏覽器下載（請確認下載完成）'))
     if not report['failures']:
         st.success(f"已儲存並驗證：{report['successes']}/{report['total']} 個區塊。{report['saved_at']}")
         if report.get('names'):st.caption('已儲存：'+'、'.join(report['names']))
@@ -752,32 +763,48 @@ else:
                     logging.getLogger(__name__).exception('Text save failed')
                     st.error('文件儲存失敗：'+type(exc).__name__+'：'+str(exc))
             draft_keys.append((block['id'],text_key,'text'))
-    # All editable text and tables are submitted in one explicit action.
-    if st.button('💾 儲存全部變更',type='primary',key='save_all_'+workspace_id):
-        successes=[]
-        failures=[]
-        for note_id,field_key,field_type in draft_keys:
-            note_name=byid.get(note_id,{}).get('title',note_id)
-            try:
-                if field_type=='table':
-                    value=st.session_state.get('_editor_result_'+field_key)
-                    if value is None:raise ValueError('表格尚未初始化，請重新開啟工作區')
-                    content=keep_table_dimensions(dataframe_markdown(value),*table_dimensions(byid[note_id].get('content') or ''))
-                else:
-                    content=st.session_state[field_key]
-                payload={'content':content}
-                if field_type=='container':payload['has_page']=True
-                update_note(note_id,**payload)
-                successes.append(note_name)
-            except Exception as exc:
-                logging.getLogger(__name__).exception('Save failed: %s (%s)',note_name,note_id)
-                failures.append((note_name,type(exc).__name__,str(exc)))
-        if not draft_keys:failures.append(('工作區','NoEditableBlocks','此工作區沒有可儲存的文字或表格；請先建立文件'))
-        st.session_state['save_report_'+workspace_id]={
-            'successes':len(successes),'total':len(draft_keys),'failures':failures,
-            'names':successes,'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-        }
-        st.rerun()
+    # Local-first save: browser writes the .ainote file before the server updates Supabase.
+    draft_values={}
+    for note_id,field_key,field_type in draft_keys:
+        if field_type=='table':
+            frame=st.session_state.get('_editor_result_'+field_key)
+            if frame is not None:
+                draft_values[note_id]=keep_table_dimensions(dataframe_markdown(frame),*table_dimensions(byid[note_id].get('content') or ''))
+        else:
+            draft_values[note_id]=st.session_state.get(field_key,byid[note_id].get('content') or '')
+    # The backup includes the current unsaved editor drafts and all assets in the group.
+    try:
+        local_zip=export_group(group,active_notes,draft_values)
+        local_b64=base64.b64encode(local_zip).decode('ascii')
+        backup_error=None
+    except Exception as exc:
+        local_b64=''
+        backup_error=str(exc)
+    if backup_error:st.error('無法準備本地備份，已停止雲端儲存：'+backup_error)
+    local_event=local_component(mode='save',data=local_b64,
+        filename='AInote_'+re.sub(r'[^\w\-]+','_',group['title'])+'_'+datetime.now().strftime('%Y%m%d')+'.ainote',
+        disabled=bool(backup_error) or not bool(draft_keys),key='local_save_action_'+workspace_id,default=None)
+    if isinstance(local_event,dict) and local_event.get('action')=='saved':
+        token=local_event.get('token')
+        if token and token!=st.session_state.get('last_local_save_'+workspace_id):
+            st.session_state['last_local_save_'+workspace_id]=token
+            successes=[];failures=[]
+            for note_id,field_key,field_type in draft_keys:
+                note_name=byid.get(note_id,{}).get('title',note_id)
+                try:
+                    if note_id not in draft_values:raise ValueError('無法取得編輯器資料')
+                    update_note(note_id,content=draft_values[note_id])
+                    successes.append(note_name)
+                except Exception as exc:
+                    logging.getLogger(__name__).exception('Save failed: %s (%s)',note_name,note_id)
+                    failures.append((note_name,type(exc).__name__,str(exc)))
+            st.session_state[report_key]={
+                'successes':len(successes),'total':len(draft_keys),'failures':failures,
+                'names':successes,'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
+                'local_status':local_event.get('method','download')}
+            st.rerun()
+    elif isinstance(local_event,dict) and local_event.get('action')=='error':
+        st.error('本地儲存失敗，未執行雲端儲存：'+str(local_event.get('message','')))
     t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown'])
     with t1:
         if st.button('新增圖片區塊',key='new_graph_'+workspace_id):
@@ -820,4 +847,4 @@ else:
                 logging.getLogger(__name__).exception('Create Markdown block failed')
                 st.error('新增失敗：'+type(exc).__name__)
 st.divider()
-st.caption('AInoteManagement v1.9 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('AInoteManagement v2.1 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
