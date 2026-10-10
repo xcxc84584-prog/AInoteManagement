@@ -330,7 +330,8 @@ def markdown_dataframe(markdown):
     return pd.DataFrame(data,columns=cols,dtype=str)
 
 def image_editor(note,assets,uid_key):
-    if st.session_state.pop('image_saved_'+uid_key,False):st.success('圖片已成功儲存至 Supabase。')
+    if st.session_state.pop('image_saved_'+uid_key,False):
+        st.success('圖片已寫入 Storage，並已驗證資料庫引用。')
     matches=list(re.finditer(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',note.get('content') or ''))
     if matches:
         visible=st.toggle('顯示圖片 · '+note['title'],value=True,key='show_graph_'+uid_key)
@@ -340,30 +341,57 @@ def image_editor(note,assets,uid_key):
                 if raw:st.image(raw,caption=match.group(1),width='stretch')
                 else:st.warning('圖片無法載入：請檢查 Storage 與 assets 權限')
     upload=st.file_uploader('選擇或拖曳圖片',type=['png','jpg','jpeg','webp','gif'],key='upload_'+uid_key)
-    paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
-    pasted=paste(key='paste_'+uid_key,default=None)
+    paste_widget=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
+    pasted=paste_widget(key='paste_'+uid_key,default=None)
+    buffer_key='_paste_buffer_'+uid_key
     if isinstance(pasted,dict) and pasted.get('data'):
-        st.session_state['_paste_buffer_'+uid_key]=pasted
-    incoming=upload.getvalue() if upload else None
-    name=upload.name if upload else '貼上的圖片'
-    pasted=st.session_state.get('_paste_buffer_'+uid_key)
-    if incoming is None and isinstance(pasted,dict) and pasted.get('data'):
-        try:
-            incoming=base64.b64decode(pasted['data'].split(',',1)[1],validate=True)
-            name=pasted.get('name') or name
-        except Exception:st.warning('剪貼簿圖片格式無效')
+        nonce=str(pasted.get('nonce',''))
+        if nonce!=st.session_state.get('_paste_seen_'+uid_key):
+            try:
+                raw=base64.b64decode(pasted['data'].split(',',1)[-1],validate=True)
+                if not raw or len(raw)>MAX_IMAGE:raise ValueError('圖片為空或超過 10 MB')
+                st.session_state[buffer_key]={'raw':raw,'name':pasted.get('name') or '貼上的圖片','nonce':nonce}
+                st.session_state['_paste_seen_'+uid_key]=nonce
+            except Exception as exc:
+                st.error('貼上圖片無法解析：'+str(exc))
+    saved_buffer=st.session_state.get(buffer_key)
+    incoming=upload.getvalue() if upload else (saved_buffer or {}).get('raw')
+    name=upload.name if upload else (saved_buffer or {}).get('name','貼上的圖片')
+    if incoming:
+        st.caption('待儲存：'+name+'（'+str(round(len(incoming)/1024))+' KB）')
     if st.button('儲存圖片',key='save_image_'+uid_key,disabled=not bool(incoming)):
+        progress=st.progress(0,text='準備圖片資料…')
         try:
-            asset_id=upload_image(incoming,note['id'])
-            clean=name.replace(']','').replace('\n',' ')
-            old=note.get('content') or ''
-            update_note(note['id'],content=(old+'\n' if old.strip() else '')+f'![{clean}](asset://{asset_id})')
+            progress.progress(15,text='壓縮並檢查圖片…')
+            data,mime,ext=image_bytes(incoming)
+            progress.progress(35,text='上傳圖片至 Supabase Storage…')
+            path=f'{uid}/{uuid.uuid4().hex}.{ext}'
+            c.storage.from_('note-images').upload(path,data,{'content-type':mime,'upsert':'false'})
+            asset_id=None
+            try:
+                progress.progress(65,text='建立圖片資料庫紀錄…')
+                result=c.table('assets').insert({'owner_id':uid,'note_id':note['id'],'storage_path':path,'mime_type':mime}).execute().data
+                if not result:raise RuntimeError('圖片紀錄未成功建立')
+                asset_id=result[0]['id']
+                clean=str(name).replace(']','').replace('\n',' ')
+                old=note.get('content') or ''
+                new=(old+'\n' if old.strip() else '')+f'![{clean}](asset://{asset_id})'
+                progress.progress(80,text='寫入圖片引用並核對…')
+                update_note(note['id'],content=new)
+                verified=c.table('assets').select('id').eq('id',asset_id).eq('owner_id',uid).execute().data
+                if not verified:raise RuntimeError('圖片紀錄寫入後驗證失敗')
+            except Exception:
+                # Do not delete an uploaded asset when the note update fails:
+                # retaining it allows recovery rather than silently losing the image.
+                raise
+            progress.progress(100,text='圖片已儲存並驗證')
             st.session_state['image_saved_'+uid_key]=True
-            st.session_state.pop('_paste_buffer_'+uid_key,None)
+            st.session_state.pop(buffer_key,None)
+            st.session_state.pop('_asset_image_cache',None)
             st.rerun()
         except Exception as exc:
             logging.getLogger(__name__).exception('Image save failed')
-            st.error('圖片儲存失敗：'+type(exc).__name__)
+            st.error('圖片儲存失敗：'+type(exc).__name__+'：'+str(exc))
 
 def table_editor(note,uid_key):
     original=markdown_dataframe(note.get('content') or '')
@@ -789,7 +817,8 @@ else:
         if token and token!=st.session_state.get('last_local_save_'+workspace_id):
             st.session_state['last_local_save_'+workspace_id]=token
             successes=[];failures=[]
-            for note_id,field_key,field_type in draft_keys:
+            save_progress=st.progress(0,text='本地備份已啟動，準備寫入雲端…')
+            for index,(note_id,field_key,field_type) in enumerate(draft_keys):
                 note_name=byid.get(note_id,{}).get('title',note_id)
                 try:
                     if note_id not in draft_values:raise ValueError('無法取得編輯器資料')
@@ -798,6 +827,8 @@ else:
                 except Exception as exc:
                     logging.getLogger(__name__).exception('Save failed: %s (%s)',note_name,note_id)
                     failures.append((note_name,type(exc).__name__,str(exc)))
+                save_progress.progress(int((index+1)*100/max(len(draft_keys),1)),
+                    text=f'雲端儲存進度 {index+1}/{len(draft_keys)}：{note_name}')
             st.session_state[report_key]={
                 'successes':len(successes),'total':len(draft_keys),'failures':failures,
                 'names':successes,'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
