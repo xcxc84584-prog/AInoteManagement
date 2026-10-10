@@ -526,6 +526,18 @@ except Exception:
     logging.getLogger(__name__).exception('Asset list failed')
 
 mode=st.radio('工作模式',['瀏覽模式','編輯模式'],horizontal=True,key='workspace_mode')
+report_key='save_report_'+workspace_id
+report=st.session_state.get(report_key)
+if report:
+    if not report['failures']:
+        st.success(f"已儲存並驗證：{report['successes']}/{report['total']} 個區塊。{report['saved_at']}")
+    else:
+        st.error(f"儲存失敗：成功 {report['successes']}/{report['total']}，失敗 {len(report['failures'])}。")
+        for note_id,code,detail in report['failures']:
+            st.warning(f"區塊 {note_id}：{code}：{detail[:400]}")
+    if st.button('關閉存檔報告',key='dismiss_report_'+workspace_id):
+        st.session_state.pop(report_key,None)
+        st.rerun()
 if mode=='瀏覽模式':
     st.title(group['title'])
     st.caption('以組別（GROUP）為單位瀏覽；可利用下方目錄快速定位章節。')
@@ -564,7 +576,7 @@ if mode=='瀏覽模式':
 else:
     st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(workspace_id,byid))))
     st.title(workspace['title'])
-    st.caption('編輯模式：同一父文件的文字、圖片、表格共用工作區，分別儲存。')
+    st.caption('編輯模式：此工作區正文與同層文件共用頁面；請先按儲存，再切換瀏覽模式。瀏覽模式會彙整整個 GROUP。')
     # All editors share a single continuous workspace; no expander or form frames.
     # Draft values are keyed by workspace and note IDs so reruns retain unsaved changes.
     main_key='workspace_content_'+workspace_id
@@ -572,6 +584,16 @@ else:
     st.text_area('工作區 Markdown',value=workspace.get('content') or '',
         height=230,key=main_key,label_visibility='collapsed',
         placeholder='# 在這裡撰寫 Markdown…')
+    if st.button('💾 儲存此工作區正文',key='save_main_'+workspace_id):
+        try:
+            update_note(workspace_id,content=st.session_state[main_key],has_page=True)
+            st.session_state['save_report_'+workspace_id]={
+                'successes':1,'total':1,'failures':[],
+                'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
+            st.rerun()
+        except Exception as exc:
+            logging.getLogger(__name__).exception('Workspace save failed: %s',workspace_id)
+            st.error('工作區儲存失敗：'+type(exc).__name__+'：'+str(exc)[:350])
     draft_keys=[(workspace_id,main_key,'container')]
     for block in workspace_blocks:
         st.markdown('#### '+('🖼️ ' if block['kind']=='GRAPH' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'])
@@ -619,17 +641,6 @@ else:
             'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
         }
         st.rerun()
-    report=st.session_state.get('save_report_'+workspace_id)
-    if report:
-        if not report['failures']:
-            st.success(f"儲存成功：{report['successes']}/{report['total']} 個區塊已寫入並核對 Supabase。時間：{report['saved_at']}")
-        else:
-            st.error(f"批量存檔部分失敗：成功 {report['successes']}/{report['total']}；失敗 {len(report['failures'])}。")
-            for note_id,code,detail in report['failures']:
-                st.caption(f"區塊 {note_id}：{code}：{detail[:200]}")
-        if st.button('清除存檔報告',key='clear_report_'+workspace_id):
-            st.session_state.pop('save_report_'+workspace_id,None)
-            st.rerun()
     st.divider()
     st.subheader('新增內容')
     t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown'])
