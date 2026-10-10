@@ -211,7 +211,7 @@ def clone_note(nid,dest):
         for old,n in list(pending.items()):
             if old!=nid and n['parent_id'] not in mapping:continue
             parent=dest if old==nid else mapping[n['parent_id']]
-            copied=insert_note(n['kind'],n['title']+' - Copy' if old==nid else n['title'],parent,n['content'],n['has_page'],n['position'])
+            copied=insert_note('SUBFILE' if old==nid and n['kind']=='GROUP' else n['kind'],n['title']+' - Copy' if old==nid else n['title'],parent,n['content'],bool(n['has_page']) or bool(old==nid and n['kind']=='GROUP'),n['position'])
             mapping[old]=copied['id'];del pending[old];progressed=True
         if not progressed:raise ValueError('文件結構錯誤')
     return mapping[nid]
@@ -631,6 +631,49 @@ def table_creation_dialog():
         st.session_state.pop('pending_table',None)
         st.rerun()
 
+@st.dialog('導入本地文件做為子文件',width='large')
+def import_child_dialog():
+        if st.session_state.get('import_child_target'):
+            import_target=st.session_state.import_child_target
+            if import_target not in byid or byid[import_target]['kind'] not in CONTAINERS:
+                st.session_state.pop('import_child_target',None)
+            else:
+                st.markdown('**導入本地文件做為子文件**')
+                st.caption('目標：'+byid[import_target]['title']+'｜支援 .md、.txt、.ainote 與符合格式的 .zip')
+                local_files=st.file_uploader('選擇本地文件（可多選）',type=['md','markdown','txt','ainote','zip'],accept_multiple_files=True,key='import_child_files')
+                a,b=st.columns(2)
+                with a:
+                    if st.button('確認導入',key='confirm_import_child',width='stretch'):
+                        if not local_files:st.warning('請先選擇文件')
+                        else:
+                            try:
+                                if len(local_files)>20:raise ValueError('每次最多導入 20 份文件')
+                                op=operation_progress('導入子文件')
+                                created=[]
+                                for i,file in enumerate(local_files):
+                                    data=file.getvalue()
+                                    if len(data)>50*1024*1024:raise ValueError(file.name+' 超過大小限制')
+                                    ext=Path(file.name).suffix.lower()
+                                    if ext in ('.ainote','.zip'):
+                                        new_id=import_group(data,parent=import_target)
+                                    else:
+                                        try:content=data.decode('utf-8-sig')
+                                        except UnicodeDecodeError:raise ValueError(file.name+' 不是 UTF-8 文字檔')
+                                        if len(content)>500000:raise ValueError(file.name+' 內容過長')
+                                        new_id=insert_note('SUBFILE',Path(file.name).stem,import_target,has_page=True)['id']
+                                        insert_note('MARKDOWN',Path(file.name).name,new_id,content=content)
+                                    created.append(new_id)
+                                    op(int(100*(i+1)/len(local_files)),f'已導入 {i+1}/{len(local_files)}')
+                                st.session_state.selected=created[-1]
+                                st.session_state.pop('import_child_target',None)
+                                st.session_state['operation_notice']=f'成功導入 {len(created)} 份子文件'
+                                st.rerun()
+                            except Exception as exc:st.error('導入失敗：'+str(exc)+'。先前成功導入的文件仍保留，請檢查 Explorer。')
+                with b:
+                    if st.button('取消導入',key='cancel_import_child',width='stretch'):
+                        st.session_state.pop('import_child_target',None)
+                        st.rerun()
+
 with st.sidebar:
     st.title('📚 BV-Text')
     with st.popover('☰ 功能選單',width='stretch'):
@@ -666,7 +709,7 @@ with st.sidebar:
         st.session_state.last_explorer_event=event.get('event_id')
         action=event.get('action');nid=event.get('id');target=event.get('target')
         try:
-            op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav') else None
+            op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav','import_child') else None
             if op_progress:op_progress(15,'正在處理 '+str(action))
             if action=='select' and nid in byid:
                 st.session_state.selected=nid
@@ -696,12 +739,11 @@ with st.sidebar:
                 source=byid[nid]
                 dest=target if target in byid and byid[target]['kind'] in CONTAINERS else None
                 if not dest:raise ValueError('請選擇目標組別或子文件')
-                if source['kind']=='GROUP':raise ValueError('不允許移動或複製根組別')
                 if action=='move' or (action=='paste' and event.get('cut')):
                     if dest in subtree(nid,notes):raise ValueError('不能移入自己或自己的子節點')
-                    if get_ancestors(dest,byid)[-1]!=get_ancestors(nid,byid)[-1]:raise ValueError('移動僅限同一組別；跨組別請使用複製')
+                    if source['kind']!='GROUP' and get_ancestors(dest,byid)[-1]!=get_ancestors(nid,byid)[-1]:raise ValueError('一般文件移動僅限同一組別；跨組別請使用複製')
                     if source['parent_id']!=dest:
-                        update_note(nid,parent_id=dest,position=len([x for x in active_notes if x['parent_id']==dest]))
+                        update_note(nid,parent_id=dest,kind='SUBFILE' if source['kind']=='GROUP' else source['kind'],has_page=True if source['kind']=='GROUP' else source['has_page'],position=len([x for x in active_notes if x['parent_id']==dest]))
                     st.session_state.selected=nid
                 else:
                     copied_id=clone_note(nid,dest)
@@ -726,46 +768,6 @@ with st.sidebar:
             st.error(f'檔案操作失敗：{type(exc).__name__}。請至 Manage app → Logs 查看詳情。')
 
             st.rerun()
-    if st.session_state.get('import_child_target'):
-        import_target=st.session_state.import_child_target
-        if import_target not in byid or byid[import_target]['kind'] not in CONTAINERS:
-            st.session_state.pop('import_child_target',None)
-        else:
-            st.markdown('**導入本地文件做為子文件**')
-            st.caption('目標：'+byid[import_target]['title']+'｜支援 .md、.txt、.ainote 與符合格式的 .zip')
-            local_files=st.file_uploader('選擇本地文件（可多選）',type=['md','markdown','txt','ainote','zip'],accept_multiple_files=True,key='import_child_files')
-            a,b=st.columns(2)
-            with a:
-                if st.button('確認導入',key='confirm_import_child',width='stretch'):
-                    if not local_files:st.warning('請先選擇文件')
-                    else:
-                        try:
-                            if len(local_files)>20:raise ValueError('每次最多導入 20 份文件')
-                            op=operation_progress('導入子文件')
-                            created=[]
-                            for i,file in enumerate(local_files):
-                                data=file.getvalue()
-                                if len(data)>50*1024*1024:raise ValueError(file.name+' 超過大小限制')
-                                ext=Path(file.name).suffix.lower()
-                                if ext in ('.ainote','.zip'):
-                                    new_id=import_group(data,parent=import_target)
-                                else:
-                                    try:content=data.decode('utf-8-sig')
-                                    except UnicodeDecodeError:raise ValueError(file.name+' 不是 UTF-8 文字檔')
-                                    if len(content)>500000:raise ValueError(file.name+' 內容過長')
-                                    new_id=insert_note('SUBFILE',Path(file.name).stem,import_target,has_page=True)['id']
-                                    insert_note('MARKDOWN',Path(file.name).name,new_id,content=content)
-                                created.append(new_id)
-                                op(int(100*(i+1)/len(local_files)),f'已導入 {i+1}/{len(local_files)}')
-                            st.session_state.selected=created[-1]
-                            st.session_state.pop('import_child_target',None)
-                            st.session_state['operation_notice']=f'成功導入 {len(created)} 份子文件'
-                            st.rerun()
-                        except Exception as exc:st.error('導入失敗：'+str(exc)+'。先前成功導入的文件仍保留，請檢查 Explorer。')
-            with b:
-                if st.button('取消導入',key='cancel_import_child',width='stretch'):
-                    st.session_state.pop('import_child_target',None)
-                    st.rerun()
     if st.session_state.get('creation_notice'):
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
@@ -804,6 +806,9 @@ with st.sidebar:
         st.session_state.skip_auto_login=True
         remember_action('clear')
         st.rerun()
+
+if st.session_state.get('import_child_target'):
+    import_child_dialog()
 
 if st.session_state.get('main_page')=='⚙️ 設定':
     st.title('⚙️ 設定')
