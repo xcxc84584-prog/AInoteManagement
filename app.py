@@ -22,7 +22,6 @@ def config(key):
     try:return st.secrets.get(key) or os.getenv(key)
     except Exception:return os.getenv(key)
 
-@st.cache_resource
 def client(url,key):return create_client(url,key)
 
 url,key=config('SUPABASE_URL'),config('SUPABASE_ANON_KEY')
@@ -32,6 +31,34 @@ if not url or not key:
     st.code('SUPABASE_URL = "https://...supabase.co"\nSUPABASE_ANON_KEY = "..."',language='toml')
     st.stop()
 sb=client(url,key)
+# Optional remembered login, scoped to this browser profile and website origin.
+remember_component=components.declare_component('ainote_remember_device',path=str(Path(__file__).parent/'components'/'remember_device'))
+remember_command=st.session_state.get('remember_command','read')
+remember_request_id=st.session_state.get('remember_request_id','')
+remember_result=remember_component(command=remember_command,request_id=remember_request_id,
+    refresh_token=st.session_state.get('remember_value',''),key='remember_device_v1',default=None)
+if remember_command in ('store','clear') and isinstance(remember_result,dict) and remember_result.get('request_id')==remember_request_id:
+    st.session_state.remember_command='read'
+    st.session_state.remember_value=''
+
+def remember_action(command,refresh_token=''):
+    st.session_state.remember_command=command
+    st.session_state.remember_value=refresh_token
+    st.session_state.remember_request_id=str(uuid.uuid4())
+
+if not st.session_state.get('user_id') and not st.session_state.get('skip_auto_login'):
+    stored=remember_result.get('refresh_token') if isinstance(remember_result,dict) else None
+    if stored:
+        try:
+            session=client(url,key).auth.refresh_session(stored)
+            st.session_state.update(access_token=session.session.access_token,
+                refresh_token=session.session.refresh_token,user_id=session.user.id,remember_enabled=True)
+            remember_action('store',session.session.refresh_token)
+            st.rerun()
+        except Exception:
+            remember_action('clear')
+            st.session_state.skip_auto_login=True
+            st.rerun()
 
 # Every database and storage call uses the logged-in user's JWT, not a service-role key.
 def api():
@@ -51,11 +78,14 @@ def login_screen():
         with st.form('login'):
             email=st.text_input('電子信箱',key='login_email')
             password=st.text_input('密碼',type='password',key='login_password')
+            remember=st.checkbox('記住此裝置（自動登入）',value=False,key='login_remember')
             submit=st.form_submit_button('登入',use_container_width=True)
         if submit:
             try:
                 result=sb.auth.sign_in_with_password({'email':email,'password':password})
-                st.session_state.update(access_token=result.session.access_token,refresh_token=result.session.refresh_token,user_id=result.user.id)
+                st.session_state.update(access_token=result.session.access_token,refresh_token=result.session.refresh_token,user_id=result.user.id,remember_enabled=remember,skip_auto_login=False)
+                if remember:remember_action('store',result.session.refresh_token)
+                else:remember_action('clear')
                 st.rerun()
             except Exception as e:st.error('登入失敗，請確認帳號、密碼及信箱驗證狀態。')
     with tab2:
@@ -73,10 +103,13 @@ if not current_user():login_screen();st.stop()
 
 # Refresh credentials before accessing data; expired tokens force re-login.
 try:
-    fresh=sb.auth.refresh_session(st.session_state['refresh_token'])
+    fresh=client(url,key).auth.refresh_session(st.session_state['refresh_token'])
     st.session_state.update(access_token=fresh.session.access_token,refresh_token=fresh.session.refresh_token,user_id=fresh.user.id)
+    if st.session_state.get('remember_enabled') and remember_command!='store':
+        remember_action('store',fresh.session.refresh_token)
 except Exception:
     for k in ['access_token','refresh_token','user_id']:st.session_state.pop(k,None)
+    remember_action('clear')
     st.warning('登入已逾時，請重新登入。');st.stop()
 
 c=api()
@@ -379,6 +412,8 @@ with st.sidebar:
                     if response.ok:
                         for session_key in ['user_id','access_token','refresh_token','selected','open_tabs']:
                             st.session_state.pop(session_key,None)
+                        remember_action('clear')
+                        st.session_state.skip_auto_login=True
                         st.success('帳號已永久註銷，請重新整理頁面。')
                         st.stop()
                     else:
@@ -393,7 +428,9 @@ with st.sidebar:
                     st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
     st.divider()
     if st.button('登出',use_container_width=True):
-        for k in ['user_id','access_token','refresh_token','selected']:st.session_state.pop(k,None)
+        for k in ['user_id','access_token','refresh_token','selected','remember_enabled']:st.session_state.pop(k,None)
+        st.session_state.skip_auto_login=True
+        remember_action('clear')
         st.rerun()
 
 if not selected:
