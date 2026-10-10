@@ -31,15 +31,21 @@ def calculate(formula, cells, selection):
     """Safe bounded recursion, zero-based indices, and atomic grid calculation."""
     raw=formula.strip()
     precision=None
-    match=re.fullmatch(r"f\s*\(\s*row\s*,\s*column\s*\)\s*=\s*\((.*)\)\s*<\s*(\d{1,2})\s*>",raw,re.S)
-    if match:
-        expression=match.group(1).strip()
-        precision=int(match.group(2))
+    # v3.0: optional f(row,column)= prefix; optional <digits> precision suffix.
+    # Legacy f(row,column)=(expression)<digits> is accepted as well.
+    raw=re.sub(r'^f\s*\(\s*row\s*,\s*column\s*\)\s*=\s*','',raw,count=1)
+    suffix=re.search(r'(?:@\s*(\d{1,2})|<\s*(\d{1,2})\s*>)\s*$',raw)
+    if suffix:
+        precision=int(suffix.group(1) or suffix.group(2))
         if precision>15:raise ValueError('浮點數精度必須介於 0–15')
-    else:
-        expression=re.sub(r'^f\s*\(\s*row\s*,\s*column\s*\)\s*=\s*','',raw)
-        if re.search(r'\.stop\s*\(',expression) or re.search(r'\bf\s*\(',expression):
-            raise ValueError('遞迴公式必須使用 f(row,column)=(運算式)<精度> 格式')
+        raw=raw[:suffix.start()].strip()
+    expression=raw
+    if expression.startswith('(') and expression.endswith(')'):
+        # Remove only one balanced outer pair.
+        try:
+            if ast.parse(expression,mode='eval'): expression=expression[1:-1].strip()
+        except SyntaxError:
+            pass
     if not expression or len(expression)>1000:raise ValueError('運算式長度必須介於 1–1000')
     # A stop predicate belongs to the preceding recursive f(...) call.
     expression=re.sub(r'\&\&',' and ',expression)
@@ -96,16 +102,29 @@ def calculate(formula, cells, selection):
                 left=right
             return 1
         if isinstance(node,ast.Call):
-            if isinstance(node.func,ast.Attribute) and node.func.attr=='stop' and isinstance(node.func.value,ast.Call):
+            if node.keywords:raise ValueError('函數不支援命名參數')
+            if isinstance(node.func,ast.Name) and node.func.id in ('if','choose'):
+                if len(node.args)!=3:raise ValueError('choose(條件,成立值,否則值) 需要三個參數')
+                return ev(node.args[1] if ev(node.args[0],row,column,depth,steps) else node.args[2],row,column,depth,steps)
+            stop_condition=None
+            stop_value=None
+            inner=node
+            if isinstance(node.func,ast.Attribute) and node.func.attr=='stop':
                 inner=node.func.value
-                if not isinstance(inner.func,ast.Name) or inner.func.id!='f' or len(inner.args)!=2 or inner.keywords or len(node.args)!=1 or node.keywords:raise ValueError('stop 語法必須為 f(row,column).stop(條件)')
-                nr=ev(inner.args[0],row,column,depth,steps);nc=ev(inner.args[1],row,column,depth,steps)
-                if not all(isinstance(x,(int,float)) and math.isfinite(x) and x==int(x) for x in (nr,nc)):raise ValueError('遞迴座標必須為整數')
-                nr,nc=int(nr),int(nc)
-                if ev(node.args[0],nr,nc,depth,steps):return 0
-                if depth>=64:raise ValueError('遞迴超過 64 層，可能缺少有效終止條件')
-                return ev(tree.body,nr,nc,depth+1,steps)
-            raise ValueError('僅允許 f(...).stop(...) 遞迴呼叫')
+                if len(node.args) not in (1,2):raise ValueError('stop(條件,回傳值) 最多兩個參數')
+                stop_condition=node.args[0]
+                stop_value=node.args[1] if len(node.args)==2 else None
+            if not isinstance(inner,ast.Call) or not isinstance(inner.func,ast.Name) or inner.func.id!='f' or len(inner.args)!=2 or inner.keywords:
+                raise ValueError('僅允許 choose(...)、f(row,column) 和 f(...).stop(...)')
+            nr=ev(inner.args[0],row,column,depth,steps)
+            nc=ev(inner.args[1],row,column,depth,steps)
+            if not all(isinstance(x,(int,float)) and math.isfinite(x) and x==int(x) for x in (nr,nc)):
+                raise ValueError('遞迴座標必須為整數')
+            nr,nc=int(nr),int(nc)
+            if stop_condition is not None and ev(stop_condition,nr,nc,depth,steps):
+                return ev(stop_value,nr,nc,depth,steps) if stop_value is not None else 0
+            if depth>=64:raise ValueError('遞迴超過 64 層，可能缺少有效終止條件')
+            return ev(tree.body,nr,nc,depth+1,steps)
         if isinstance(node,ast.BinOp):
             a=ev(node.left,row,column,depth,steps);b=ev(node.right,row,column,depth,steps)
             if isinstance(node.op,ast.Add):return a+b
