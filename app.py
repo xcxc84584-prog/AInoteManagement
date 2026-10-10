@@ -910,7 +910,7 @@ else:
             sheet_key='sheet_'+block['id']
             cell_w,cell_h=table_dimensions(block.get('content') or '')
             revision=st.session_state.get('_matrix_revision_'+block['id'],0)
-            ev=matrix_component(cells=original.fillna('').astype(str).values.tolist(),headers=[str(x) for x in original.columns],width=cell_w,height=cell_h,align=table_alignment(block.get('content')),revision=revision,key='matrix_'+block['id'],default=None)
+            ev=matrix_component(cells=original.fillna('').astype(str).values.tolist(),headers=[str(x) for x in original.columns],width=cell_w,height=cell_h,align=table_alignment(block.get('content')),revision=revision,error=st.session_state.get('_matrix_error_'+block['id'],''),errorId=st.session_state.get('_matrix_error_id_'+block['id'],0),key='matrix_'+block['id'],default=None)
             if isinstance(ev,dict) and ev.get('nonce')!=st.session_state.get('_matrix_nonce_'+block['id']):
                 st.session_state['_matrix_nonce_'+block['id']]=ev.get('nonce')
                 if ev.get('action') in ('save','formula'):
@@ -920,6 +920,7 @@ else:
                         values=ev['cells'];headers=ev['headers']
                         if len(values)>50 or len(headers)>30 or any(len(row)!=len(headers) for row in values):raise ValueError('表格尺寸無效')
                         if ev['action']=='formula':
+                            st.session_state['_matrix_error_'+block['id']]=''
                             op(50,'執行安全矩陣運算')
                             results=calculate(ev.get('formula',''),values,ev.get('selection',[]))
                             top,left,bottom,right=ev['selection']
@@ -935,7 +936,11 @@ else:
                         op(100,'重新讀取並驗證完成')
                         st.session_state[report_key]={'successes':1,'total':1,'failures':[],'names':[block['title']],'saved_at':datetime.now(timezone.utc).isoformat()}
                         st.rerun()
-                    except Exception as exc:st.error('表格運算或儲存失敗：'+str(exc))
+                    except Exception as exc:
+                        st.session_state['_matrix_error_'+block['id']]=str(exc)
+                        st.session_state['_matrix_error_id_'+block['id']]=st.session_state.get('_matrix_error_id_'+block['id'],0)+1
+                        st.error('表格運算或儲存失敗：'+str(exc))
+                        st.rerun()
             draft_keys.append((block['id'],sheet_key,'matrix'))
         else:
             text_key='block_content_'+block['id']
