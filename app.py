@@ -445,9 +445,12 @@ def handwriting_creation_dialog():
 handwriting_component=components.declare_component('ainote_handwriting',path=str(Path(__file__).parent/'components'/'handwriting'))
 def handwriting_editor(note,assets):
     content=note.get('content') or ''
-    if content.strip():show_markdown(content,assets)
+    # The canvas is the sole editable view; do not render historical snapshots.
     dims=handwriting_dimensions(note.get('content') or '')
-    event=handwriting_component(key='handwrite_'+note['id'],width_px=dims[0],height_px=dims[1],default=None,height=510)
+    match=re.search(r'!\[手寫稿\]\(asset://([0-9a-fA-F-]{36})\)',content)
+    previous_asset=match.group(1) if match else None
+    initial_image=asset_url(previous_asset,assets) if previous_asset else None
+    event=handwriting_component(key='handwrite_'+note['id'],width_px=dims[0],height_px=dims[1],image_url=initial_image,default=None,height=510)
     if isinstance(event,dict) and event.get('action')=='save' and event.get('nonce')!=st.session_state.get('_hw_seen_'+note['id']):
         st.session_state['_hw_seen_'+note['id']]=event['nonce']
         progress=operation_progress('儲存手寫稿')
@@ -457,7 +460,8 @@ def handwriting_editor(note,assets):
             progress(30,'上傳畫布至 Storage')
             aid=upload_image(raw,note['id'])
             progress(70,'寫入手寫稿引用')
-            new=(content+'\n' if content.strip() else '')+f'![手寫稿](asset://{aid})'
+            new=re.sub(r'!\[手寫稿\]\(asset://[0-9a-fA-F-]{36}\)', '',content).strip()
+            new=(new+'\n' if new else '')+f'![手寫稿](asset://{aid})'
             update_note(note['id'],content=new)
             progress(100,'完成並驗證');st.session_state['_hw_notice_'+note['id']]=True;st.rerun()
         except Exception as exc:st.error('手寫稿儲存失敗：'+str(exc))
