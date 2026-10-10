@@ -36,8 +36,9 @@ sb=client(url,key)
 # Every database and storage call uses the logged-in user's JWT, not a service-role key.
 def api():
     c=create_client(url,key)
-    c.postgrest.auth(st.session_state['access_token'])
-    c.storage._client.headers['Authorization']='Bearer '+st.session_state['access_token']
+    # Establish an authenticated session for both PostgREST and Storage.
+    # Editing storage._client.headers alone does not reliably authenticate uploads.
+    c.auth.set_session(st.session_state['access_token'], st.session_state['refresh_token'])
     return c
 
 def current_user():return st.session_state.get('user_id')
@@ -95,11 +96,15 @@ def update_note(nid,**values):
 def delete_note(nid):
     # Soft-delete the complete subtree so children remain recoverable.
     ids=list(subtree(nid,notes))
-    c.table('notes').update({'is_deleted':True,'deleted_at':datetime.utcnow().isoformat()+'Z'}).in_('id',ids).eq('owner_id',uid).execute()
+    for note_id in ids:
+        result=c.table('notes').update({'is_deleted':True,'deleted_at':datetime.utcnow().isoformat()+'Z'}).eq('id',note_id).eq('owner_id',uid).select('id').execute()
+        if not result.data:raise RuntimeError('資料庫未更新文件，請檢查 RLS 與資料表權限')
 
 def restore_note(nid):
     ids=list(subtree(nid,notes))
-    c.table('notes').update({'is_deleted':False,'deleted_at':None}).in_('id',ids).eq('owner_id',uid).execute()
+    for note_id in ids:
+        result=c.table('notes').update({'is_deleted':False,'deleted_at':None}).eq('id',note_id).eq('owner_id',uid).select('id').execute()
+        if not result.data:raise RuntimeError('資料庫未還原文件，請檢查 RLS 與資料表權限')
 
 def clone_note(nid,dest):
     original=subtree(nid,notes)
@@ -148,7 +153,11 @@ def image_bytes(raw):
 def upload_image(raw,note_id):
     data,mime,ext=image_bytes(raw)
     path=f'{uid}/{uuid.uuid4().hex}.{ext}'
-    c.storage.from_('note-images').upload(path,data,{'content-type':mime,'upsert':'false'})
+    try:
+        c.storage.from_('note-images').upload(path,data,{'content-type':mime,'upsert':'false'})
+    except Exception:
+        logging.getLogger(__name__).exception('Storage upload failed (bucket=note-images, uid_prefix=%s)', str(uid)[:8])
+        raise
     try:
         asset=c.table('assets').insert({'owner_id':uid,'note_id':note_id,'storage_path':path,'mime_type':mime}).execute().data[0]
     except Exception:
@@ -229,7 +238,7 @@ def import_group(raw):
 
 st.markdown('''<style>
 .block-container{padding-top:1.2rem}.stButton button{border-radius:8px}
-[data-testid="stSidebar"]{min-width:280px}
+[data-testid="stSidebar"]{min-width:300px} [data-testid="stSidebar"] iframe{max-width:100%!important} [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{min-width:0} .block-container{max-width:1400px}
 </style>''',unsafe_allow_html=True)
 
 try:
@@ -267,11 +276,10 @@ with st.sidebar:
         st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
     st.divider()
     st.subheader('EXPLORER')
-    st.caption('右鍵選單 · 拖曳移動 · F2 更名 · Delete 刪除 · Ctrl+C/X/V')
+    st.caption('右鍵操作 · 拖曳移動 · F2 · Delete')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
-    import html as _html
     payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position']} for n in active_notes]
-    event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=510)
+    event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
     if event and event.get('event_id')!=st.session_state.get('last_explorer_event'):
         st.session_state.last_explorer_event=event.get('event_id')
         action=event.get('action');nid=event.get('id');target=event.get('target')
@@ -307,12 +315,16 @@ with st.sidebar:
             st.rerun()
         except Exception as exc:
             logging.getLogger(__name__).exception('Explorer action failed')
-            st.error('檔案操作失敗：'+type(exc).__name__)
+            st.error(f'檔案操作失敗：{type(exc).__name__}。請至 Manage app → Logs 查看詳情。')
     with st.expander('資源回收區'):
         deleted_roots=[n for n in notes if n.get('is_deleted') and (not n['parent_id'] or not byid.get(n['parent_id'],{}).get('is_deleted'))]
         for n in deleted_roots:
             cc=st.columns([3,1]);cc[0].caption(n['title'])
-            if cc[1].button('還原',key='restore_'+n['id']):restore_note(n['id']);st.rerun()
+            if cc[1].button('還原',key='restore_'+n['id']):
+                try:restore_note(n['id']);st.rerun()
+                except Exception as exc:
+                    logging.getLogger(__name__).exception('Restore failed')
+                    st.error('還原失敗：'+type(exc).__name__)
     st.divider()
     if st.button('登出',use_container_width=True):
         for k in ['user_id','access_token','refresh_token','selected']:st.session_state.pop(k,None)
@@ -336,88 +348,34 @@ if tabs:
 st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(selected['id'],byid))))
 st.title(selected['title'])
 
-with st.expander('文件管理：新增 / 更名 / 移動 / 刪除',expanded=False):
-    if selected['kind'] in CONTAINERS:
-        with st.form('create_child'):
-            col1,col2=st.columns([1,2]);kind=col1.selectbox('類型', ['SUBFILE','MARKDOWN','GRAPH','TABLE'] if selected['kind']=='SUBFILE' else ['SUBFILE','MARKDOWN','GRAPH','TABLE']);title=col2.text_input('新文件名稱')
-            has_page=st.checkbox('啟用子文件自身頁面',value=True) if kind=='SUBFILE' else False
-            if st.form_submit_button('新增文件') and title.strip():
-                try:r=insert_note(kind,title.strip(),selected['id'],has_page=has_page,position=len([n for n in active_notes if n['parent_id']==selected['id']]));st.session_state.selected=r['id'];st.rerun()
-                except Exception:st.error('新增失敗')
-    with st.form('rename'):
-        renamed=st.text_input('重新命名',value=selected['title'])
-        if st.form_submit_button('儲存名稱') and renamed.strip():
-            update_note(selected['id'],title=renamed.strip()[:200]);st.rerun()
-    if selected['kind']!='GROUP':
-        allowed=[n for n in active_notes if n['kind'] in CONTAINERS and n['id'] not in subtree(selected['id'],notes) and get_ancestors(n['id'],byid)[-1]==get_ancestors(selected['id'],byid)[-1]]
-        if allowed:
-            dest=st.selectbox('移動至',allowed,format_func=lambda n:n['title'],key='move_target')
-            if st.button('移動文件'):
-                update_note(selected['id'],parent_id=dest['id']);st.rerun()
-    confirm=st.checkbox('我確認要將此文件及其子文件移至資源回收區',key='delete_confirm')
-    if st.button('移至資源回收區',disabled=not confirm):
-        try:delete_note(selected['id']);st.session_state.selected=None;st.rerun()
-        except Exception:st.error('刪除失敗')
-
-if selected['kind'] in CONTAINERS:
-    children=[n for n in active_notes if n['parent_id']==selected['id']]
-    folders=[n for n in children if n['kind'] in CONTAINERS]
-    blocks=[n for n in children if n['kind'] not in CONTAINERS]
-    if folders:st.caption('下一層子文件：'+ ' · '.join(n['title'] for n in folders))
-    enabled=st.toggle('啟用自身頁面',value=selected['has_page'],key='has_page_'+selected['id'])
-    if enabled!=selected['has_page']:update_note(selected['id'],has_page=enabled);st.rerun()
-    if not enabled and not blocks:
-        st.info('此節點目前是資料夾。開啟「啟用自身頁面」即可編輯內容。')
-    if enabled:
-        with st.form('self_content_'+selected['id']):
-            content=st.text_area('自身 Markdown 內容',value=selected['content'],height=180)
-            if st.form_submit_button('儲存內容'):update_note(selected['id'],content=content);st.rerun()
-        if selected['content']:show_markdown(selected['content'],{})
-    if blocks:
-        st.subheader('頁面區塊')
-        for block in sorted(blocks,key=lambda n:n['position']):
-            with st.container(border=True):
-                cols=st.columns([7,1,1]);cols[0].markdown('**'+block['title']+'** · '+block['kind'])
-                if cols[1].button('↑',key='up_'+block['id']):
-                    prev=[b for b in blocks if b['position']<block['position']]
-                    if prev:
-                        p=max(prev,key=lambda x:x['position']);update_note(p['id'],position=block['position']);update_note(block['id'],position=p['position']);st.rerun()
-                if cols[2].button('開啟',key='open_'+block['id']):st.session_state.selected=block['id'];st.rerun()
-                if block['kind']=='GRAPH':
-                    match=re.search(r'asset://([0-9a-fA-F-]{36})',block['content'])
-                    if match:
-                        try:
-                            assets={a['id']:a for a in c.table('assets').select('*').eq('owner_id',uid).execute().data}
-                            show_markdown(block['content'],assets)
-                        except Exception:st.warning('圖片載入失敗')
-                else:st.markdown(block['content'] or '（空白區塊）')
-else:
-    tab_edit,tab_preview=st.tabs(['編輯','預覽'])
-    with tab_edit:
-        with st.form('edit_'+selected['id']):
-            content=st.text_area('Markdown 內容',value=selected['content'],height=320)
-            if st.form_submit_button('儲存 Markdown',use_container_width=True):update_note(selected['id'],content=content);st.success('已儲存');st.rerun()
-        if selected['kind']=='GRAPH':
-            st.subheader('圖片插入')
-            upload=st.file_uploader('本地上傳圖片',type=['png','jpg','jpeg','webp','gif'],key='image_'+selected['id'])
-            paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
-            pasted=paste(key='paste_'+selected['id'],default=None)
-            incoming=None
-            if upload:incoming=upload.getvalue()
-            elif pasted and pasted.get('data'):
-                try:incoming=base64.b64decode(pasted['data'].split(',',1)[1])
-                except Exception:st.error('剪貼簿資料無效')
-            if incoming and st.button('儲存圖片並插入 Markdown'):
-                try:
-                    aid=upload_image(incoming,selected['id'])
-                    newcontent=selected['content']+'\n\n![圖片](asset://'+aid+')'
-                    update_note(selected['id'],content=newcontent)
-                    st.success('圖片已儲存');st.rerun()
-                except Exception as e:st.error('圖片儲存失敗：'+str(e))
-    with tab_preview:
-        try:assets={a['id']:a for a in c.table('assets').select('*').eq('owner_id',uid).execute().data}
-        except Exception:assets={}
-        show_markdown(selected['content'],assets)
-
+# A single Markdown source editor for every node. All file operations belong in Explorer.
+st.caption('Markdown 原始碼 · '+selected['kind'])
+with st.form('markdown_editor_'+selected['id'],clear_on_submit=False):
+    content=st.text_area('Markdown (.md)',value=selected.get('content') or '',height=520,label_visibility='collapsed',placeholder='# 在這裡撰寫 Markdown…')
+    if st.form_submit_button('儲存 Markdown',use_container_width=False):
+        try:
+            update_note(selected['id'],content=content,has_page=True if selected['kind'] in CONTAINERS else selected['has_page'])
+            st.success('已儲存')
+            st.rerun()
+        except Exception as exc:
+            logging.getLogger(__name__).exception('Save markdown failed')
+            st.error('儲存失敗：'+type(exc).__name__)
+if selected['kind']=='GRAPH':
+    with st.sidebar.expander('圖片上傳／貼上'):
+        upload=st.file_uploader('上傳圖片',type=['png','jpg','jpeg','webp','gif'],key='image_'+selected['id'])
+        paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
+        pasted=paste(key='paste_'+selected['id'],default=None)
+        incoming=upload.getvalue() if upload else None
+        if incoming is None and pasted and pasted.get('data'):
+            try:incoming=base64.b64decode(pasted['data'].split(',',1)[1])
+            except Exception:st.warning('圖片資料無效')
+        if incoming and st.button('插入圖片 Markdown'):
+            try:
+                aid=upload_image(incoming,selected['id'])
+                update_note(selected['id'],content=(selected.get('content') or '')+'\n\n![圖片](asset://'+aid+')')
+                st.rerun()
+            except Exception as exc:
+                logging.getLogger(__name__).exception('Upload image failed')
+                st.error('圖片儲存失敗：'+type(exc).__name__)
 st.divider()
-st.caption('AInoteManagement v1.1 · Streamlit + Supabase · 每次修改請按儲存 · 建議定期下載 .ainote 備份')
+st.caption('AInoteManagement v1.2 · Streamlit + Supabase · 每次修改請按儲存 · 建議定期下載 .ainote 備份')
