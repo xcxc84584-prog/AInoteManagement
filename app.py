@@ -229,6 +229,29 @@ def signed_markdown(content,assets):
         return f'![{alt}]({url})' if url else f'**[圖片無法讀取：{alt}]**'
     return re.sub(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',replace,content or '')
 
+TABLE_SIZES={'小':('9px','70px'),'中':('13px','105px'),'大':('17px','145px')}
+def table_size(content):
+    found=re.search(r'<!--\s*ainote-table-size:(small|medium|large)\s*-->',content or '')
+    return {'small':'小','medium':'中','large':'大'}.get(found.group(1),'中') if found else '中'
+def table_with_size(rows,cols,size):
+    tag={'小':'small','中':'medium','大':'large'}[size]
+    return f'<!-- ainote-table-size:{tag} -->\n'+table_markdown(rows,cols)
+def keep_table_size(content,size):
+    tag={'小':'small','中':'medium','大':'large'}[size]
+    return f'<!-- ainote-table-size:{tag} -->\n'+re.sub(r'<!--\s*ainote-table-size:(small|medium|large)\s*-->\s*','',content or '',count=1)
+def render_table(content):
+    frame=markdown_dataframe(content)
+    if not len(frame.columns):return
+    fontsize,minwidth=TABLE_SIZES[table_size(content)]
+    # CSS is scoped to this one table, with horizontal scrolling on narrow screens.
+    head=''.join('<th>'+html.escape(str(c))+'</th>' for c in frame.columns)
+    body=''.join('<tr>'+''.join('<td>'+html.escape(str(v) if pd.notna(v) else '')+'</td>' for v in row)+'</tr>' for row in frame.itertuples(index=False,name=None))
+    cols=len(frame.columns)
+    markup=f'<div style="width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="width:max(100%,{cols} * {minwidth});min-width:{cols * int(minwidth[:-2])}px;table-layout:fixed;border-collapse:collapse;font-size:{fontsize};"><colgroup>'+''.join(f'<col style="width:{100/cols:.5f}%">' for _ in range(cols))+f'</colgroup><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+    # Streamlit Markdown HTML sanitizer permits HTML tables, but strips inline style in some versions.
+    # Provide a scoped CSS block for predictable widths and mobile scrolling.
+    st.markdown(f'<style>div[data-testid="stMarkdown"] table th,div[data-testid="stMarkdown"] table td{{min-width:{minwidth};max-width:320px;vertical-align:top;overflow-wrap:anywhere;padding:8px;border:1px solid #687080}}</style>'+markup,unsafe_allow_html=True)
+
 def table_markdown(rows,cols):
     if not (1<=rows<=50 and 1<=cols<=30):raise ValueError('表格尺寸必須為 1–50 列、1–30 欄')
     return dataframe_markdown(pd.DataFrame('',index=range(rows),columns=[f'欄位 {i+1}' for i in range(cols)]))
@@ -256,7 +279,6 @@ def markdown_dataframe(markdown):
     return pd.DataFrame(data,columns=cols,dtype=str)
 
 def image_editor(note,assets,uid_key):
-    st.caption('圖片區塊：貼上圖片（Ctrl+V）、拖曳或本地上傳，無須編輯 Markdown。')
     if st.session_state.pop('image_saved_'+uid_key,False):st.success('圖片已成功儲存至 Supabase。')
     for match in re.finditer(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',note.get('content') or ''):
         signed=asset_url(match.group(2),assets)
@@ -286,11 +308,10 @@ def image_editor(note,assets,uid_key):
 def table_editor(note,uid_key):
     original=markdown_dataframe(note.get('content') or '')
     if original.empty and not len(original.columns):original=pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
-    st.caption('Excel 式表格：點選儲存格編輯；可直接貼上從 Excel 複製的資料。')
     edited=st.data_editor(original,hide_index=True,width='stretch',num_rows='dynamic',key='sheet_'+uid_key)
     if st.button('儲存表格',key='save_table_'+uid_key):
         try:
-            update_note(note['id'],content=dataframe_markdown(edited))
+            update_note(note['id'],content=keep_table_size(dataframe_markdown(edited),table_size(note.get('content'))))
             st.success('表格已儲存')
             st.rerun()
         except Exception as exc:
@@ -423,6 +444,9 @@ with st.sidebar:
                 st.session_state.selected=nid
                 tabs=st.session_state.setdefault('open_tabs',[])
                 if nid not in tabs:tabs.append(nid)
+            elif action=='quick_nav' and nid in byid:
+                st.session_state.quick_nav_root=nid
+                st.session_state.selected=nid
             elif action=='rename' and nid in byid:
                 title=str(event.get('title','')).strip()
                 if title:update_note(nid,title=title[:200])
@@ -430,6 +454,10 @@ with st.sidebar:
                 kind=event.get('kind');title=str(event.get('title','')).strip()
                 parent=target if target in byid and byid[target]['kind'] in CONTAINERS else None
                 if kind=='GROUP':parent=None
+                if kind=='TABLE' and parent and title:
+                    st.session_state.pending_table={'title':title,'parent':parent}
+                    st.session_state.selected=parent
+                    st.rerun()
                 if kind in KINDS and title and (kind=='GROUP' or parent):
                     new=insert_note(kind,title,parent,has_page=kind=='SUBFILE',position=len([x for x in active_notes if x['parent_id']==parent]))
                     st.session_state.selected=new['id']
@@ -451,6 +479,50 @@ with st.sidebar:
         except Exception as exc:
             logging.getLogger(__name__).exception('Explorer action failed')
             st.error(f'檔案操作失敗：{type(exc).__name__}。請至 Manage app → Logs 查看詳情。')
+    pending=st.session_state.get('pending_table')
+    if pending:
+        with st.form('sidebar_table_setup'):
+            st.markdown('**建立表格：'+pending['title']+'**')
+            m=st.number_input('M：資料列數',min_value=1,max_value=50,value=3)
+            n=st.number_input('N：欄數',min_value=1,max_value=30,value=3)
+            size=st.selectbox('格子大小',list(TABLE_SIZES),index=1)
+            ok=st.form_submit_button('建立表格')
+        if ok:
+            try:
+                new=insert_note('TABLE',pending['title'],pending['parent'],content=table_with_size(m,n,size))
+                st.session_state.selected=new['id']
+                st.session_state.pop('pending_table',None)
+                st.rerun()
+            except Exception as exc:st.error('建立表格失敗：'+str(exc))
+        if st.button('取消建立',key='cancel_sidebar_table'):
+            st.session_state.pop('pending_table',None);st.rerun()
+    nav_root=st.session_state.get('quick_nav_root')
+    if nav_root in byid:
+        with st.expander('☰ 快速定位',expanded=True):
+            root=byid[nav_root]
+            if root['kind'] not in CONTAINERS:root=byid.get(root.get('parent_id'),root)
+            def nav_children(node,depth=0,visited=None):
+                visited=set() if visited is None else visited
+                if node['id'] in visited:return []
+                visited.add(node['id'])
+                result=[(node,depth)]
+                for child in sorted([n for n in active_notes if n.get('parent_id')==node['id']],key=lambda n:(n.get('position',0),n.get('title',''))):
+                    if child['kind'] in CONTAINERS:result+=nav_children(child,depth+1,visited)
+                    else:result.append((child,depth+1))
+                return result
+            targets=nav_children(root)
+            for node,depth in targets:
+                label=('　'*min(depth,7))+node['title']
+                if st.session_state.get('workspace_mode')=='瀏覽模式':
+                    anchor='ainote-'+re.sub(r'[^a-zA-Z0-9-]','',str(node['id']))
+                    st.markdown(f'<a href="#{anchor}">{html.escape(label)}</a>',unsafe_allow_html=True)
+                    continue
+                if st.button(label,key='nav_'+root['id']+'_'+node['id'],width='stretch'):
+                    st.session_state.selected=node['id']
+                    st.session_state['nav_target']=node['id']
+                    st.rerun()
+            if st.button('關閉快速定位',key='close_quick_nav'):
+                st.session_state.pop('quick_nav_root',None);st.rerun()
     with st.expander('資源回收區'):
         deleted_roots=[n for n in notes if n.get('is_deleted') and (not n['parent_id'] or not byid.get(n['parent_id'],{}).get('is_deleted'))]
         for n in deleted_roots:
@@ -541,7 +613,9 @@ if report:
         st.rerun()
 if mode=='瀏覽模式':
     st.title(group['title'])
-    st.caption('以組別（GROUP）為單位瀏覽；可利用下方目錄快速定位章節。')
+    nav_target=st.session_state.get('nav_target')
+    if nav_target in byid and nav_target!=group['id']:
+        st.info('定位：'+byid[nav_target]['title'])
     # Build one stable table of contents for the whole group, preserving Explorer order.
     def ordered_children(parent_id):
         return sorted([n for n in active_notes if n.get('parent_id')==parent_id],
@@ -558,11 +632,6 @@ if mode=='瀏覽模式':
     # Anchor IDs are derived only from UUIDs, never from untrusted titles.
     def section_anchor(note):return 'ainote-'+re.sub(r'[^a-zA-Z0-9-]','',str(note['id']))
     toc=[(node,depth) for node,depth in sections if node['kind'] in CONTAINERS]
-    if len(toc)>1:
-        with st.expander('☰ 快速定位目錄',expanded=True):
-            for node,depth in toc:
-                label=('　' * min(depth,8))+('▸ ' if depth else '▾ ')+node['title']
-                st.markdown(f'<a href="#{section_anchor(node)}" style="text-decoration:none">{html.escape(label)}</a>',unsafe_allow_html=True)
     st.markdown('<a id="'+section_anchor(group)+'"></a>',unsafe_allow_html=True)
     for node,depth in sections:
         if node['kind'] in CONTAINERS:
@@ -571,22 +640,15 @@ if mode=='瀏覽模式':
                 st.markdown('#'*min(depth+1,6)+' '+node['title'])
             if (node.get('content') or '').strip():show_markdown(node['content'],assets)
         else:
+            st.markdown('<a id="'+section_anchor(node)+'"></a>',unsafe_allow_html=True)
             if node['kind'] in ('GRAPH','TABLE') and node.get('title'):
                 st.caption(('🖼️ ' if node['kind']=='GRAPH' else '▦ ')+node['title'])
-            if (node.get('content') or '').strip():show_markdown(node['content'],assets)
+            if node['kind']=='TABLE':render_table(node.get('content') or '')
+            elif (node.get('content') or '').strip():show_markdown(node['content'],assets)
 else:
-    st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(workspace_id,byid))))
     st.title(workspace['title'])
-    st.caption('編輯模式：此工作區正文與同層文件共用頁面；請先按儲存，再切換瀏覽模式。瀏覽模式會彙整整個 GROUP。')
-    # All editors share a single continuous workspace; no expander or form frames.
-    # Draft values are keyed by workspace and note IDs so reruns retain unsaved changes.
-    main_key='workspace_content_'+workspace_id
-    st.markdown('**工作區正文**')
-    st.text_area('工作區 Markdown',value=workspace.get('content') or '',
-        height=230,key=main_key,label_visibility='collapsed',
-        placeholder='# 在這裡撰寫 Markdown…')
-    st.caption('下方「💾 儲存全部變更」會同時儲存正文、T1 等文字文件和表格。')
-    draft_keys=[(workspace_id,main_key,'container')]
+    # GROUP/SUBFILE are structural folders; content lives in child documents only.
+    draft_keys=[]
     for block in workspace_blocks:
         st.markdown('#### '+('🖼️ ' if block['kind']=='GRAPH' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'])
         if block['kind']=='GRAPH':
@@ -596,7 +658,6 @@ else:
             original=markdown_dataframe(block.get('content') or '')
             if original.empty and not len(original.columns):
                 original=pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
-            st.caption('點選儲存格編輯，或從 Excel 複製貼上。')
             sheet_key='sheet_'+block['id']
             st.session_state['_editor_result_'+sheet_key]=st.data_editor(original,hide_index=True,width='stretch',num_rows='dynamic',key=sheet_key)
             draft_keys.append((block['id'],sheet_key,'table'))
@@ -605,10 +666,8 @@ else:
             st.text_area('Markdown：'+block['title'],value=block.get('content') or '',
                 height=190,key=text_key,label_visibility='collapsed')
             draft_keys.append((block['id'],text_key,'text'))
-    st.markdown('---')
-    st.caption('批量存檔會儲存目前工作區的正文、所有文字區塊及表格。圖片請使用各圖片區的「儲存圖片」。寫入後會重新讀取 Supabase 驗證。')
     # All editable text and tables are submitted in one explicit action.
-    if st.button('💾 儲存全部變更（正文＋文字＋表格）',type='primary',key='save_all_'+workspace_id):
+    if st.button('💾 儲存全部變更',type='primary',key='save_all_'+workspace_id):
         successes=[]
         failures=[]
         for note_id,field_key,field_type in draft_keys:
@@ -617,7 +676,7 @@ else:
                 if field_type=='table':
                     value=st.session_state.get('_editor_result_'+field_key)
                     if value is None:raise ValueError('表格尚未初始化，請重新開啟工作區')
-                    content=dataframe_markdown(value)
+                    content=keep_table_size(dataframe_markdown(value),table_size(byid[note_id].get('content') or ''))
                 else:
                     content=st.session_state[field_key]
                 payload={'content':content}
@@ -632,8 +691,6 @@ else:
             'names':successes,'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
         }
         st.rerun()
-    st.divider()
-    st.subheader('新增內容')
     t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown'])
     with t1:
         if st.button('新增圖片區塊',key='new_graph_'+workspace_id):
@@ -649,10 +706,11 @@ else:
         m=col_m.number_input('M：資料列數',min_value=1,max_value=50,value=3,step=1,key='rows_'+workspace_id)
         n=col_n.number_input('N：欄數',min_value=1,max_value=30,value=3,step=1,key='cols_'+workspace_id)
         table_name=st.text_input('表格名稱',value='新表格',key='table_name_'+workspace_id)
+        table_size_choice=st.selectbox('格子大小',list(TABLE_SIZES),index=1,key='table_size_'+workspace_id)
         if st.button('建立可填寫表格',key='insert_table_'+workspace_id):
             try:
                 created=insert_note('TABLE',table_name.strip() or '新表格',workspace_id,
-                    content=table_markdown(m,n),position=len(workspace_blocks))
+                    content=table_with_size(m,n,table_size_choice),position=len(workspace_blocks))
                 st.session_state.selected=created['id']
                 st.rerun()
             except Exception as exc:
@@ -670,4 +728,4 @@ else:
                 logging.getLogger(__name__).exception('Create Markdown block failed')
                 st.error('新增失敗：'+type(exc).__name__)
 st.divider()
-st.caption('AInoteManagement v1.7.1 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('AInoteManagement v1.8 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
