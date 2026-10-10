@@ -9,6 +9,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 import streamlit as st
+import pandas as pd
 from PIL import Image, ImageOps
 from supabase import create_client
 import streamlit.components.v1 as components
@@ -222,10 +223,70 @@ def signed_markdown(content,assets):
 
 def table_markdown(rows,cols):
     if not (1<=rows<=50 and 1<=cols<=30):raise ValueError('表格尺寸必須為 1–50 列、1–30 欄')
-    header='| '+' | '.join(f'欄位 {i+1}' for i in range(cols))+' |'
-    separator='| '+' | '.join('---' for _ in range(cols))+' |'
-    body=['| '+' | '.join(' ' for _ in range(cols))+' |' for _ in range(rows)]
-    return '\n'.join([header,separator,*body])
+    return dataframe_markdown(pd.DataFrame('',index=range(rows),columns=[f'欄位 {i+1}' for i in range(cols)]))
+
+def dataframe_markdown(frame):
+    def esc(v):
+        return str(v if pd.notna(v) else '').replace('|', r'\|').replace('\n','<br>').strip()
+    cols=[esc(v) for v in frame.columns]
+    header='| '+' | '.join(cols)+' |'
+    separator='| '+' | '.join('---' for _ in cols)+' |'
+    lines=['| '+' | '.join(esc(v) for v in row)+' |' for row in frame.itertuples(index=False,name=None)]
+    return '\n'.join([header,separator,*lines])
+
+def markdown_dataframe(markdown):
+    lines=[line.strip() for line in (markdown or '').splitlines() if line.strip().startswith('|')]
+    if len(lines)<2:return pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
+    def parse(line):
+        return [cell.strip().replace(r'\|','|').replace('<br>','\n') for cell in re.split(r'(?<!\\)\|',line.strip().strip('|'))]
+    cols=parse(lines[0])
+    if not cols:return pd.DataFrame()
+    data=[]
+    for line in lines[2:]:
+        row=parse(line)
+        data.append((row+['']*len(cols))[:len(cols)])
+    return pd.DataFrame(data,columns=cols,dtype=str)
+
+def image_editor(note,assets,uid_key):
+    st.caption('圖片區塊：貼上圖片（Ctrl+V）、拖曳或本地上傳，無須編輯 Markdown。')
+    for match in re.finditer(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',note.get('content') or ''):
+        signed=asset_url(match.group(2),assets)
+        if signed:st.image(signed,caption=match.group(1),use_container_width=True)
+    upload=st.file_uploader('選擇或拖曳圖片',type=['png','jpg','jpeg','webp','gif'],key='upload_'+uid_key)
+    paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
+    pasted=paste(key='paste_'+uid_key,default=None)
+    incoming=upload.getvalue() if upload else None
+    name=upload.name if upload else '貼上的圖片'
+    if incoming is None and isinstance(pasted,dict) and pasted.get('data'):
+        try:
+            incoming=base64.b64decode(pasted['data'].split(',',1)[1],validate=True)
+            name=pasted.get('name') or name
+        except Exception:st.warning('剪貼簿圖片格式無效')
+    if st.button('儲存圖片',key='save_image_'+uid_key,disabled=not bool(incoming)):
+        try:
+            asset_id=upload_image(incoming,note['id'])
+            clean=name.replace(']','').replace('\n',' ')
+            old=note.get('content') or ''
+            update_note(note['id'],content=(old+'\n' if old.strip() else '')+f'![{clean}](asset://{asset_id})')
+            st.success('圖片已儲存')
+            st.rerun()
+        except Exception as exc:
+            logging.getLogger(__name__).exception('Image save failed')
+            st.error('圖片儲存失敗：'+type(exc).__name__)
+
+def table_editor(note,uid_key):
+    original=markdown_dataframe(note.get('content') or '')
+    if original.empty and not len(original.columns):original=pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
+    st.caption('Excel 式表格：點選儲存格編輯；可直接貼上從 Excel 複製的資料。')
+    edited=st.data_editor(original,hide_index=True,use_container_width=True,num_rows='dynamic',key='sheet_'+uid_key)
+    if st.button('儲存表格',key='save_table_'+uid_key):
+        try:
+            update_note(note['id'],content=dataframe_markdown(edited))
+            st.success('表格已儲存')
+            st.rerun()
+        except Exception as exc:
+            logging.getLogger(__name__).exception('Table save failed')
+            st.error('表格儲存失敗：'+type(exc).__name__)
 
 def show_markdown(content,assets):
     # Resolve private asset identifiers without embedding unsafe HTML.
@@ -438,9 +499,12 @@ if not selected:
     st.info('請在左側「功能選單」建立第一個組別，或匯入 .ainote 檔案。')
     st.stop()
 
-# A workspace is the container's own Markdown plus its immediate non-container children.
-# Selecting a leaf opens the same workspace as its siblings.
-workspace=selected if selected['kind'] in CONTAINERS else byid.get(selected['parent_id'],selected)
+# The GROUP is the browsing unit. Editing remains at the selected workspace level.
+group=selected
+while group.get('parent_id') and group['kind']!='GROUP':
+    group=byid.get(group['parent_id'],group)
+    if group['kind']=='GROUP':break
+workspace=selected if selected['kind'] in CONTAINERS else byid.get(selected.get('parent_id'),selected)
 workspace_id=workspace['id']
 workspace_blocks=sorted(
     [n for n in active_notes if n.get('parent_id')==workspace_id and n['kind'] not in CONTAINERS],
@@ -452,118 +516,97 @@ try:
 except Exception:
     logging.getLogger(__name__).exception('Asset list failed')
 
-st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(workspace_id,byid))))
-left,right=st.columns([5,2],vertical_alignment='center')
-with left:st.title(workspace['title'])
-with right:
-    mode=st.segmented_control('工作模式',['瀏覽','編輯'],default='瀏覽',key='workspace_mode',label_visibility='collapsed')
-st.caption('同一層級的 Markdown、圖片及表格共用此工作區；子資料夾另開工作區。')
-
-def render_block(note):
-    content=note.get('content') or ''
-    if note['kind']=='GRAPH' and not content.strip():
-        st.caption('尚未插入圖片')
-    elif content.strip():
-        st.markdown(signed_markdown(content,assets))
-    else:
-        st.caption('尚無內容')
-
-if mode=='瀏覽':
-    if workspace.get('content','').strip():
-        render_block(workspace)
-    for block in workspace_blocks:
-        with st.container(border=False):
-            if block['title'] and block['kind'] in ('GRAPH','TABLE'):
-                st.caption(('🖼️ ' if block['kind']=='GRAPH' else '▦ ')+block['title'])
-            render_block(block)
-    if not workspace.get('content','').strip() and not workspace_blocks:
-        st.info('這個工作區尚無筆記。切換至「編輯」模式即可開始。')
+mode=st.radio('工作模式',['瀏覽模式','編輯模式'],horizontal=True,key='workspace_mode')
+if mode=='瀏覽模式':
+    st.title(group['title'])
+    st.caption('以組別（GROUP）為單位呈現整份筆記，包含所有子文件的文字、圖片與表格。')
+    def show_group_node(node,depth=0):
+        if node['kind'] in CONTAINERS:
+            if node['id']!=group['id']:
+                st.markdown('#'*(min(depth+1,6))+' '+node['title'])
+            if node.get('content','').strip():show_markdown(node['content'],assets)
+            children=sorted(
+                [n for n in active_notes if n.get('parent_id')==node['id']],
+                key=lambda n:(n.get('position',0),n.get('created_at',''))
+            )
+            for child in children:show_group_node(child,depth+1)
+        else:
+            if node['kind'] in ('GRAPH','TABLE') and node.get('title'):
+                st.caption(('🖼️ ' if node['kind']=='GRAPH' else '▦ ')+node['title'])
+            if node.get('content','').strip():show_markdown(node['content'],assets)
+    show_group_node(group)
 else:
-    st.caption('Markdown 編輯 · 儲存後可切換瀏覽模式預覽排版')
-    # Edit the container's own Markdown; every direct child is another block in this page.
+    st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(workspace_id,byid))))
+    st.title(workspace['title'])
+    st.caption('編輯模式：同一父文件的文字、圖片、表格共用工作區，分別儲存。')
+    # Container Markdown remains editable; saving is explicit and persistent.
     with st.form('editor_workspace_'+workspace_id):
-        st.markdown('**頁面正文 (.md)**')
-        page_content=st.text_area('頁面 Markdown',value=workspace.get('content') or '',
-                                  height=250,key='workspace_content_'+workspace_id,
-                                  label_visibility='collapsed',placeholder='# 在這裡撰寫 Markdown…')
-        if st.form_submit_button('儲存頁面正文'):
+        st.markdown('**工作區正文（Markdown）**')
+        page_content=st.text_area('Markdown',value=workspace.get('content') or '',
+            height=230,key='workspace_content_'+workspace_id,
+            label_visibility='collapsed',placeholder='# 在這裡撰寫 Markdown…')
+        if st.form_submit_button('💾 儲存工作區正文',type='primary'):
             try:
                 update_note(workspace_id,content=page_content,has_page=True)
+                st.success('工作區正文已儲存')
                 st.rerun()
             except Exception as exc:
-                logging.getLogger(__name__).exception('Save workspace failed')
+                logging.getLogger(__name__).exception('Workspace save failed')
                 st.error('儲存失敗：'+type(exc).__name__)
-
     for block in workspace_blocks:
-        with st.expander(('🖼️ ' if block['kind']=='GRAPH' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'],expanded=True):
-            with st.form('editor_block_'+block['id']):
-                text=st.text_area('Markdown (.md)',value=block.get('content') or '',height=170,
-                                  key='block_content_'+block['id'],label_visibility='collapsed')
-                if st.form_submit_button('儲存此區塊'):
-                    try:
-                        update_note(block['id'],content=text)
-                        st.rerun()
-                    except Exception as exc:
-                        logging.getLogger(__name__).exception('Save block failed')
-                        st.error('儲存失敗：'+type(exc).__name__)
-
+        with st.expander(('🖼️ ' if block['kind']=='GRAPH' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'],expanded=selected['id']==block['id']):
+            if block['kind']=='GRAPH':
+                image_editor(block,assets,block['id'])
+            elif block['kind']=='TABLE':
+                table_editor(block,block['id'])
+            else:
+                with st.form('editor_block_'+block['id']):
+                    text=st.text_area('Markdown (.md)',value=block.get('content') or '',height=190,
+                        key='block_content_'+block['id'],label_visibility='collapsed')
+                    if st.form_submit_button('💾 儲存文字區塊'):
+                        try:
+                            update_note(block['id'],content=text)
+                            st.success('文字已儲存')
+                            st.rerun()
+                        except Exception as exc:
+                            logging.getLogger(__name__).exception('Block save failed')
+                            st.error('儲存失敗：'+type(exc).__name__)
     st.divider()
-    st.subheader('插入內容')
-    t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown 區塊'])
+    st.subheader('新增內容')
+    t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown'])
     with t1:
-        st.caption('支援本地圖片、Ctrl+V 貼上截圖及拖曳圖片。上傳後儲存在私人 Supabase Storage。')
-        upload=st.file_uploader('從本地選擇圖片',type=['png','jpg','jpeg','webp','gif'],
-                                key='image_upload_'+workspace_id)
-        paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
-        pasted=paste(key='paste_workspace_'+workspace_id,default=None)
-        incoming=upload.getvalue() if upload else None
-        name=upload.name if upload else '貼上的圖片'
-        if incoming is None and isinstance(pasted,dict) and pasted.get('data'):
+        if st.button('新增圖片區塊',key='new_graph_'+workspace_id):
             try:
-                incoming=base64.b64decode(pasted['data'].split(',',1)[1],validate=True)
-                name=pasted.get('name') or name
-            except Exception:st.warning('剪貼簿圖片格式無效')
-        if st.button('插入圖片至此工作區',disabled=not bool(incoming),key='insert_img_'+workspace_id):
-            try:
-                # Each image gets its own GRAPH block; all blocks render on the same page.
-                created=insert_note('GRAPH',name[:200],workspace_id,position=len(workspace_blocks))
-                try:
-                    asset_id=upload_image(incoming,created['id'])
-                    update_note(created['id'],content=f'![{name.replace(chr(93),"")}](asset://{asset_id})')
-                except Exception:
-                    # Avoid leaving an empty GRAPH block after a failed upload.
-                    c.table('notes').delete().eq('id',created['id']).eq('owner_id',uid).execute()
-                    raise
-                st.success('圖片已加入工作區')
+                created=insert_note('GRAPH','新圖片',workspace_id,position=len(workspace_blocks))
+                st.session_state.selected=created['id']
                 st.rerun()
             except Exception as exc:
-                logging.getLogger(__name__).exception('Insert image failed')
-                st.error('圖片上傳失敗：'+type(exc).__name__+'。請查看 Manage app → Logs')
+                logging.getLogger(__name__).exception('Create image block failed')
+                st.error('新增失敗：'+type(exc).__name__)
     with t2:
-        st.caption('輸入 M × N，其中 M 為資料列數，N 為欄數。')
         col_m,col_n=st.columns(2)
         m=col_m.number_input('M：資料列數',min_value=1,max_value=50,value=3,step=1,key='rows_'+workspace_id)
         n=col_n.number_input('N：欄數',min_value=1,max_value=30,value=3,step=1,key='cols_'+workspace_id)
         table_name=st.text_input('表格名稱',value='新表格',key='table_name_'+workspace_id)
-        st.markdown(table_markdown(m,n))
-        if st.button('建立 M × N 表格',key='insert_table_'+workspace_id):
+        if st.button('建立可填寫表格',key='insert_table_'+workspace_id):
             try:
-                insert_note('TABLE',table_name.strip() or '新表格',workspace_id,
-                            content=table_markdown(m,n),position=len(workspace_blocks))
+                created=insert_note('TABLE',table_name.strip() or '新表格',workspace_id,
+                    content=table_markdown(m,n),position=len(workspace_blocks))
+                st.session_state.selected=created['id']
                 st.rerun()
             except Exception as exc:
-                logging.getLogger(__name__).exception('Insert table failed')
+                logging.getLogger(__name__).exception('Create table failed')
                 st.error('新增表格失敗：'+type(exc).__name__)
     with t3:
         text_name=st.text_input('區塊名稱',value='新段落',key='text_name_'+workspace_id)
         if st.button('新增 Markdown 區塊',key='insert_text_'+workspace_id):
             try:
-                insert_note('MARKDOWN',text_name.strip() or '新段落',workspace_id,
-                            position=len(workspace_blocks))
+                created=insert_note('MARKDOWN',text_name.strip() or '新段落',workspace_id,
+                    position=len(workspace_blocks))
+                st.session_state.selected=created['id']
                 st.rerun()
             except Exception as exc:
-                logging.getLogger(__name__).exception('Insert Markdown block failed')
+                logging.getLogger(__name__).exception('Create Markdown block failed')
                 st.error('新增失敗：'+type(exc).__name__)
-
 st.divider()
-st.caption('AInoteManagement v1.4 · 共用工作區 · Markdown 編輯／瀏覽 · 圖片與 M×N 表格')
+st.caption('AInoteManagement v1.5 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
