@@ -19,7 +19,7 @@ from supabase import create_client
 from matrix_engine import calculate
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title='AInoteManagement',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
+st.set_page_config(page_title='AI-NOTE',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
 KINDS=['GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE','HANDWRITE']
 CONTAINERS=['GROUP','SUBFILE']
 MAX_IMAGE=10*1024*1024
@@ -389,7 +389,7 @@ def image_editor(note,assets,uid_key):
                 raw=asset_url(match.group(2),assets)
                 if raw:st.image(raw,caption=match.group(1),width='stretch')
                 else:st.warning('圖片無法載入：請檢查 Storage 與 assets 權限')
-    upload=st.file_uploader('選擇或拖曳圖片',type=['png','jpg','jpeg','webp','gif'],key='upload_'+uid_key)
+    upload=st.file_uploader('一次選擇多張照片（最多 20 張）',type=['png','jpg','jpeg','webp','gif'],accept_multiple_files=True,key='upload_'+uid_key)
     pasted=paste_component(key='paste_'+uid_key,default=None)
     buffer_key='_paste_buffer_'+uid_key
     if isinstance(pasted,dict) and pasted.get('data'):
@@ -403,46 +403,30 @@ def image_editor(note,assets,uid_key):
             except Exception as exc:
                 st.error('貼上圖片無法解析：'+str(exc))
     saved_buffer=st.session_state.get(buffer_key)
-    incoming=upload.getvalue() if upload else (saved_buffer or {}).get('raw')
-    name=upload.name if upload else (saved_buffer or {}).get('name','貼上的圖片')
-    if incoming:
-        st.caption('待儲存：'+name+'（'+str(round(len(incoming)/1024))+' KB）')
-    if st.button('儲存圖片',key='save_image_'+uid_key,disabled=not bool(incoming)):
+    incoming=[(x.name,x.getvalue()) for x in upload] if upload else ([(saved_buffer.get('name','貼上的圖片'),saved_buffer['raw'])] if saved_buffer else [])
+    if incoming:st.caption(f'待儲存：{len(incoming)} 張照片（同一圖片組件）')
+    if st.button('儲存全部圖片',key='save_image_'+uid_key,disabled=not bool(incoming)):
         progress=st.progress(0,text='準備圖片資料…')
         try:
-            progress.progress(15,text='壓縮並檢查圖片…')
-            data,mime,ext=image_bytes(incoming)
-            progress.progress(35,text='上傳圖片至 Supabase Storage…')
-            path=f'{uid}/{uuid.uuid4().hex}.{ext}'
-            c.storage.from_('note-images').upload(path,data,{'content-type':mime,'upsert':'false'})
-            asset_id=None
-            try:
-                progress.progress(65,text='建立圖片資料庫紀錄…')
-                result=c.table('assets').insert({'owner_id':uid,'note_id':note['id'],'storage_path':path,'mime_type':mime}).execute().data
-                if not result:raise RuntimeError('圖片紀錄未成功建立')
-                asset_id=result[0]['id']
-                clean=str(name).replace(']','').replace('\n',' ')
-                old=note.get('content') or ''
-                new=(old+'\n' if old.strip() else '')+f'![{clean}](asset://{asset_id})'
-                progress.progress(80,text='寫入圖片引用並核對…')
-                update_note(note['id'],content=new)
-                verified=c.table('assets').select('id').eq('id',asset_id).eq('owner_id',uid).execute().data
-                if not verified:raise RuntimeError('圖片紀錄寫入後驗證失敗')
-            except Exception:
-                # Do not delete an uploaded asset when the note update fails:
-                # retaining it allows recovery rather than silently losing the image.
-                raise
-            progress.progress(90,text='驗證圖片檔案是否可讀…')
-            downloaded=c.storage.from_('note-images').download(path)
-            if not downloaded:raise RuntimeError('Storage 驗證失敗：圖片無法下載')
-            progress.progress(100,text='圖片已儲存並驗證')
+            if len(incoming)>20:raise ValueError('一次最多 20 張照片')
+            # All uploaded photos are appended to this single GRAPH note.
+            old=note.get('content') or ''
+            refs=[]
+            for idx,(name,raw) in enumerate(incoming):
+                if not raw:raise ValueError(f'第 {idx+1} 張圖片是空的')
+                aid=upload_image(raw,note['id'])
+                refs.append(f'![{str(name).replace(chr(93),"").replace(chr(10)," ")}](asset://{aid})')
+                progress.progress(int((idx+1)*85/len(incoming)),text=f'已上傳 {idx+1}/{len(incoming)}')
+            new=(old+'\n' if old.strip() else '')+'\n'.join(refs)
+            update_note(note['id'],content=new)
+            progress.progress(100,text='全部圖片已上傳並驗證引用')
             st.session_state['image_saved_'+uid_key]=True
             st.session_state.pop(buffer_key,None)
             st.session_state.pop('_asset_image_cache',None)
             st.rerun()
         except Exception as exc:
             logging.getLogger(__name__).exception('Image save failed')
-            st.error('圖片儲存失敗：'+type(exc).__name__+'：'+str(exc))
+            st.error('圖片儲存未完成：'+str(exc)+'；已上傳的附件可能需要清理。')
 
 def handwriting_dimensions(content):
     match=re.search(r'<!--\s*handwriting-size:(\d+)x(\d+)\s*-->',content)
@@ -461,7 +445,7 @@ def handwriting_creation_dialog():
     if ok:
         try:
             op=operation_progress('建立手寫稿');op(25,'檢查紙張尺寸')
-            created=create_blocks_batch('HANDWRITE',title.strip() or '新手寫稿',pending['parent'],count,content=f'<!-- handwriting-size:{m}x{n} -->')
+            created=[insert_note('HANDWRITE',title.strip() or '新手寫稿',pending['parent'],content=f'<!-- handwriting-size:{m}x{n} --><!-- handwriting-pages:{count} -->',position=len(children_index.get(pending['parent'],[])))]
             op(100,'建立完成')
             st.session_state.pop('pending_handwrite',None)
             st.session_state.selected=created[0]['id'];st.rerun()
@@ -470,27 +454,40 @@ def handwriting_creation_dialog():
 handwriting_component=components.declare_component('ainote_handwriting',path=str(Path(__file__).parent/'components'/'handwriting'))
 def handwriting_editor(note,assets):
     content=note.get('content') or ''
-    # The canvas is the sole editable view; do not render historical snapshots.
-    dims=handwriting_dimensions(note.get('content') or '')
-    match=re.search(r'!\[手寫稿\]\(asset://([0-9a-fA-F-]{36})\)',content)
-    previous_asset=match.group(1) if match else None
-    initial_image=asset_url(previous_asset,assets) if previous_asset else None
-    event=handwriting_component(key='handwrite_'+note['id'],width_px=dims[0],height_px=dims[1],image_url=initial_image,default=None,height=510)
-    if isinstance(event,dict) and event.get('action')=='save' and event.get('nonce')!=st.session_state.get('_hw_seen_'+note['id']):
-        st.session_state['_hw_seen_'+note['id']]=event['nonce']
+    dims=handwriting_dimensions(content)
+    match=re.search(r'<!--\s*handwriting-pages:(\d+)\s*-->',content)
+    count=max(1,min(20,int(match.group(1)))) if match else 1
+    page=st.selectbox('手寫稿頁面',list(range(1,count+1)),format_func=lambda n:f'第 {n} / {count} 頁',key='hw_page_'+note['id']) if count>1 else 1
+    # One HANDWRITE database component contains independent image snapshots per page.
+    refs=dict((int(n),aid) for n,aid in re.findall(r'!\[手寫稿-(\d+)\]\(asset://([0-9a-fA-F-]{36})\)',content))
+    legacy=re.search(r'!\[手寫稿\]\(asset://([0-9a-fA-F-]{36})\)',content)
+    if legacy and 1 not in refs:refs[1]=legacy.group(1)
+    aid=refs.get(page)
+    initial_image=asset_url(aid,assets) if aid else None
+    locked_key='hw_locked_'+note['id']
+    if locked_key not in st.session_state:st.session_state[locked_key]=bool(refs)
+    locked=st.checkbox('屏蔽觸控（防止誤觸；取消勾選可繼續編輯）',key=locked_key)
+    event=handwriting_component(key=f'handwrite_{note["id"]}_{page}',width_px=dims[0],height_px=dims[1],image_url=initial_image,locked=locked,default=None,height=510)
+    seen_key=f'_hw_seen_{note["id"]}_{page}'
+    if isinstance(event,dict) and event.get('action')=='save' and event.get('nonce')!=st.session_state.get(seen_key):
+        st.session_state[seen_key]=event['nonce']
         progress=operation_progress('儲存手寫稿')
         try:
             progress(10,'解析畫布')
             raw=base64.b64decode(event['data'].split(',',1)[-1],validate=True)
             progress(30,'上傳畫布至 Storage')
-            aid=upload_image(raw,note['id'])
+            new_id=upload_image(raw,note['id'])
             progress(70,'寫入手寫稿引用')
-            new=re.sub(r'!\[手寫稿\]\(asset://[0-9a-fA-F-]{36}\)', '',content).strip()
-            new=(new+'\n' if new else '')+f'![手寫稿](asset://{aid})'
+            new=re.sub(r'!\[手寫稿-'+str(page)+r'\]\(asset://[0-9a-fA-F-]{36}\)', '',content).strip()
+            if page==1:new=re.sub(r'!\[手寫稿\]\(asset://[0-9a-fA-F-]{36}\)', '',new).strip()
+            new=(new+'\n' if new else '')+f'![手寫稿-{page}](asset://{new_id})'
             update_note(note['id'],content=new)
-            progress(100,'完成並驗證');st.session_state['_hw_notice_'+note['id']]=True;st.rerun()
+            progress(100,'完成並驗證')
+            st.session_state[locked_key]=True
+            st.session_state['_hw_notice_'+note['id']]=True
+            st.rerun()
         except Exception as exc:st.error('手寫稿儲存失敗：'+str(exc))
-    if st.session_state.pop('_hw_notice_'+note['id'],False):st.success('手寫稿已儲存並驗證')
+    if st.session_state.pop('_hw_notice_'+note['id'],False):st.success('手寫稿已儲存並進入屏蔽觸控狀態')
 
 def table_editor(note,uid_key):
     original=markdown_dataframe(note.get('content') or '')
@@ -630,7 +627,7 @@ def table_creation_dialog():
         st.rerun()
 
 with st.sidebar:
-    st.title('📚 AI Note')
+    st.title('📚 AI-NOTE')
     with st.popover('☰ 功能選單',width='stretch'):
         st.caption('建立組別')
         newgroup=st.text_input('組別名稱',key='newgroup')
@@ -743,63 +740,7 @@ with st.sidebar:
                     st.rerun()
             if st.button('關閉快速定位',key='close_quick_nav'):
                 st.session_state.pop('quick_nav_root',None);st.rerun()
-    with st.expander("⚙️ 設定中心",expanded=False):
-        st.caption("帳號管理 · 資源回收區 · 本地備份")
-        st.info("瀏覽器不能自行建立 D 槽資料夾。建議先建立 D:\\AInoteManagement，再授權此資料夾；不支援時改用下載。")
-        with st.container():
-            st.markdown('#### 資源回收區')
-            recycle_limit=st.number_input('最近顯示筆數 N',min_value=1,max_value=100,value=3,step=1,key='recycle_limit')
-            recycle_search=st.text_input('搜尋回收區文件',placeholder='輸入文件名稱',key='recycle_search').strip().casefold()
-            deleted_roots=[n for n in notes if n.get('is_deleted') and (not n['parent_id'] or not byid.get(n['parent_id'],{}).get('is_deleted'))]
-            deleted_roots.sort(key=lambda n:n.get('deleted_at') or n.get('updated_at') or n.get('created_at') or '',reverse=True)
-            matched=[n for n in deleted_roots if recycle_search in n.get('title','').casefold()]
-            st.caption(f'符合條件 {len(matched)} 項；顯示最近 {min(int(recycle_limit),len(matched))} 項')
-            for n in matched[:int(recycle_limit)]:
-                cc=st.columns([3,1]);cc[0].caption(n['title'])
-                if cc[1].button('還原',key='restore_'+n['id']):
-                    try:restore_note(n['id']);st.rerun()
-                    except Exception as exc:st.error('還原失敗：'+str(exc))
-        with st.container():
-            st.markdown('#### 預設儲存路徑')
-            st.caption('在支援的瀏覽器選擇本機資料夾，之後優先寫入該資料夾。瀏覽器可能要求重新授權；手機或不支援的瀏覽器改用下載。')
-            local_component(mode='settings',key='local_save_settings_v1',default=None)
-        with st.container():
-            st.markdown('#### 帳號註銷')
-            st.warning('此操作不可復原：永久刪除帳號、筆記、資料夾、圖片與附件。請先下載 .ainote 備份。')
-            st.caption('為安全起見，需要再次輸入密碼並透過已部署的 Supabase Edge Function 執行。')
-            with st.form('delete_account_form'):
-                confirm_text=st.text_input('輸入「永久刪除帳號」',key='delete_account_confirm')
-                confirm_password=st.text_input('再次輸入登入密碼',type='password',key='delete_account_password')
-                confirm_check=st.checkbox('我了解此操作不可復原',key='delete_account_ack')
-                delete_submit=st.form_submit_button('永久註銷帳號',type='primary')
-            if delete_submit:
-                if confirm_text!='永久刪除帳號' or not confirm_password or not confirm_check:
-                    st.error('請完成所有確認欄位。')
-                else:
-                    import requests
-                    try:
-                        response=requests.post(
-                            url.rstrip('/')+'/functions/v1/delete-account',
-                            headers={'Authorization':'Bearer '+st.session_state['access_token'],
-                                     'apikey':key,'Content-Type':'application/json'},
-                            json={'password':confirm_password},timeout=45)
-                        if response.ok:
-                            for session_key in ['user_id','access_token','refresh_token','selected']:
-                                st.session_state.pop(session_key,None)
-                            remember_action('clear')
-                            st.session_state.skip_auto_login=True
-                            st.success('帳號已永久註銷，請重新整理頁面。')
-                            st.stop()
-                        else:
-                            logging.getLogger(__name__).warning('Account deletion failed: HTTP %s',response.status_code)
-                            try:
-                                error_code=response.json().get('error','delete_failed')
-                            except Exception:
-                                error_code='delete_failed'
-                            st.error('註銷未完成：'+str(error_code)+'。請檢查 Edge Function Logs。')
-                    except requests.RequestException:
-                        logging.getLogger(__name__).exception('Account deletion request failed')
-                        st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
+    page_choice=st.radio('頁面', ['📝 筆記工作區','⚙️ 設定'],key='main_page',horizontal=True)
     st.divider()
     if st.button('登出',width='stretch'):
         for k in ['user_id','access_token','refresh_token','selected','remember_enabled']:st.session_state.pop(k,None)
@@ -807,7 +748,90 @@ with st.sidebar:
         remember_action('clear')
         st.rerun()
 
-DEMO_GUIDE = """# AInoteManagement 使用說明書
+if st.session_state.get('main_page')=='⚙️ 設定':
+    st.title('⚙️ 設定')
+    st.caption("帳號管理 · 資源回收區 · 本地備份")
+    st.info("瀏覽器不能自行建立 D 槽資料夾。建議先建立 D:\\AInoteManagement，再授權此資料夾；不支援時改用下載。")
+    with st.container():
+        st.markdown('#### 資源回收區')
+        recycle_limit=st.number_input('最近顯示筆數 N',min_value=1,max_value=100,value=3,step=1,key='recycle_limit')
+        recycle_search=st.text_input('搜尋回收區文件',placeholder='輸入文件名稱',key='recycle_search').strip().casefold()
+        deleted_roots=[n for n in notes if n.get('is_deleted') and (not n['parent_id'] or not byid.get(n['parent_id'],{}).get('is_deleted'))]
+        deleted_roots.sort(key=lambda n:n.get('deleted_at') or n.get('updated_at') or n.get('created_at') or '',reverse=True)
+        matched=[n for n in deleted_roots if recycle_search in n.get('title','').casefold()]
+        st.caption(f'符合條件 {len(matched)} 項；顯示最近 {min(int(recycle_limit),len(matched))} 項')
+        for n in matched[:int(recycle_limit)]:
+            cc=st.columns([3,1]);cc[0].caption(n['title'])
+            if cc[1].button('還原',key='restore_'+n['id']):
+                try:restore_note(n['id']);st.rerun()
+                except Exception as exc:st.error('還原失敗：'+str(exc))
+    with st.container():
+        st.markdown('#### 預設儲存路徑')
+        st.caption('在支援的瀏覽器選擇本機資料夾，之後優先寫入該資料夾。瀏覽器可能要求重新授權；手機或不支援的瀏覽器改用下載。')
+        local_component(mode='settings',key='local_save_settings_v1',default=None)
+    with st.container():
+        st.markdown('#### 帳號註銷')
+        st.warning('此操作不可復原：永久刪除帳號、筆記、資料夾、圖片與附件。請先下載 .ainote 備份。')
+        st.caption('為安全起見，需要再次輸入密碼並透過已部署的 Supabase Edge Function 執行。')
+        with st.form('delete_account_form'):
+            confirm_text=st.text_input('輸入「永久刪除帳號」',key='delete_account_confirm')
+            confirm_password=st.text_input('再次輸入登入密碼',type='password',key='delete_account_password')
+            confirm_check=st.checkbox('我了解此操作不可復原',key='delete_account_ack')
+            delete_submit=st.form_submit_button('永久註銷帳號',type='primary')
+        if delete_submit:
+            if confirm_text!='永久刪除帳號' or not confirm_password or not confirm_check:
+                st.error('請完成所有確認欄位。')
+            else:
+                import requests
+                try:
+                    response=requests.post(
+                        url.rstrip('/')+'/functions/v1/delete-account',
+                        headers={'Authorization':'Bearer '+st.session_state['access_token'],
+                                 'apikey':key,'Content-Type':'application/json'},
+                        json={'password':confirm_password},timeout=45)
+                    if response.ok:
+                        for session_key in ['user_id','access_token','refresh_token','selected']:
+                            st.session_state.pop(session_key,None)
+                        remember_action('clear')
+                        st.session_state.skip_auto_login=True
+                        st.success('帳號已永久註銷，請重新整理頁面。')
+                        st.stop()
+                    else:
+                        logging.getLogger(__name__).warning('Account deletion failed: HTTP %s',response.status_code)
+                        try:
+                            error_code=response.json().get('error','delete_failed')
+                        except Exception:
+                            error_code='delete_failed'
+                        st.error('註銷未完成：'+str(error_code)+'。請檢查 Edge Function Logs。')
+                except requests.RequestException:
+                    logging.getLogger(__name__).exception('Account deletion request failed')
+                    st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
+    st.stop()
+
+DEMO_GUIDE = """# AI-NOTE 使用說明書
+
+## AINOTE網頁格式：AI提示詞
+
+將下列提示詞交給 AI，要求產生 **可由 AI-NOTE 匯入的 `.ainote` ZIP 檔**。**不要只產生 Markdown 或將 ZIP 副檔名改為 `.ainote`**；須符合網站匯入器實際接受的結構。
+
+> 你是 AI-NOTE 筆記封裝助手。請根據我提供的主題建立繁體中文教學筆記，使用「#」僅作章節標題、「##」作小節標題，重要概念使用 **粗體**。內容需含清楚的定義、案例、Markdown 表格與可合法使用的示意圖片（圖片須實際放入 ZIP，不可只有無法取得的外部連結）。文件以 GROUP 為根節點、SUBFILE 為子文件，MARKDOWN、TABLE、GRAPH、HANDWRITE 為內容區塊。請先檢查本專案匯入／匯出 `.ainote` 的程式規格或使用我提供的範例 `.ainote`，依相同 schema、ID 關聯、媒體路徑及 manifest 格式產生真正 ZIP。不可臆造 schema；缺少範例或規格時先向我索取。輸出可直接匯入的檔案，並列出目錄與圖片、表格清單。
+
+**文件排版範例：**
+
+# 第一章｜網路安全
+
+## 1.1 防火牆
+
+**防火牆（Firewall）**：依安全規則過濾網路流量。
+
+| 設備 | 用途 |
+|---|---|
+| Firewall | 封包過濾 |
+| WAF | HTTP 應用層防護 |
+
+圖片示例：在 ZIP 內附 `network-diagram.png`，並以匯入器支援的資產引用方式連結，不要使用未打包的本地絕對路徑。
+
+# AInoteManagement 使用說明書
 
 ## 一、文件結構
 
@@ -818,7 +842,7 @@ DEMO_GUIDE = """# AInoteManagement 使用說明書
 - **TABLE（表格）**：可選取儲存格並套用公式。
 - **HANDWRITE（手寫稿）**：畫布式手寫筆記，可設定寬高。
 
-例如：`我的第一份筆記（GROUP） → 課堂筆記（SUBFILE） → 文字 / 圖片 / 表格 / 手寫稿`。左側 Explorer 可建立、選取、重新命名、移動或刪除節點。圖片與手寫稿支援一次建立 1–20 份空白區塊；每份獨立編輯、儲存。
+例如：`我的第一份筆記（GROUP） → 課堂筆記（SUBFILE） → 文字 / 圖片 / 表格 / 手寫稿`。左側 Explorer 可建立、選取、重新命名、移動或刪除節點。圖片組件可一次上傳最多 20 張照片；手寫稿組件可包含 1–20 頁。
 
 ## 二、表格運算式語法
 
@@ -836,6 +860,7 @@ DEMO_GUIDE = """# AInoteManagement 使用說明書
 | 遞迴終止 | `f(row-1,column).stop(row<0)` |
 | 指定終止值 | `f(row-1,column).stop(row<=1,row)` |
 | 矩陣範圍引用 | `A[0,0][2,2]` |
+| 矩陣加法 | `A[0,0][1,1]+A[2,0][3,1]` |
 | 舊版相容格式 | `f(row,column)=(row*2+column)<3>` |
 
 `choose(條件,成立時,否則時)` 只計算選中的分支；`f(列,欄)` 呼叫同一公式在其他座標的值。矩陣 `*` 依矩陣乘法規則運算。**目前不保證支援 `sum(A[...][...])` 聚合命令**；需要求和時可使用上述數列公式。計算失敗會中止，不應套用部分結果。
@@ -853,7 +878,7 @@ DEMO_GUIDE = """# AInoteManagement 使用說明書
 """
 
 if not selected:
-    st.title('歡迎使用 AInoteManagement')
+    st.title('歡迎使用 AI-NOTE')
     st.info('目前沒有組別。')
     if st.button('＋ 新建組別文件',type='primary'):
         try:
@@ -1111,15 +1136,13 @@ else:
     t1,t2,t3,t4=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown','✍️ 手寫稿'])
     with t1:
         photo_title=st.text_input('圖片名稱',value='新圖片',key='graph_title_'+workspace_id)
-        photo_count=st.number_input('建立圖片份數（1–20）',min_value=1,max_value=20,value=1,step=1,key='graph_count_'+workspace_id)
-        if st.button('新增圖片區塊',key='new_graph_'+workspace_id):
+        st.caption('每次建立一個圖片組件；組件內可一次上傳 1–20 張照片。')
+        if st.button('新增圖片組件',key='new_graph_'+workspace_id):
             try:
-                created=create_blocks_batch('GRAPH',photo_title.strip() or '新圖片',workspace_id,photo_count)
-                st.session_state.selected=created[0]['id']
+                created=insert_note('GRAPH',photo_title.strip() or '新圖片',workspace_id,position=len(workspace_blocks))
+                st.session_state.selected=created['id']
                 st.rerun()
-            except Exception as exc:
-                logging.getLogger(__name__).exception('Create image blocks failed')
-                st.error('新增失敗：'+str(exc))
+            except Exception as exc:st.error('新增失敗：'+str(exc))
     with t2:
         if st.button('＋ 建立表格',key='open_table_modal_'+workspace_id):
             st.session_state.pending_table={'title':'新表格','parent':workspace_id}
@@ -1140,7 +1163,7 @@ else:
             st.session_state.pending_handwrite={'title':'新手寫稿','parent':workspace_id}
             st.rerun()
 st.divider()
-st.caption('AInoteManagement v3.1 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('AI-NOTE v3.2 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
 
 if st.session_state.get("pending_table"):
     table_creation_dialog()
