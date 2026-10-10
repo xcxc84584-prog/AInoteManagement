@@ -420,11 +420,35 @@ def image_editor(note,assets,uid_key):
             logging.getLogger(__name__).exception('Image save failed')
             st.error('圖片儲存失敗：'+type(exc).__name__+'：'+str(exc))
 
+def handwriting_dimensions(content):
+    match=re.search(r'<!--\s*handwriting-size:(\d+)x(\d+)\s*-->',content)
+    return (int(match.group(1)),int(match.group(2))) if match else (1200,680)
+
+@st.dialog('建立手寫稿 · 紙張大小')
+def handwriting_creation_dialog():
+    pending=st.session_state.get('pending_handwrite')
+    if not pending:return
+    with st.form('handwriting_dimensions_form'):
+        title=st.text_input('手寫稿名稱',value=pending['title'])
+        m=st.number_input('紙張寬度 m（像素）',min_value=200,max_value=6000,value=1200,step=100)
+        n=st.number_input('紙張高度 n（像素）',min_value=200,max_value=6000,value=680,step=100)
+        ok=st.form_submit_button('建立手寫稿',type='primary')
+    if ok:
+        try:
+            op=operation_progress('建立手寫稿');op(25,'檢查紙張尺寸')
+            created=insert_note('HANDWRITE',title.strip() or '新手寫稿',pending['parent'],
+                content=f'<!-- handwriting-size:{m}x{n} -->',position=len(workspace_blocks))
+            op(100,'建立完成')
+            st.session_state.pop('pending_handwrite',None)
+            st.session_state.selected=created['id'];st.rerun()
+        except Exception as exc:st.error('建立失敗：'+str(exc))
+
 handwriting_component=components.declare_component('ainote_handwriting',path=str(Path(__file__).parent/'components'/'handwriting'))
 def handwriting_editor(note,assets):
     content=note.get('content') or ''
     if content.strip():show_markdown(content,assets)
-    event=handwriting_component(key='handwrite_'+note['id'],default=None,height=510)
+    dims=handwriting_dimensions(note.get('content') or '')
+    event=handwriting_component(key='handwrite_'+note['id'],width_px=dims[0],height_px=dims[1],default=None,height=510)
     if isinstance(event,dict) and event.get('action')=='save' and event.get('nonce')!=st.session_state.get('_hw_seen_'+note['id']):
         st.session_state['_hw_seen_'+note['id']]=event['nonce']
         progress=operation_progress('儲存手寫稿')
@@ -616,8 +640,6 @@ with st.sidebar:
             if op_progress:op_progress(15,'正在處理 '+str(action))
             if action=='select' and nid in byid:
                 st.session_state.selected=nid
-                tabs=st.session_state.setdefault('open_tabs',[])
-                if nid not in tabs:tabs.append(nid)
             elif action=='quick_nav' and nid in byid:
                 st.session_state.quick_nav_root=nid
                 st.session_state.selected=nid
@@ -628,6 +650,10 @@ with st.sidebar:
                 kind=event.get('kind');title=str(event.get('title','')).strip()
                 parent=target if target in byid and byid[target]['kind'] in CONTAINERS else None
                 if kind=='GROUP':parent=None
+                if kind=='HANDWRITE' and parent and title:
+                    st.session_state.pending_handwrite={'title':title,'parent':parent}
+                    st.session_state.selected=parent
+                    st.rerun()
                 if kind=='TABLE' and parent and title:
                     st.session_state.pending_table={'title':title,'parent':parent}
                     st.session_state.selected=parent
@@ -694,14 +720,17 @@ with st.sidebar:
         st.info("瀏覽器不能自行建立 D 槽資料夾。建議先建立 D:\\AInoteManagement，再授權此資料夾；不支援時改用下載。")
         with st.container():
             st.markdown('#### 資源回收區')
+            recycle_limit=st.number_input('最近顯示筆數 N',min_value=1,max_value=100,value=3,step=1,key='recycle_limit')
+            recycle_search=st.text_input('搜尋回收區文件',placeholder='輸入文件名稱',key='recycle_search').strip().casefold()
             deleted_roots=[n for n in notes if n.get('is_deleted') and (not n['parent_id'] or not byid.get(n['parent_id'],{}).get('is_deleted'))]
-            for n in deleted_roots:
+            deleted_roots.sort(key=lambda n:n.get('deleted_at') or n.get('updated_at') or n.get('created_at') or '',reverse=True)
+            matched=[n for n in deleted_roots if recycle_search in n.get('title','').casefold()]
+            st.caption(f'符合條件 {len(matched)} 項；顯示最近 {min(int(recycle_limit),len(matched))} 項')
+            for n in matched[:int(recycle_limit)]:
                 cc=st.columns([3,1]);cc[0].caption(n['title'])
                 if cc[1].button('還原',key='restore_'+n['id']):
                     try:restore_note(n['id']);st.rerun()
-                    except Exception as exc:
-                        logging.getLogger(__name__).exception('Restore failed')
-                        st.error('還原失敗：'+type(exc).__name__)
+                    except Exception as exc:st.error('還原失敗：'+str(exc))
         with st.container():
             st.markdown('#### 預設儲存路徑')
             st.caption('在支援的瀏覽器選擇本機資料夾，之後優先寫入該資料夾。瀏覽器可能要求重新授權；手機或不支援的瀏覽器改用下載。')
@@ -727,7 +756,7 @@ with st.sidebar:
                                      'apikey':key,'Content-Type':'application/json'},
                             json={'password':confirm_password},timeout=45)
                         if response.ok:
-                            for session_key in ['user_id','access_token','refresh_token','selected','open_tabs']:
+                            for session_key in ['user_id','access_token','refresh_token','selected']:
                                 st.session_state.pop(session_key,None)
                             remember_action('clear')
                             st.session_state.skip_auto_login=True
@@ -783,19 +812,38 @@ if needs_assets:
     except Exception:
         logging.getLogger(__name__).exception('Asset list failed')
 
-tabs_open=st.session_state.setdefault('open_tabs',[])
-if selected and selected['id'] not in tabs_open:tabs_open.append(selected['id'])
-if tabs_open:
-    st.caption('開啟的文件')
-    tabcols=st.columns(min(len(tabs_open),5))
-    for i,tid in enumerate(list(tabs_open)[-5:]):
-        if tid not in byid:continue
-        with tabcols[i]:
-            if st.button('× '+byid[tid]['title'][:15],key='close_tab_'+tid,help='關閉文件（不刪除）'):
-                tabs_open.remove(tid)
-                if st.session_state.get('selected')==tid:
-                    st.session_state.selected=tabs_open[-1] if tabs_open else (roots[0]['id'] if roots else None)
-                st.rerun()
+# 文件關閉不使用頂部標籤列；關閉是先完整本地備份，再移入回收區。
+if selected:
+    st.caption('關閉文件會先在授權資料夾建立本地備份，再從網站工作臺移入回收區。')
+    try:
+        close_drafts={}
+        for draft_note in active_notes:
+            dk='block_content_'+draft_note['id']
+            if dk in st.session_state:close_drafts[draft_note['id']]=st.session_state[dk]
+        close_bytes=export_group(group,active_notes,close_drafts)
+        close_b64=base64.b64encode(close_bytes).decode('ascii')
+        close_err=None
+    except Exception as exc:
+        close_b64='';close_err=str(exc)
+    close_event=local_component(mode='close',data=close_b64,
+        filename='AInote_Close_'+re.sub(r'[^\w\-]+','_',group['title'])+'_'+datetime.now().strftime('%Y%m%d_%H%M%S')+'.ainote',
+        disabled=bool(close_err),key='close_local_'+workspace_id,default=None)
+    if close_err:st.error('無法準備關閉備份：'+close_err)
+    if isinstance(close_event,dict) and close_event.get('token')!=st.session_state.get('close_last_token_'+workspace_id):
+        st.session_state['close_last_token_'+workspace_id]=close_event.get('token')
+        if close_event.get('action')=='saved':
+            if close_event.get('method')!='folder':
+                st.error('關閉需要確認本地檔案已寫入。請先在設定中心授權本地資料夾。')
+            else:
+                try:
+                    op=operation_progress('關閉文件');op(35,'本地備份完成')
+                    delete_note(selected['id'])
+                    op(90,'已移入回收區，重新載入工作臺')
+                    st.session_state.selected=None
+                    st.session_state.pop('open_tabs',None)
+                    op(100,'關閉完成');st.rerun()
+                except Exception as exc:st.error('關閉失敗：'+str(exc))
+        elif close_event.get('action')=='error':st.error('本地備份失敗：'+close_event.get('message','未知錯誤'))
 mode=st.radio('工作模式',['瀏覽模式','編輯模式'],horizontal=True,key='workspace_mode')
 report_key='save_report_'+workspace_id
 report=st.session_state.get(report_key)
@@ -993,13 +1041,13 @@ else:
                 st.error('新增失敗：'+type(exc).__name__)
     with t4:
         if st.button('＋ 建立手寫稿',key='new_handwrite_'+workspace_id):
-            try:
-                op=operation_progress('建立手寫稿');op(35,'新增文件')
-                created=insert_note('HANDWRITE','新手寫稿',workspace_id,position=len(workspace_blocks))
-                op(100,'完成');st.session_state.selected=created['id'];st.rerun()
-            except Exception as exc:st.error('建立手寫稿失敗：'+str(exc))
+            st.session_state.pending_handwrite={'title':'新手寫稿','parent':workspace_id}
+            st.rerun()
 st.divider()
 st.caption('AInoteManagement v2.5 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
 
 if st.session_state.get("pending_table"):
     table_creation_dialog()
+
+if st.session_state.get('pending_handwrite'):
+    handwriting_creation_dialog()
