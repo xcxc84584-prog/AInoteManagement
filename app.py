@@ -532,7 +532,7 @@ def export_group(root,notes,overrides=None):
                 except Exception:pass
     return mem.getvalue()
 
-def import_group(raw):
+def import_group(raw, parent=None):
     if len(raw)>50*1024*1024:raise ValueError('封裝檔案太大')
     with zipfile.ZipFile(io.BytesIO(raw)) as z:
         infos=z.infolist()
@@ -554,7 +554,7 @@ def import_group(raw):
                 if oid!=rootid and p not in mapping:continue
                 if n.get('kind') not in KINDS:raise ValueError('文件類型無效')
                 if oid==rootid and p is not None:raise ValueError('根節點錯誤')
-                created=insert_note(n['kind'],str(n.get('title','未命名'))[:200],mapping.get(p),str(n.get('content',''))[:500000],bool(n.get('has_page')),int(n.get('position',0)))
+                created=insert_note('SUBFILE' if oid==rootid and parent else n['kind'],str(n.get('title','未命名'))[:200],parent if oid==rootid and parent else mapping.get(p),str(n.get('content',''))[:500000],bool(n.get('has_page')) or bool(oid==rootid and parent),int(n.get('position',0)))
                 mapping[oid]=created['id'];del remaining[oid];progress=True
             if not progress:raise ValueError('樹狀結構存在循環或遺失父節點')
         # Rehydrate referenced images and remap asset IDs.
@@ -564,7 +564,9 @@ def import_group(raw):
             oldasset=Path(filename).stem
             if not re.fullmatch(r'[0-9a-fA-F-]{36}',oldasset):continue
             image=z.read(filename)
-            try:remap[oldasset]=upload_image(image,mapping[rootid])
+            try:
+                linked=next((mapping[oid] for oid,n in old.items() if 'asset://'+oldasset in str(n.get('content',''))),mapping[rootid])
+                remap[oldasset]=upload_image(image,linked)
             except Exception:continue
         for oid,n in old.items():
             content=str(n.get('content',''))
@@ -689,12 +691,24 @@ with st.sidebar:
                 if kind in KINDS and title and (kind=='GROUP' or parent):
                     new=insert_note(kind,title,parent,has_page=kind=='SUBFILE',position=len([x for x in active_notes if x['parent_id']==parent]))
                     st.session_state.selected=new['id']
-            elif action in ('move','paste') and nid in byid:
-                source=byid[nid];dest=target if target in byid and byid[target]['kind'] in CONTAINERS else None
-                if dest and source['kind']!='GROUP' and dest not in subtree(nid,notes) and get_ancestors(dest,byid)[-1]==get_ancestors(nid,byid)[-1]:
-                    if action=='move' or event.get('cut'):
+            elif action in ('move','paste','copy'):
+                if nid not in byid:raise ValueError('來源文件不存在或已被刪除')
+                source=byid[nid]
+                dest=target if target in byid and byid[target]['kind'] in CONTAINERS else None
+                if not dest:raise ValueError('請選擇目標組別或子文件')
+                if source['kind']=='GROUP':raise ValueError('不允許移動或複製根組別')
+                if action=='move' or (action=='paste' and event.get('cut')):
+                    if dest in subtree(nid,notes):raise ValueError('不能移入自己或自己的子節點')
+                    if get_ancestors(dest,byid)[-1]!=get_ancestors(nid,byid)[-1]:raise ValueError('移動僅限同一組別；跨組別請使用複製')
+                    if source['parent_id']!=dest:
                         update_note(nid,parent_id=dest,position=len([x for x in active_notes if x['parent_id']==dest]))
-                    else:clone_note(nid,dest)
+                    st.session_state.selected=nid
+                else:
+                    copied_id=clone_note(nid,dest)
+                    st.session_state.selected=copied_id
+            elif action=='import_child':
+                if target not in byid or byid[target]['kind'] not in CONTAINERS:raise ValueError('請選擇組別或子文件')
+                st.session_state.import_child_target=target
             elif action=='delete' and nid in byid:delete_note(nid)
             elif action=='restore' and nid in byid:restore_note(nid)
             elif action=='reorder' and nid in byid and target in byid:
@@ -712,6 +726,46 @@ with st.sidebar:
             st.error(f'檔案操作失敗：{type(exc).__name__}。請至 Manage app → Logs 查看詳情。')
 
             st.rerun()
+    if st.session_state.get('import_child_target'):
+        import_target=st.session_state.import_child_target
+        if import_target not in byid or byid[import_target]['kind'] not in CONTAINERS:
+            st.session_state.pop('import_child_target',None)
+        else:
+            st.markdown('**導入本地文件做為子文件**')
+            st.caption('目標：'+byid[import_target]['title']+'｜支援 .md、.txt、.ainote 與符合格式的 .zip')
+            local_files=st.file_uploader('選擇本地文件（可多選）',type=['md','markdown','txt','ainote','zip'],accept_multiple_files=True,key='import_child_files')
+            a,b=st.columns(2)
+            with a:
+                if st.button('確認導入',key='confirm_import_child',width='stretch'):
+                    if not local_files:st.warning('請先選擇文件')
+                    else:
+                        try:
+                            if len(local_files)>20:raise ValueError('每次最多導入 20 份文件')
+                            op=operation_progress('導入子文件')
+                            created=[]
+                            for i,file in enumerate(local_files):
+                                data=file.getvalue()
+                                if len(data)>50*1024*1024:raise ValueError(file.name+' 超過大小限制')
+                                ext=Path(file.name).suffix.lower()
+                                if ext in ('.ainote','.zip'):
+                                    new_id=import_group(data,parent=import_target)
+                                else:
+                                    try:content=data.decode('utf-8-sig')
+                                    except UnicodeDecodeError:raise ValueError(file.name+' 不是 UTF-8 文字檔')
+                                    if len(content)>500000:raise ValueError(file.name+' 內容過長')
+                                    new_id=insert_note('SUBFILE',Path(file.name).stem,import_target,has_page=True)['id']
+                                    insert_note('MARKDOWN',Path(file.name).name,new_id,content=content)
+                                created.append(new_id)
+                                op(int(100*(i+1)/len(local_files)),f'已導入 {i+1}/{len(local_files)}')
+                            st.session_state.selected=created[-1]
+                            st.session_state.pop('import_child_target',None)
+                            st.session_state['operation_notice']=f'成功導入 {len(created)} 份子文件'
+                            st.rerun()
+                        except Exception as exc:st.error('導入失敗：'+str(exc)+'。先前成功導入的文件仍保留，請檢查 Explorer。')
+            with b:
+                if st.button('取消導入',key='cancel_import_child',width='stretch'):
+                    st.session_state.pop('import_child_target',None)
+                    st.rerun()
     if st.session_state.get('creation_notice'):
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
@@ -811,13 +865,45 @@ if st.session_state.get('main_page')=='⚙️ 設定':
                     st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
     st.stop()
 
-DEMO_GUIDE = """# AI-NOTE 使用說明書
+DEMO_GUIDE = """# BV-Text 使用說明書
 
-## AINOTE網頁格式：AI提示詞
+## AINOTE網頁格式：AI提示詞（請整段複製給 AI）
 
-將下列提示詞交給 AI，要求產生 **可由 AI-NOTE 匯入的 `.ainote` ZIP 檔**。**不要只產生 Markdown 或將 ZIP 副檔名改為 `.ainote`**；須符合網站匯入器實際接受的結構。
+> 你是 BV-Text / AI-NOTE 文件封裝助手。請根據我指定的主題製作繁體中文教學文件，**輸出真正的 ZIP 壓縮檔（可命名 `.zip` 或 `.ainote`）**，不能只將 Markdown 改副檔名。**排版規則：只有 `#` 用於章節標題、`##` 用於小節標題；內文不要使用 `###` 或更大標題，重點只用 `**粗體**`。**每節包含定義、例子、Markdown 表格、適當示意圖片及說明。所有圖片都要實際放入 ZIP，不能只給外部網址。
+>
+> **封裝規格（v1）**：ZIP 根目錄必須有 `manifest.json`、`structure.json`；可以有 `documents/<note-id>.md` 與 `assets/<asset-id>.<副檔名>`。`manifest.json` 是 JSON 物件，包含 `format: "ainote"`、`version: 1`、`root_id: <GROUP UUID>`、`name: <組別名稱>`。`structure.json` 是節點 JSON 陣列；每個節點要有唯一 `id`（UUID 字串）、`parent_id`（根節點為 null）、`kind`、`title`、`content`、`position`、`has_page`。根節點必須為 `GROUP`，其餘節點的 `parent_id` 必須指向存在的父節點。`GROUP` 只能作為根節點，`SUBFILE` 為資料夾／子文件，`MARKDOWN`、`TABLE`、`GRAPH`、`HANDWRITE` 為內容區塊。請將文字與 Markdown 表格放入 `MARKDOWN` 或 `TABLE` 的 `content`，並同步寫入 `documents/<id>.md`。圖片應放在 `assets/<圖片UUID>.png` 等路徑，節點內容以 `![圖片說明](asset://<圖片UUID>)` 引用。每個圖片 UUID 必須和 ZIP 內檔名相同；所有引用必須存在。
+>
+> **資料一致性**：請勿依賴外部圖片連結、絕對路徑或不存在的媒體。檢查 ZIP 可解壓、manifest 正確、所有 ID 唯一、父子關係無循環、圖片檔案實際存在。輸出前最好使用我提供的現有 `.ainote` 範例做匯入相容性測試。請提供下載 ZIP，並列出章節目錄、表格清單、圖片清單。若無法建立或驗證 ZIP，請明確說明，不要宣稱可直接匯入。
 
-> 你是 AI-NOTE 筆記封裝助手。請根據我提供的主題建立繁體中文教學筆記，使用「#」僅作章節標題、「##」作小節標題，重要概念使用 **粗體**。內容需含清楚的定義、案例、Markdown 表格與可合法使用的示意圖片（圖片須實際放入 ZIP，不可只有無法取得的外部連結）。文件以 GROUP 為根節點、SUBFILE 為子文件，MARKDOWN、TABLE、GRAPH、HANDWRITE 為內容區塊。請先檢查本專案匯入／匯出 `.ainote` 的程式規格或使用我提供的範例 `.ainote`，依相同 schema、ID 關聯、媒體路徑及 manifest 格式產生真正 ZIP。不可臆造 schema；缺少範例或規格時先向我索取。輸出可直接匯入的檔案，並列出目錄與圖片、表格清單。
+**最小目錄示意：**
+
+```text
+lesson.ainote  （實際是 ZIP）
+├── manifest.json
+├── structure.json
+├── documents/
+│   └── <note-uuid>.md
+└── assets/
+    └── <image-uuid>.png
+```
+
+**manifest.json 範例：**
+
+```json
+{"format":"ainote","version":1,"root_id":"11111111-1111-4111-8111-111111111111","name":"網路安全"}
+```
+
+**structure.json 範例（精簡示意，UUID 請自行產生）：**
+
+```json
+[
+  {"id":"11111111-1111-4111-8111-111111111111","parent_id":null,"kind":"GROUP","title":"網路安全","content":"","position":0,"has_page":false},
+  {"id":"22222222-2222-4222-8222-222222222222","parent_id":"11111111-1111-4111-8111-111111111111","kind":"SUBFILE","title":"第一章","content":"","position":0,"has_page":true},
+  {"id":"33333333-3333-4333-8333-333333333333","parent_id":"22222222-2222-4222-8222-222222222222","kind":"MARKDOWN","title":"防火牆","content":"# 第一章｜網路安全\n## 1.1 防火牆\n**防火牆**用於過濾封包。","position":0,"has_page":false}
+]
+```
+
+**匯入注意事項：** `.ainote` 與 `.zip` 使用相同的 ZIP 封裝，但不是任意 ZIP 都能匯入。匯入器要求 `format=ainote`、`version=1`、有效的 `GROUP` 根節點及可追蹤的父子關係。`documents/` 是方便檢視的 Markdown 副本，**匯入時以 `structure.json` 內的 `content` 為準**；`assets/` 依 `asset://UUID` 重新上傳到私有 Storage。若圖片上傳失敗，原始封裝可能只部分匯入，請先用測試組別驗證。
 
 **文件排版範例：**
 
