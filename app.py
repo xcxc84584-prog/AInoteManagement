@@ -136,6 +136,31 @@ def insert_note(kind,title,parent=None,content='',has_page=False,position=0):
     if not result:raise RuntimeError('建立失敗：資料庫未回傳新文件')
     return result[0]
 
+def create_blocks_batch(kind, title, parent, count, content=''):
+    """Create 1–20 independent blocks; roll back created rows if any insert fails."""
+    count=int(count)
+    if kind not in ('GRAPH','HANDWRITE') or not 1 <= count <= 20:
+        raise ValueError('僅支援一次建立 1–20 份圖片或手寫稿')
+    existing=c.table('notes').select('position').eq('owner_id',uid).eq('parent_id',parent).eq('is_deleted',False).execute().data or []
+    next_position=max((int(x.get('position') or 0) for x in existing),default=-1)+1
+    progress=operation_progress('批次建立'+('手寫稿' if kind=='HANDWRITE' else '圖片'))
+    created=[]
+    try:
+        for i in range(count):
+            name=title if count==1 else f'{title} {i+1:02d}'
+            created.append(insert_note(kind,name,parent,content=content,position=next_position+i))
+            progress(int((i+1)*95/count),f'已建立 {i+1}/{count}')
+        progress(100,'全部建立完成')
+        return created
+    except Exception as exc:
+        if created:
+            ids=[x['id'] for x in created]
+            try:
+                c.table('notes').delete().eq('owner_id',uid).in_('id',ids).execute()
+            except Exception as rollback_exc:
+                raise RuntimeError(f'批次建立失敗，且清理部分資料失敗（{len(ids)} 份）；請檢查 Explorer：{rollback_exc}') from exc
+        raise
+
 def update_note(nid,**values):
     values['updated_at']=datetime.now(timezone.utc).isoformat()
     result=c.table('notes').update(values).eq('id',nid).eq('owner_id',uid).select('id').execute()
@@ -431,15 +456,15 @@ def handwriting_creation_dialog():
         title=st.text_input('手寫稿名稱',value=pending['title'])
         m=st.number_input('紙張寬度 m（像素）',min_value=200,max_value=6000,value=1200,step=100)
         n=st.number_input('紙張高度 n（像素）',min_value=200,max_value=6000,value=680,step=100)
+        count=st.number_input('建立份數（1–20）',min_value=1,max_value=20,value=1,step=1,key='handwrite_batch_count')
         ok=st.form_submit_button('建立手寫稿',type='primary')
     if ok:
         try:
             op=operation_progress('建立手寫稿');op(25,'檢查紙張尺寸')
-            created=insert_note('HANDWRITE',title.strip() or '新手寫稿',pending['parent'],
-                content=f'<!-- handwriting-size:{m}x{n} -->',position=len(workspace_blocks))
+            created=create_blocks_batch('HANDWRITE',title.strip() or '新手寫稿',pending['parent'],count,content=f'<!-- handwriting-size:{m}x{n} -->')
             op(100,'建立完成')
             st.session_state.pop('pending_handwrite',None)
-            st.session_state.selected=created['id'];st.rerun()
+            st.session_state.selected=created[0]['id'];st.rerun()
         except Exception as exc:st.error('建立失敗：'+str(exc))
 
 handwriting_component=components.declare_component('ainote_handwriting',path=str(Path(__file__).parent/'components'/'handwriting'))
@@ -782,6 +807,51 @@ with st.sidebar:
         remember_action('clear')
         st.rerun()
 
+DEMO_GUIDE = """# AInoteManagement 使用說明書
+
+## 一、文件結構
+
+- **GROUP（組別）**：最上層筆記集合，可匯出為 `.ainote`。
+- **SUBFILE（子文件）**：組別內的子層級，能容納多個內容區塊。
+- **MARKDOWN（文字）**：支援 Markdown 筆記。
+- **GRAPH（圖片）**：獨立圖片區塊，可上傳照片。
+- **TABLE（表格）**：可選取儲存格並套用公式。
+- **HANDWRITE（手寫稿）**：畫布式手寫筆記，可設定寬高。
+
+例如：`我的第一份筆記（GROUP） → 課堂筆記（SUBFILE） → 文字 / 圖片 / 表格 / 手寫稿`。左側 Explorer 可建立、選取、重新命名、移動或刪除節點。圖片與手寫稿支援一次建立 1–20 份空白區塊；每份獨立編輯、儲存。
+
+## 二、表格運算式語法
+
+在表格選取要填入的範圍，輸入公式；`row` 與 `column` **從 0 起算**。`@N` 代表保留 N 位小數（0–15），可省略。
+
+| 用途 | 範例 |
+|---|---|
+| 四則運算 | `row*2+column` |
+| 指定精度 | `row/3@2` |
+| 比較條件 | `row<=3` |
+| 條件分支 | `choose(row<3,1,0)` |
+| 等差求和 1+…+row | `row*(row+1)/2@0` |
+| 遞迴求和 | `choose(row<=0,0,row+f(row-1,column))@0` |
+| Fibonacci | `choose(row<=1,row,f(row-1,column)+f(row-2,column))@0` |
+| 遞迴終止 | `f(row-1,column).stop(row<0)` |
+| 指定終止值 | `f(row-1,column).stop(row<=1,row)` |
+| 矩陣範圍引用 | `A[0,0][2,2]` |
+| 舊版相容格式 | `f(row,column)=(row*2+column)<3>` |
+
+`choose(條件,成立時,否則時)` 只計算選中的分支；`f(列,欄)` 呼叫同一公式在其他座標的值。矩陣 `*` 依矩陣乘法規則運算。**目前不保證支援 `sum(A[...][...])` 聚合命令**；需要求和時可使用上述數列公式。計算失敗會中止，不應套用部分結果。
+
+## 三、儲存機制
+
+1. **編輯中**：文字與表格的變更可能先保存在頁面工作階段，尚未代表雲端持久化。
+2. **按「存儲」**：先產生本地 `.ainote` 備份（本地資料夾模式須確認寫入成功），再寫入 Supabase PostgreSQL，最後重新讀取驗證。
+3. **瀏覽器下載模式限制**：網頁能觸發下載，但不能確認檔案已實際寫入磁碟；請自行確認下載位置及檔案。
+4. **圖片／手寫稿**：媒體檔案儲存於私有 Supabase Storage `note-images`，筆記資料透過 `asset://` 參照；這類媒體有獨立儲存操作，不能假設與文字存儲按鈕完全相同。
+5. **匯出／匯入**：組別可匯出 `.ainote`（ZIP 格式，含筆記與可取得的媒體資產）；可從功能選單重新匯入。
+6. **刪除／回收區**：一般刪除採軟刪除，可由回收區管理；實際資料是否永久保存仍受 Supabase 專案、權限、配額及備份政策影響。
+
+**重要：** 雲端存儲不等於永久保存。建議定期下載 `.ainote` 備份，並確認瀏覽器下載完成。
+"""
+
 if not selected:
     st.title('歡迎使用 AInoteManagement')
     st.info('目前沒有組別。')
@@ -790,7 +860,7 @@ if not selected:
             op=operation_progress('建立範例組別');op(20,'建立組別')
             root=insert_note('GROUP','我的第一份筆記')
             op(65,'建立使用說明書')
-            insert_note('MARKDOWN','使用說明書',root['id'],content='# 歡迎使用 AInoteManagement\n\n- 左側 Explorer 建立 Markdown、圖片、表格及手寫稿\n- 編輯後按存儲，依序本地備份、雲端驗證\n- 右鍵可重新命名、移動及刪除文件\n- 設定中心管理回收區與本地路徑')
+            insert_note('MARKDOWN','使用說明書',root['id'],content=DEMO_GUIDE)
             op(100,'建立完成');st.session_state.selected=root['id'];st.rerun()
         except Exception as exc:st.error('建立失敗：'+str(exc))
     st.stop()
@@ -1040,14 +1110,16 @@ else:
     st.caption('本地資料夾模式確認寫入後才上傳；瀏覽器下載模式只能確認已啟動下載，無法確認磁碟寫入完成。')
     t1,t2,t3,t4=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown','✍️ 手寫稿'])
     with t1:
+        photo_title=st.text_input('圖片名稱',value='新圖片',key='graph_title_'+workspace_id)
+        photo_count=st.number_input('建立圖片份數（1–20）',min_value=1,max_value=20,value=1,step=1,key='graph_count_'+workspace_id)
         if st.button('新增圖片區塊',key='new_graph_'+workspace_id):
             try:
-                created=insert_note('GRAPH','新圖片',workspace_id,position=len(workspace_blocks))
-                st.session_state.selected=created['id']
+                created=create_blocks_batch('GRAPH',photo_title.strip() or '新圖片',workspace_id,photo_count)
+                st.session_state.selected=created[0]['id']
                 st.rerun()
             except Exception as exc:
-                logging.getLogger(__name__).exception('Create image block failed')
-                st.error('新增失敗：'+type(exc).__name__)
+                logging.getLogger(__name__).exception('Create image blocks failed')
+                st.error('新增失敗：'+str(exc))
     with t2:
         if st.button('＋ 建立表格',key='open_table_modal_'+workspace_id):
             st.session_state.pending_table={'title':'新表格','parent':workspace_id}
@@ -1068,7 +1140,7 @@ else:
             st.session_state.pending_handwrite={'title':'新手寫稿','parent':workspace_id}
             st.rerun()
 st.divider()
-st.caption('AInoteManagement v2.5 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('AInoteManagement v3.1 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
 
 if st.session_state.get("pending_table"):
     table_creation_dialog()
