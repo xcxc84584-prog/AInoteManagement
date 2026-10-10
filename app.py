@@ -19,7 +19,7 @@ from supabase import create_client
 from matrix_engine import calculate
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title='AI-NOTE',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
+st.set_page_config(page_title='BV-Text',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
 KINDS=['GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE','HANDWRITE']
 CONTAINERS=['GROUP','SUBFILE']
 MAX_IMAGE=10*1024*1024
@@ -35,7 +35,7 @@ def client(url,key):return create_client(url,key)
 
 url,key=config('SUPABASE_URL'),config('SUPABASE_ANON_KEY')
 if not url or not key:
-    st.title('📚 AInoteManagement v1.0')
+    st.title('📚 BV-Text')
     st.error('尚未設定 Supabase。請先完成 README.md 中的部署設定。')
     st.code('SUPABASE_URL = "https://...supabase.co"\nSUPABASE_ANON_KEY = "..."',language='toml')
     st.stop()
@@ -80,7 +80,7 @@ def api():
 def current_user():return st.session_state.get('user_id')
 
 def login_screen():
-    st.title('📚 AInoteManagement')
+    st.title('📚 BV-Text')
     st.caption('個人 Markdown 筆記、樹狀文件與圖片管理')
     tab1,tab2=st.tabs(['登入','註冊'])
     with tab1:
@@ -465,6 +465,9 @@ def handwriting_editor(note,assets):
     aid=refs.get(page)
     initial_image=asset_url(aid,assets) if aid else None
     locked_key='hw_locked_'+note['id']
+    pending_key='_hw_lock_pending_'+note['id']
+    if st.session_state.pop(pending_key,False):
+        st.session_state[locked_key]=True
     if locked_key not in st.session_state:st.session_state[locked_key]=bool(refs)
     locked=st.checkbox('屏蔽觸控（防止誤觸；取消勾選可繼續編輯）',key=locked_key)
     event=handwriting_component(key=f'handwrite_{note["id"]}_{page}',width_px=dims[0],height_px=dims[1],image_url=initial_image,locked=locked,default=None,height=510)
@@ -483,7 +486,7 @@ def handwriting_editor(note,assets):
             new=(new+'\n' if new else '')+f'![手寫稿-{page}](asset://{new_id})'
             update_note(note['id'],content=new)
             progress(100,'完成並驗證')
-            st.session_state[locked_key]=True
+            st.session_state[pending_key]=True
             st.session_state['_hw_notice_'+note['id']]=True
             st.rerun()
         except Exception as exc:st.error('手寫稿儲存失敗：'+str(exc))
@@ -627,7 +630,7 @@ def table_creation_dialog():
         st.rerun()
 
 with st.sidebar:
-    st.title('📚 AI-NOTE')
+    st.title('📚 BV-Text')
     with st.popover('☰ 功能選單',width='stretch'):
         st.caption('建立組別')
         newgroup=st.text_input('組別名稱',key='newgroup')
@@ -878,7 +881,7 @@ DEMO_GUIDE = """# AI-NOTE 使用說明書
 """
 
 if not selected:
-    st.title('歡迎使用 AI-NOTE')
+    st.title('歡迎使用 BV-Text')
     st.info('目前沒有組別。')
     if st.button('＋ 新建組別文件',type='primary'):
         try:
@@ -1163,7 +1166,7 @@ else:
             st.session_state.pending_handwrite={'title':'新手寫稿','parent':workspace_id}
             st.rerun()
 st.divider()
-st.caption('AI-NOTE v3.2 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('BV-Text v3.2.1 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
 
 if st.session_state.get("pending_table"):
     table_creation_dialog()
