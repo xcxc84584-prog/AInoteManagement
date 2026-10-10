@@ -6,7 +6,7 @@ import os
 import re
 import uuid
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import streamlit as st
 from PIL import Image, ImageOps
@@ -90,21 +90,30 @@ def insert_note(kind,title,parent=None,content='',has_page=False,position=0):
     return c.table('notes').insert(payload).execute().data[0]
 
 def update_note(nid,**values):
-    values['updated_at']=datetime.utcnow().isoformat()+'Z'
+    values['updated_at']=datetime.now(timezone.utc).isoformat()
     c.table('notes').update(values).eq('id',nid).eq('owner_id',uid).execute()
 
-def delete_note(nid):
-    # Soft-delete the complete subtree so children remain recoverable.
+def set_deleted(nid, deleted):
+    # Gracefully support databases not yet migrated to deleted_at.
     ids=list(subtree(nid,notes))
+    now=datetime.now(timezone.utc).isoformat()
     for note_id in ids:
-        result=c.table('notes').update({'is_deleted':True,'deleted_at':datetime.utcnow().isoformat()+'Z'}).eq('id',note_id).eq('owner_id',uid).select('id').execute()
-        if not result.data:raise RuntimeError('資料庫未更新文件，請檢查 RLS 與資料表權限')
+        payload={'is_deleted':deleted,'deleted_at':now if deleted else None}
+        try:
+            result=c.table('notes').update(payload).eq('id',note_id).eq('owner_id',uid).select('id').execute()
+        except Exception as exc:
+            # PGRST204 means the deployed schema lacks deleted_at; fall back to is_deleted.
+            if 'PGRST204' not in str(exc) or 'deleted_at' not in str(exc):
+                raise
+            result=c.table('notes').update({'is_deleted':deleted}).eq('id',note_id).eq('owner_id',uid).select('id').execute()
+        if not result.data:
+            raise RuntimeError('更新失敗：請確認 notes UPDATE/SELECT RLS 與 GRANT 權限')
+
+def delete_note(nid):
+    set_deleted(nid,True)
 
 def restore_note(nid):
-    ids=list(subtree(nid,notes))
-    for note_id in ids:
-        result=c.table('notes').update({'is_deleted':False,'deleted_at':None}).eq('id',note_id).eq('owner_id',uid).select('id').execute()
-        if not result.data:raise RuntimeError('資料庫未還原文件，請檢查 RLS 與資料表權限')
+    set_deleted(nid,False)
 
 def clone_note(nid,dest):
     original=subtree(nid,notes)
@@ -237,8 +246,16 @@ def import_group(raw):
         return mapping[rootid]
 
 st.markdown('''<style>
-.block-container{padding-top:1.2rem}.stButton button{border-radius:8px}
-[data-testid="stSidebar"]{min-width:300px} [data-testid="stSidebar"] iframe{max-width:100%!important} [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{min-width:0} .block-container{max-width:1400px}
+html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{max-width:100%;overflow-x:hidden!important}
+[data-testid="stMain"], [data-testid="stMainBlockContainer"], .block-container{min-width:0!important;max-width:100%!important;box-sizing:border-box!important}
+.block-container{padding:1.25rem clamp(.75rem,3vw,2rem) 3rem!important}
+[data-testid="stHorizontalBlock"]{min-width:0!important;max-width:100%!important;flex-wrap:wrap!important}
+[data-testid="column"]{min-width:0!important;max-width:100%!important}
+[data-testid="stSidebar"]{width:min(310px,85vw)!important;min-width:0!important}
+[data-testid="stSidebar"] iframe{width:100%!important;max-width:100%!important}
+[data-testid="stSidebarContent"]{overflow-x:hidden!important}
+[data-testid="stTextArea"] textarea{width:100%!important;max-width:100%!important;box-sizing:border-box!important}
+.stButton button{border-radius:8px}
 </style>''',unsafe_allow_html=True)
 
 try:
@@ -338,13 +355,18 @@ if not selected:
 tabs=[tid for tid in st.session_state.setdefault('open_tabs',[]) if tid in {n['id'] for n in active_notes}]
 st.session_state.open_tabs=tabs
 if selected['id'] not in tabs:tabs.append(selected['id'])
+# A responsive selector replaces a row of unbounded tab buttons.
 if tabs:
-    cols=st.columns(min(len(tabs),6)+1)
-    for i,tid in enumerate(tabs[-6:]):
-        if cols[i].button(('● ' if tid==selected['id'] else '')+byid[tid]['title'][:17],key='tab_'+tid):
-            st.session_state.selected=tid;st.rerun()
-    if cols[-1].button('×',key='close_tab'):
-        tabs.remove(selected['id']);st.session_state.selected=tabs[-1] if tabs else (roots[0]['id'] if roots else None);st.rerun()
+    labels={tid:byid[tid]['title'] for tid in tabs}
+    chosen=st.selectbox('開啟的文件',options=tabs,index=tabs.index(selected['id']),format_func=lambda tid:labels[tid],key='document_tab_selector_'+selected['id'])
+    if chosen!=selected['id']:
+        st.session_state.selected=chosen
+        st.rerun()
+    if st.button('× 關閉目前文件',key='close_tab'):
+        tabs.remove(selected['id'])
+        st.session_state.selected=tabs[-1] if tabs else (roots[0]['id'] if roots else None)
+        st.session_state.pop('document_tab_selector_'+selected['id'],None)
+        st.rerun()
 st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(selected['id'],byid))))
 st.title(selected['title'])
 
