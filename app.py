@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import logging
 import os
 import re
 import uuid
@@ -208,9 +209,13 @@ st.markdown('''<style>
 [data-testid="stSidebar"]{min-width:280px}
 </style>''',unsafe_allow_html=True)
 
-try:notes=fetch_notes()
-except Exception:
-    st.error('無法讀取資料庫。請檢查 Supabase schema、RLS 政策與網路連線。');st.stop()
+try:
+    notes=fetch_notes()
+except Exception as exc:
+    logging.getLogger(__name__).exception('Database read failed')
+    st.error('無法讀取資料庫。請開啟 Streamlit Cloud → Manage app → Logs 檢查詳細原因。')
+    st.code(f'Error type: {type(exc).__name__}')
+    st.stop()
 byid={n['id']:n for n in notes}
 roots=[n for n in notes if n['kind']=='GROUP' and not n['parent_id']]
 if st.session_state.get('selected') not in byid:st.session_state['selected']=roots[0]['id'] if roots else None
