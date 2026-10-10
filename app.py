@@ -1,3 +1,4 @@
+import ast
 import base64
 import html
 import io
@@ -15,13 +16,15 @@ import streamlit as st
 import pandas as pd
 from PIL import Image, ImageOps
 from supabase import create_client
+from matrix_engine import calculate
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title='AInoteManagement',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
-KINDS=['GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE']
+KINDS=['GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE','HANDWRITE']
 CONTAINERS=['GROUP','SUBFILE']
 MAX_IMAGE=10*1024*1024
 local_component=components.declare_component('ainote_local_save',path=str(Path(__file__).parent/'components'/'local_save'))
+matrix_component=components.declare_component('ainote_matrix_table',path=str(Path(__file__).parent/'components'/'matrix_table'))
 paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
 
 def config(key):
@@ -298,6 +301,13 @@ def keep_table_dimensions(content,width,height):
     body=re.sub(r'<!--\s*ainote-(?:cell:\d+x\d+|table-size:(?:small|medium|large))\s*-->\s*','',content or '')
     return f'<!-- ainote-cell:{width}x{height} -->\n'+body
 
+def table_alignment(content):
+    match=re.search(r'<!--\s*ainote-align:(left|center|right)\s*-->',content or '')
+    return match.group(1) if match else 'left'
+def with_table_alignment(content,alignment):
+    if alignment not in ('left','center','right'):raise ValueError('對齊方式無效')
+    return re.sub(r'<!--\s*ainote-align:(?:left|center|right)\s*-->\s*','',content or '').rstrip()+f'\n<!-- ainote-align:{alignment} -->'
+
 def table_with_dimensions(rows,cols,width,height):
     return keep_table_dimensions(table_markdown(rows,cols),width,height)
 
@@ -306,6 +316,7 @@ def render_table(content):
     if not len(frame.columns):return
     width,height=table_dimensions(content)
     table_id='ainote-table-'+uuid.uuid4().hex
+    alignment=table_alignment(content)
     head=''.join('<th>'+html.escape(str(c))+'</th>' for c in frame.columns)
     body=''.join('<tr>'+''.join('<td>'+html.escape(str(v) if pd.notna(v) else '')+'</td>' for v in row)+'</tr>' for row in frame.itertuples(index=False,name=None))
     # Fixed pixel widths for all columns, including headers; scrolling on phones.
@@ -313,7 +324,7 @@ def render_table(content):
     css=f"""<style>
     #{table_id}{{max-width:100%;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}}
     #{table_id} table{{table-layout:fixed;border-collapse:collapse;width:{cols*width}px;min-width:{cols*width}px;max-width:none}}
-    #{table_id} th,#{table_id} td{{box-sizing:border-box;width:{width}px;min-width:{width}px;max-width:{width}px;height:{height}px;min-height:{height}px;padding:4px 7px;border:1px solid #687080;vertical-align:middle;overflow-wrap:anywhere;white-space:normal;text-align:left;font-size:13px}}
+    #{table_id} th,#{table_id} td{{box-sizing:border-box;width:{width}px;min-width:{width}px;max-width:{width}px;height:{height}px;min-height:{height}px;padding:4px 7px;border:1px solid #687080;vertical-align:middle;overflow-wrap:anywhere;white-space:normal;text-align:{alignment};font-size:13px}}
     </style>"""
     st.markdown(css+f'<div id="{table_id}"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>',unsafe_allow_html=True)
 
@@ -409,6 +420,26 @@ def image_editor(note,assets,uid_key):
             logging.getLogger(__name__).exception('Image save failed')
             st.error('圖片儲存失敗：'+type(exc).__name__+'：'+str(exc))
 
+handwriting_component=components.declare_component('ainote_handwriting',path=str(Path(__file__).parent/'components'/'handwriting'))
+def handwriting_editor(note,assets):
+    content=note.get('content') or ''
+    if content.strip():show_markdown(content,assets)
+    event=handwriting_component(key='handwrite_'+note['id'],default=None,height=510)
+    if isinstance(event,dict) and event.get('action')=='save' and event.get('nonce')!=st.session_state.get('_hw_seen_'+note['id']):
+        st.session_state['_hw_seen_'+note['id']]=event['nonce']
+        progress=operation_progress('儲存手寫稿')
+        try:
+            progress(10,'解析畫布')
+            raw=base64.b64decode(event['data'].split(',',1)[-1],validate=True)
+            progress(30,'上傳畫布至 Storage')
+            aid=upload_image(raw,note['id'])
+            progress(70,'寫入手寫稿引用')
+            new=(content+'\n' if content.strip() else '')+f'![手寫稿](asset://{aid})'
+            update_note(note['id'],content=new)
+            progress(100,'完成並驗證');st.session_state['_hw_notice_'+note['id']]=True;st.rerun()
+        except Exception as exc:st.error('手寫稿儲存失敗：'+str(exc))
+    if st.session_state.pop('_hw_notice_'+note['id'],False):st.success('手寫稿已儲存並驗證')
+
 def table_editor(note,uid_key):
     original=markdown_dataframe(note.get('content') or '')
     if original.empty and not len(original.columns):original=pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
@@ -503,7 +534,9 @@ html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{max-width:100
 </style>''',unsafe_allow_html=True)
 
 try:
-    notes=fetch_notes()
+    with st.status('正在讀取工作區…',expanded=False) as load_status:
+        notes=fetch_notes()
+        load_status.update(label='工作區讀取完成',state='complete')
 except Exception as exc:
     logging.getLogger(__name__).exception('Database read failed')
     st.error('無法讀取資料庫。請開啟 Streamlit Cloud → Manage app → Logs 檢查詳細原因。')
@@ -656,54 +689,60 @@ with st.sidebar:
                     st.rerun()
             if st.button('關閉快速定位',key='close_quick_nav'):
                 st.session_state.pop('quick_nav_root',None);st.rerun()
-    with st.expander('資源回收區'):
-        deleted_roots=[n for n in notes if n.get('is_deleted') and (not n['parent_id'] or not byid.get(n['parent_id'],{}).get('is_deleted'))]
-        for n in deleted_roots:
-            cc=st.columns([3,1]);cc[0].caption(n['title'])
-            if cc[1].button('還原',key='restore_'+n['id']):
-                try:restore_note(n['id']);st.rerun()
-                except Exception as exc:
-                    logging.getLogger(__name__).exception('Restore failed')
-                    st.error('還原失敗：'+type(exc).__name__)
-    with st.expander('帳號設定 · 預設儲存路徑'):
-        st.caption('在支援的瀏覽器選擇本機資料夾，之後優先寫入該資料夾。瀏覽器可能要求重新授權；手機或不支援的瀏覽器改用下載。')
-        local_component(mode='settings',key='local_save_settings_v1',default=None)
-    with st.expander('帳號設定 · 永久註銷'):
-        st.warning('此操作不可復原：永久刪除帳號、筆記、資料夾、圖片與附件。請先下載 .ainote 備份。')
-        st.caption('為安全起見，需要再次輸入密碼並透過已部署的 Supabase Edge Function 執行。')
-        with st.form('delete_account_form'):
-            confirm_text=st.text_input('輸入「永久刪除帳號」',key='delete_account_confirm')
-            confirm_password=st.text_input('再次輸入登入密碼',type='password',key='delete_account_password')
-            confirm_check=st.checkbox('我了解此操作不可復原',key='delete_account_ack')
-            delete_submit=st.form_submit_button('永久註銷帳號',type='primary')
-        if delete_submit:
-            if confirm_text!='永久刪除帳號' or not confirm_password or not confirm_check:
-                st.error('請完成所有確認欄位。')
-            else:
-                import requests
-                try:
-                    response=requests.post(
-                        url.rstrip('/')+'/functions/v1/delete-account',
-                        headers={'Authorization':'Bearer '+st.session_state['access_token'],
-                                 'apikey':key,'Content-Type':'application/json'},
-                        json={'password':confirm_password},timeout=45)
-                    if response.ok:
-                        for session_key in ['user_id','access_token','refresh_token','selected','open_tabs']:
-                            st.session_state.pop(session_key,None)
-                        remember_action('clear')
-                        st.session_state.skip_auto_login=True
-                        st.success('帳號已永久註銷，請重新整理頁面。')
-                        st.stop()
-                    else:
-                        logging.getLogger(__name__).warning('Account deletion failed: HTTP %s',response.status_code)
-                        try:
-                            error_code=response.json().get('error','delete_failed')
-                        except Exception:
-                            error_code='delete_failed'
-                        st.error('註銷未完成：'+str(error_code)+'。請檢查 Edge Function Logs。')
-                except requests.RequestException:
-                    logging.getLogger(__name__).exception('Account deletion request failed')
-                    st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
+    with st.expander("⚙️ 設定中心",expanded=False):
+        st.caption("帳號管理 · 資源回收區 · 本地備份")
+        st.info("瀏覽器不能自行建立 D 槽資料夾。建議先建立 D:\\AInoteManagement，再授權此資料夾；不支援時改用下載。")
+        with st.container():
+            st.markdown('#### 資源回收區')
+            deleted_roots=[n for n in notes if n.get('is_deleted') and (not n['parent_id'] or not byid.get(n['parent_id'],{}).get('is_deleted'))]
+            for n in deleted_roots:
+                cc=st.columns([3,1]);cc[0].caption(n['title'])
+                if cc[1].button('還原',key='restore_'+n['id']):
+                    try:restore_note(n['id']);st.rerun()
+                    except Exception as exc:
+                        logging.getLogger(__name__).exception('Restore failed')
+                        st.error('還原失敗：'+type(exc).__name__)
+        with st.container():
+            st.markdown('#### 預設儲存路徑')
+            st.caption('在支援的瀏覽器選擇本機資料夾，之後優先寫入該資料夾。瀏覽器可能要求重新授權；手機或不支援的瀏覽器改用下載。')
+            local_component(mode='settings',key='local_save_settings_v1',default=None)
+        with st.container():
+            st.markdown('#### 帳號註銷')
+            st.warning('此操作不可復原：永久刪除帳號、筆記、資料夾、圖片與附件。請先下載 .ainote 備份。')
+            st.caption('為安全起見，需要再次輸入密碼並透過已部署的 Supabase Edge Function 執行。')
+            with st.form('delete_account_form'):
+                confirm_text=st.text_input('輸入「永久刪除帳號」',key='delete_account_confirm')
+                confirm_password=st.text_input('再次輸入登入密碼',type='password',key='delete_account_password')
+                confirm_check=st.checkbox('我了解此操作不可復原',key='delete_account_ack')
+                delete_submit=st.form_submit_button('永久註銷帳號',type='primary')
+            if delete_submit:
+                if confirm_text!='永久刪除帳號' or not confirm_password or not confirm_check:
+                    st.error('請完成所有確認欄位。')
+                else:
+                    import requests
+                    try:
+                        response=requests.post(
+                            url.rstrip('/')+'/functions/v1/delete-account',
+                            headers={'Authorization':'Bearer '+st.session_state['access_token'],
+                                     'apikey':key,'Content-Type':'application/json'},
+                            json={'password':confirm_password},timeout=45)
+                        if response.ok:
+                            for session_key in ['user_id','access_token','refresh_token','selected','open_tabs']:
+                                st.session_state.pop(session_key,None)
+                            remember_action('clear')
+                            st.session_state.skip_auto_login=True
+                            st.success('帳號已永久註銷，請重新整理頁面。')
+                            st.stop()
+                        else:
+                            logging.getLogger(__name__).warning('Account deletion failed: HTTP %s',response.status_code)
+                            try:
+                                error_code=response.json().get('error','delete_failed')
+                            except Exception:
+                                error_code='delete_failed'
+                            st.error('註銷未完成：'+str(error_code)+'。請檢查 Edge Function Logs。')
+                    except requests.RequestException:
+                        logging.getLogger(__name__).exception('Account deletion request failed')
+                        st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
     st.divider()
     if st.button('登出',width='stretch'):
         for k in ['user_id','access_token','refresh_token','selected','remember_enabled']:st.session_state.pop(k,None)
@@ -713,7 +752,15 @@ with st.sidebar:
 
 if not selected:
     st.title('歡迎使用 AInoteManagement')
-    st.info('請在左側「功能選單」建立第一個組別，或匯入 .ainote 檔案。')
+    st.info('目前沒有組別。')
+    if st.button('＋ 新建組別文件',type='primary'):
+        try:
+            op=operation_progress('建立範例組別');op(20,'建立組別')
+            root=insert_note('GROUP','我的第一份筆記')
+            op(65,'建立使用說明書')
+            insert_note('MARKDOWN','使用說明書',root['id'],content='# 歡迎使用 AInoteManagement\n\n- 左側 Explorer 建立 Markdown、圖片、表格及手寫稿\n- 編輯後按存儲，依序本地備份、雲端驗證\n- 右鍵可重新命名、移動及刪除文件\n- 設定中心管理回收區與本地路徑')
+            op(100,'建立完成');st.session_state.selected=root['id'];st.rerun()
+        except Exception as exc:st.error('建立失敗：'+str(exc))
     st.stop()
 
 # The GROUP is the browsing unit. Editing remains at the selected workspace level.
@@ -729,13 +776,26 @@ workspace_blocks=sorted(
 )
 assets={}
 # Load asset metadata only if the group/workspace contains image references.
-needs_assets=any('asset://' in (n.get('content') or '') for n in active_notes if n['kind']=='GRAPH')
+needs_assets=any('asset://' in (n.get('content') or '') for n in active_notes if n['kind'] in ('GRAPH','HANDWRITE'))
 if needs_assets:
     try:
         assets={a['id']:a for a in c.table('assets').select('id,storage_path,mime_type,note_id').eq('owner_id',uid).execute().data}
     except Exception:
         logging.getLogger(__name__).exception('Asset list failed')
 
+tabs_open=st.session_state.setdefault('open_tabs',[])
+if selected and selected['id'] not in tabs_open:tabs_open.append(selected['id'])
+if tabs_open:
+    st.caption('開啟的文件')
+    tabcols=st.columns(min(len(tabs_open),5))
+    for i,tid in enumerate(list(tabs_open)[-5:]):
+        if tid not in byid:continue
+        with tabcols[i]:
+            if st.button('× '+byid[tid]['title'][:15],key='close_tab_'+tid,help='關閉文件（不刪除）'):
+                tabs_open.remove(tid)
+                if st.session_state.get('selected')==tid:
+                    st.session_state.selected=tabs_open[-1] if tabs_open else (roots[0]['id'] if roots else None)
+                st.rerun()
 mode=st.radio('工作模式',['瀏覽模式','編輯模式'],horizontal=True,key='workspace_mode')
 report_key='save_report_'+workspace_id
 report=st.session_state.get(report_key)
@@ -782,8 +842,8 @@ if mode=='瀏覽模式':
             if (node.get('content') or '').strip():show_markdown(node['content'],assets)
         else:
             st.markdown('<a id="'+section_anchor(node)+'"></a>',unsafe_allow_html=True)
-            if node['kind'] in ('GRAPH','TABLE') and node.get('title'):
-                st.caption(('🖼️ ' if node['kind']=='GRAPH' else '▦ ')+node['title'])
+            if node['kind'] in ('GRAPH','TABLE','HANDWRITE') and node.get('title'):
+                st.caption(('🖼️ ' if node['kind']=='GRAPH' else '✍️ ' if node['kind']=='HANDWRITE' else '▦ ')+node['title'])
             if node['kind']=='TABLE':render_table(node.get('content') or '')
             elif (node.get('content') or '').strip():show_markdown(node['content'],assets)
 else:
@@ -791,31 +851,44 @@ else:
     # GROUP/SUBFILE are structural folders; content lives in child documents only.
     draft_keys=[]
     for block in workspace_blocks:
-        st.markdown('#### '+('🖼️ ' if block['kind']=='GRAPH' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'])
-        if block['kind']=='GRAPH':
+        st.markdown('#### '+('🖼️ ' if block['kind']=='GRAPH' else '✍️ ' if block['kind']=='HANDWRITE' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'])
+        if block['kind']=='HANDWRITE':
+            handwriting_editor(block,assets)
+        elif block['kind']=='GRAPH':
             image_editor(block,assets,block['id'])
         elif block['kind']=='TABLE':
-            # Render the grid without a separate save button; global save collects all grids.
             original=markdown_dataframe(block.get('content') or '')
-            if original.empty and not len(original.columns):
-                original=pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
+            if original.empty and not len(original.columns):original=pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
             sheet_key='sheet_'+block['id']
-            edited_frame=st.data_editor(original,hide_index=True,width='stretch',num_rows='fixed',key=sheet_key)
-            st.session_state['_editor_result_'+sheet_key]=edited_frame.copy(deep=True)
             cell_w,cell_h=table_dimensions(block.get('content') or '')
-            if st.button('💾 儲存表格：'+block['title'],key='save_table_inline_'+block['id']):
-                try:
-                    op=operation_progress('更新表格');op(20,'整理格子內容')
-                    new_content=keep_table_dimensions(dataframe_markdown(edited_frame),cell_w,cell_h)
-                    update_note(block['id'],content=new_content)
-                    op(100,'已寫入並驗證')
-                    st.session_state[report_key]={'successes':1,'total':1,'failures':[],
-                        'names':[block['title']],'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
-                    st.rerun()
-                except Exception as exc:
-                    logging.getLogger(__name__).exception('Table save failed')
-                    st.error('表格儲存失敗：'+type(exc).__name__+'：'+str(exc))
-            draft_keys.append((block['id'],sheet_key,'table'))
+            revision=st.session_state.get('_matrix_revision_'+block['id'],0)
+            ev=matrix_component(cells=original.fillna('').astype(str).values.tolist(),headers=[str(x) for x in original.columns],width=cell_w,height=cell_h,align=table_alignment(block.get('content')),revision=revision,key='matrix_'+block['id'],default=None)
+            if isinstance(ev,dict) and ev.get('nonce')!=st.session_state.get('_matrix_nonce_'+block['id']):
+                st.session_state['_matrix_nonce_'+block['id']]=ev.get('nonce')
+                if ev.get('action') in ('save','formula'):
+                    try:
+                        op=operation_progress('表格'+('矩陣計算' if ev['action']=='formula' else '更新'))
+                        op(20,'檢查資料')
+                        values=ev['cells'];headers=ev['headers']
+                        if len(values)>50 or len(headers)>30 or any(len(row)!=len(headers) for row in values):raise ValueError('表格尺寸無效')
+                        if ev['action']=='formula':
+                            op(50,'執行安全矩陣運算')
+                            results=calculate(ev.get('formula',''),values,ev.get('selection',[]))
+                            top,left,bottom,right=ev['selection']
+                            for i,row in enumerate(results):
+                                for j,val in enumerate(row):
+                                    if top+i<len(values) and left+j<len(headers):
+                                        values[top+i][left+j]='NaN' if isinstance(val,float) and pd.isna(val) else str(val)
+                        op(75,'儲存表格')
+                        frame=pd.DataFrame(values,columns=headers)
+                        content=with_table_alignment(keep_table_dimensions(dataframe_markdown(frame),cell_w,cell_h),ev.get('align','left'))
+                        update_note(block['id'],content=content)
+                        st.session_state['_matrix_revision_'+block['id']]=revision+1
+                        op(100,'重新讀取並驗證完成')
+                        st.session_state[report_key]={'successes':1,'total':1,'failures':[],'names':[block['title']],'saved_at':datetime.now(timezone.utc).isoformat()}
+                        st.rerun()
+                    except Exception as exc:st.error('表格運算或儲存失敗：'+str(exc))
+            draft_keys.append((block['id'],sheet_key,'matrix'))
         else:
             text_key='block_content_'+block['id']
             st.text_area('Markdown：'+block['title'],value=block.get('content') or '',
@@ -835,6 +908,8 @@ else:
     # Independent actions: local backup never triggers a cloud write.
     draft_values={}
     for note_id,field_key,field_type in draft_keys:
+        if field_type=='matrix':
+            continue
         if field_type=='table':
             frame=st.session_state.get('_editor_result_'+field_key)
             if frame is not None:
@@ -891,7 +966,7 @@ else:
     elif st.session_state.get(save_key,{}).get('stage')=='failed':
         st.error('存儲流程未完成：'+str(st.session_state[save_key].get('error')))
     st.caption('本地資料夾模式確認寫入後才上傳；瀏覽器下載模式只能確認已啟動下載，無法確認磁碟寫入完成。')
-    t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown'])
+    t1,t2,t3,t4=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown','✍️ 手寫稿'])
     with t1:
         if st.button('新增圖片區塊',key='new_graph_'+workspace_id):
             try:
@@ -916,8 +991,15 @@ else:
             except Exception as exc:
                 logging.getLogger(__name__).exception('Create Markdown block failed')
                 st.error('新增失敗：'+type(exc).__name__)
+    with t4:
+        if st.button('＋ 建立手寫稿',key='new_handwrite_'+workspace_id):
+            try:
+                op=operation_progress('建立手寫稿');op(35,'新增文件')
+                created=insert_note('HANDWRITE','新手寫稿',workspace_id,position=len(workspace_blocks))
+                op(100,'完成');st.session_state.selected=created['id'];st.rerun()
+            except Exception as exc:st.error('建立手寫稿失敗：'+str(exc))
 st.divider()
-st.caption('AInoteManagement v2.3 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('AInoteManagement v2.5 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
 
 if st.session_state.get("pending_table"):
     table_creation_dialog()

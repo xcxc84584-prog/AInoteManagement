@@ -3,7 +3,7 @@ create table if not exists public.notes (
  id uuid primary key default gen_random_uuid(),
  owner_id uuid not null references auth.users(id) on delete cascade,
  parent_id uuid references public.notes(id) on delete cascade,
- kind text not null check (kind in ('GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE')),
+ kind text not null check (kind in ('GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE','HANDWRITE')),
  title text not null,
  content text not null default '',
  has_page boolean not null default false,
