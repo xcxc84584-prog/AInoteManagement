@@ -58,7 +58,7 @@ if not st.session_state.get('user_id') and not st.session_state.get('skip_auto_l
         try:
             session=client(url,key).auth.refresh_session(stored)
             st.session_state.update(access_token=session.session.access_token,
-                refresh_token=session.session.refresh_token,user_id=session.user.id,remember_enabled=True)
+                refresh_token=session.session.refresh_token,user_id=session.user.id,remember_enabled=True,auth_refresh_after=time.time()+2400)
             remember_action('store',session.session.refresh_token)
             st.rerun()
         except Exception:
@@ -89,7 +89,7 @@ def login_screen():
         if submit:
             try:
                 result=sb.auth.sign_in_with_password({'email':email,'password':password})
-                st.session_state.update(access_token=result.session.access_token,refresh_token=result.session.refresh_token,user_id=result.user.id,remember_enabled=remember,skip_auto_login=False)
+                st.session_state.update(access_token=result.session.access_token,refresh_token=result.session.refresh_token,user_id=result.user.id,remember_enabled=remember,skip_auto_login=False,auth_refresh_after=time.time()+2400)
                 if remember:remember_action('store',result.session.refresh_token)
                 else:remember_action('clear')
                 st.rerun()
@@ -107,16 +107,19 @@ def login_screen():
 
 if not current_user():login_screen();st.stop()
 
-# Refresh credentials before accessing data; expired tokens force re-login.
+# Avoid rotating refresh tokens on every Streamlit rerun. A short-lived network
+# error must not delete the browser's remembered login.
 try:
-    fresh=client(url,key).auth.refresh_session(st.session_state['refresh_token'])
-    st.session_state.update(access_token=fresh.session.access_token,refresh_token=fresh.session.refresh_token,user_id=fresh.user.id)
-    if st.session_state.get('remember_enabled') and remember_command!='store':
-        remember_action('store',fresh.session.refresh_token)
-except Exception:
-    for k in ['access_token','refresh_token','user_id']:st.session_state.pop(k,None)
-    remember_action('clear')
-    st.warning('登入已逾時，請重新登入。');st.stop()
+    if time.time() >= st.session_state.get('auth_refresh_after',0):
+        fresh=client(url,key).auth.refresh_session(st.session_state['refresh_token'])
+        st.session_state.update(access_token=fresh.session.access_token,refresh_token=fresh.session.refresh_token,user_id=fresh.user.id,
+            auth_refresh_after=time.time()+2400)
+        if st.session_state.get('remember_enabled'):
+            remember_action('store',fresh.session.refresh_token)
+except Exception as exc:
+    logging.getLogger(__name__).warning('Token refresh failed: %s',exc)
+    # Keep the token and allow normal requests to determine whether login expired.
+    st.session_state.auth_refresh_after=time.time()+60
 
 c=api()
 uid=current_user()
@@ -348,7 +351,7 @@ def image_editor(note,assets,uid_key):
         visible=st.toggle('顯示圖片 · '+note['title'],value=True,key='show_graph_'+uid_key)
         if visible:
             for match in matches:
-                raw=asset_image(match.group(2),assets)
+                raw=asset_url(match.group(2),assets)
                 if raw:st.image(raw,caption=match.group(1),width='stretch')
                 else:st.warning('圖片無法載入：請檢查 Storage 與 assets 權限')
     upload=st.file_uploader('選擇或拖曳圖片',type=['png','jpg','jpeg','webp','gif'],key='upload_'+uid_key)
@@ -425,7 +428,7 @@ def show_markdown(content,assets):
     for part in parts:
         match=re.fullmatch(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',part)
         if match:
-            raw=asset_image(match.group(2),assets)
+            raw=asset_url(match.group(2),assets)
             if raw:st.image(raw,caption=match.group(1) or None,width='content')
             else:st.warning('圖片不存在或無法存取')
         elif part:st.markdown(part)
@@ -515,6 +518,32 @@ roots=[n for n in active_notes if n['kind']=='GROUP' and not n['parent_id']]
 if st.session_state.get('selected') not in {n['id'] for n in active_notes}:st.session_state['selected']=roots[0]['id'] if roots else None
 selected=byid.get(st.session_state['selected'])
 
+@st.dialog('建立表格',width='small')
+def table_creation_dialog():
+    pending=st.session_state.get('pending_table')
+    if not pending:return
+    with st.form('table_creation_dialog_form'):
+        title=st.text_input('表格名稱',value=pending.get('title') or '新表格')
+        left,right=st.columns(2)
+        m=left.number_input('資料列數 M',min_value=1,max_value=50,value=3,step=1)
+        n=right.number_input('欄數 N',min_value=1,max_value=30,value=3,step=1)
+        left,right=st.columns(2)
+        w=left.number_input('格寬 X（px）',min_value=60,max_value=600,value=TABLE_DEFAULT_WIDTH)
+        h=right.number_input('格高 Y（px）',min_value=28,max_value=240,value=TABLE_DEFAULT_HEIGHT)
+        ok=st.form_submit_button('確認建立',type='primary')
+    if ok:
+        try:
+            op=operation_progress('建立表格');op(20,'驗證尺寸')
+            created=insert_note('TABLE',title.strip() or '新表格',pending['parent'],content=table_with_dimensions(m,n,w,h),position=len(children_index.get(pending['parent'],[])))
+            op(100,'資料庫建立完成')
+            st.session_state.pop('pending_table',None)
+            st.session_state.selected=created['id']
+            st.rerun()
+        except Exception as exc:st.error('建立表格失敗：'+str(exc))
+    if st.button('取消',key='cancel_table_modal'):
+        st.session_state.pop('pending_table',None)
+        st.rerun()
+
 with st.sidebar:
     st.title('📚 AI Note')
     with st.popover('☰ 功能選單',width='stretch'):
@@ -594,29 +623,7 @@ with st.sidebar:
         except Exception as exc:
             logging.getLogger(__name__).exception('Explorer action failed')
             st.error(f'檔案操作失敗：{type(exc).__name__}。請至 Manage app → Logs 查看詳情。')
-    pending=st.session_state.get('pending_table')
-    if pending:
-        st.markdown('**建立表格：'+pending['title']+'**')
-        with st.form('sidebar_table_setup',clear_on_submit=False):
-            m=st.number_input('M：資料列數',min_value=1,max_value=50,value=3,key='sidebar_rows')
-            n=st.number_input('N：欄數',min_value=1,max_value=30,value=3,key='sidebar_cols')
-            w=st.number_input('X：格子寬度（px）',min_value=60,max_value=600,value=TABLE_DEFAULT_WIDTH,key='sidebar_cell_w')
-            h=st.number_input('Y：格子高度（px）',min_value=28,max_value=240,value=TABLE_DEFAULT_HEIGHT,key='sidebar_cell_h')
-            ok=st.form_submit_button('確認建立表格',type='primary')
-        if ok:
-            try:
-                op=operation_progress('建立表格');op(20,'檢查列欄與格子大小')
-                created=insert_note('TABLE',pending['title'],pending['parent'],content=table_with_dimensions(m,n,w,h))
-                op(100,'表格已建立')
-                st.session_state.selected=created['id']
-                st.session_state.pop('pending_table',None)
-                st.session_state['creation_notice']='已建立表格：'+created['title']
-                st.rerun()
-            except Exception as exc:
-                logging.getLogger(__name__).exception('Create table failed')
-                st.error('建立表格失敗：'+type(exc).__name__+'：'+str(exc))
-        if st.button('取消建立',key='cancel_sidebar_table'):
-            st.session_state.pop('pending_table',None)
+
             st.rerun()
     if st.session_state.get('creation_notice'):
         st.success(st.session_state.pop('creation_notice'))
@@ -834,43 +841,56 @@ else:
                 draft_values[note_id]=keep_table_dimensions(dataframe_markdown(frame),*table_dimensions(byid[note_id].get('content') or ''))
         else:
             draft_values[note_id]=st.session_state.get(field_key,byid[note_id].get('content') or '')
-    st.markdown('#### 儲存操作')
-    with st.expander('💻 本地備份（不寫入雲端）',expanded=False):
-        try:
-            local_zip=export_group(group,active_notes,draft_values)
-            local_b64=base64.b64encode(local_zip).decode('ascii')
-            backup_error=None
-        except Exception as exc:
-            local_b64='';backup_error=str(exc)
-        if backup_error:st.error('本地備份準備失敗：'+backup_error)
-        local_event=local_component(mode='save',data=local_b64,
-            filename='AInote_'+re.sub(r'[^\w\-]+','_',group['title'])+'_'+datetime.now().strftime('%Y%m%d')+'.ainote',
-            disabled=bool(backup_error),key='local_save_action_'+workspace_id,default=None)
-        if isinstance(local_event,dict):
-            token=local_event.get('token')
-            if token and token!=st.session_state.get('last_local_save_'+workspace_id):
-                st.session_state['last_local_save_'+workspace_id]=token
-                if local_event.get('action')=='saved':
-                    st.success('本地備份：'+('已寫入選定資料夾' if local_event.get('method')=='folder' else '已啟動下載，請確認瀏覽器下載完成'))
-                elif local_event.get('action')=='error':st.error('本地備份失敗：'+str(local_event.get('message','')))
-    if st.button('☁️ 儲存全部變更至雲端',key='cloud_save_'+workspace_id,width='stretch',type='primary',disabled=not bool(draft_keys)):
-        successes=[];failures=[]
-        save_progress=operation_progress('雲端儲存')
-        save_progress(5,'正在檢查編輯內容')
-        for index,(note_id,field_key,field_type) in enumerate(draft_keys):
-            note_name=byid.get(note_id,{}).get('title',note_id)
+    st.markdown('#### 儲存')
+    try:
+        local_zip=export_group(group,active_notes,draft_values)
+        local_b64=base64.b64encode(local_zip).decode('ascii')
+        backup_error=None
+    except Exception as exc:
+        local_b64='';backup_error=str(exc)
+    if backup_error:st.error('無法建立本地備份：'+backup_error)
+    save_key='pipeline_'+workspace_id
+    save_event=local_component(mode='pipeline',data=local_b64,
+        filename='AInote_'+re.sub(r'[^\w\-]+','_',group['title'])+'_'+datetime.now().strftime('%Y%m%d_%H%M%S')+'.ainote',
+        disabled=bool(backup_error),key='local_pipeline_'+workspace_id,default=None)
+    if isinstance(save_event,dict) and save_event.get('token')!=st.session_state.get('pipeline_last_token_'+workspace_id):
+        if save_event.get('token'):
+            st.session_state['pipeline_last_token_'+workspace_id]=save_event['token']
+            if save_event.get('action')=='saved':
+                st.session_state[save_key]={'stage':'local_ok','method':save_event.get('method'),'draft':dict(draft_values)}
+                st.rerun()
+            elif save_event.get('action')=='error':
+                st.session_state[save_key]={'stage':'failed','error':save_event.get('message','本地儲存失敗')}
+                st.rerun()
+    pipeline=st.session_state.get(save_key,{})
+    if pipeline.get('stage')=='local_ok':
+        progress=operation_progress('存儲流程')
+        progress(35,'本地備份已完成；準備上傳資料庫')
+        failures=[];draft=pipeline['draft'];total=len(draft)
+        for index,(note_id,content) in enumerate(draft.items()):
+            try:update_note(note_id,content=content)
+            except Exception as exc:failures.append((byid.get(note_id,{}).get('title',note_id),str(exc)))
+            progress(35+int(45*(index+1)/max(1,total)),f'雲端上傳及驗證 {index+1}/{total}')
+        if failures:
+            st.session_state[save_key]={'stage':'failed','error':str(failures)}
+            progress(80,'部分文件未成功，請檢查錯誤')
+        else:
+            progress(90,'重新讀取資料庫')
             try:
-                if note_id not in draft_values:raise ValueError('無法取得編輯器資料')
-                update_note(note_id,content=draft_values[note_id])
-                successes.append(note_name)
-            except Exception as exc:
-                logging.getLogger(__name__).exception('Cloud save failed: %s (%s)',note_name,note_id)
-                failures.append((note_name,type(exc).__name__,str(exc)))
-            save_progress(5+int((index+1)*95/max(len(draft_keys),1)),f'已處理 {index+1}/{len(draft_keys)}：{note_name}')
-        st.session_state[report_key]={
-            'successes':len(successes),'total':len(draft_keys),'failures':failures,
-            'names':successes,'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
-        st.rerun()
+                refreshed=fetch_notes()
+                if any(next((n.get('content') for n in refreshed if n['id']==nid),None)!=value for nid,value in draft.items()):
+                    raise RuntimeError('重新讀取後內容不一致')
+                progress(100,'本地、雲端、重新載入完成')
+                st.session_state[save_key]={'stage':'done','count':total,'method':pipeline.get('method')}
+                st.session_state[report_key]={'successes':total,'total':total,'failures':[],'names':[byid.get(nid,{}).get('title',nid) for nid in draft],'saved_at':datetime.now(timezone.utc).isoformat()}
+                st.rerun()
+            except Exception as exc:st.session_state[save_key]={'stage':'failed','error':str(exc)}
+    if pipeline.get('stage')=='done':
+        st.progress(100,text='存儲完成：本地備份 → 雲端寫入 → 重新載入驗證')
+        st.success(f"已完成 {pipeline.get('count',0)} 個文件的儲存。" )
+    elif st.session_state.get(save_key,{}).get('stage')=='failed':
+        st.error('存儲流程未完成：'+str(st.session_state[save_key].get('error')))
+    st.caption('本地資料夾模式確認寫入後才上傳；瀏覽器下載模式只能確認已啟動下載，無法確認磁碟寫入完成。')
     t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown'])
     with t1:
         if st.button('新增圖片區塊',key='new_graph_'+workspace_id):
@@ -882,27 +902,9 @@ else:
                 logging.getLogger(__name__).exception('Create image block failed')
                 st.error('新增失敗：'+type(exc).__name__)
     with t2:
-        with st.form('new_table_'+workspace_id):
-            table_name=st.text_input('表格名稱',value='新表格')
-            col_m,col_n=st.columns(2)
-            m=col_m.number_input('M：資料列數',min_value=1,max_value=50,value=3,step=1)
-            n=col_n.number_input('N：欄數',min_value=1,max_value=30,value=3,step=1)
-            col_w,col_h=st.columns(2)
-            w=col_w.number_input('X：格子寬度（px）',min_value=60,max_value=600,value=TABLE_DEFAULT_WIDTH,step=5)
-            h=col_h.number_input('Y：格子高度（px）',min_value=28,max_value=240,value=TABLE_DEFAULT_HEIGHT,step=5)
-            create_table=st.form_submit_button('確認建立表格',type='primary')
-        if create_table:
-            try:
-                op=operation_progress('建立表格');op(20,'檢查表格尺寸')
-                created=insert_note('TABLE',table_name.strip() or '新表格',workspace_id,
-                    content=table_with_dimensions(m,n,w,h),position=len(workspace_blocks))
-                op(100,'表格已建立')
-                st.session_state.selected=created['id']
-                st.session_state['creation_notice']='已建立表格：'+created['title']
-                st.rerun()
-            except Exception as exc:
-                logging.getLogger(__name__).exception('Create table failed')
-                st.error('新增表格失敗：'+type(exc).__name__+'：'+str(exc))
+        if st.button('＋ 建立表格',key='open_table_modal_'+workspace_id):
+            st.session_state.pending_table={'title':'新表格','parent':workspace_id}
+            st.rerun()
     with t3:
         text_name=st.text_input('區塊名稱',value='新段落',key='text_name_'+workspace_id)
         if st.button('新增 Markdown 區塊',key='insert_text_'+workspace_id):
@@ -916,3 +918,6 @@ else:
                 st.error('新增失敗：'+type(exc).__name__)
 st.divider()
 st.caption('AInoteManagement v2.3 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+
+if st.session_state.get("pending_table"):
+    table_creation_dialog()
