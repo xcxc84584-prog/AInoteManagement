@@ -80,7 +80,7 @@ def login_screen():
             email=st.text_input('電子信箱',key='login_email')
             password=st.text_input('密碼',type='password',key='login_password')
             remember=st.checkbox('記住此裝置（自動登入）',value=False,key='login_remember')
-            submit=st.form_submit_button('登入',use_container_width=True)
+            submit=st.form_submit_button('登入',width='stretch')
         if submit:
             try:
                 result=sb.auth.sign_in_with_password({'email':email,'password':password})
@@ -93,7 +93,7 @@ def login_screen():
         with st.form('register'):
             email2=st.text_input('電子信箱',key='reg_email')
             password2=st.text_input('密碼（至少 8 碼）',type='password',key='reg_password')
-            submit2=st.form_submit_button('建立帳號',use_container_width=True)
+            submit2=st.form_submit_button('建立帳號',width='stretch')
         if submit2:
             if len(password2)<8:st.error('密碼至少需要 8 碼。')
             else:
@@ -125,7 +125,8 @@ def insert_note(kind,title,parent=None,content='',has_page=False,position=0):
 
 def update_note(nid,**values):
     values['updated_at']=datetime.now(timezone.utc).isoformat()
-    c.table('notes').update(values).eq('id',nid).eq('owner_id',uid).execute()
+    result=c.table('notes').update(values).eq('id',nid).eq('owner_id',uid).select('id').execute()
+    if not result.data:raise RuntimeError('資料庫未確認更新（0 筆）；請檢查 RLS 與資料是否存在')
 
 def set_deleted(nid, deleted):
     # Gracefully support databases not yet migrated to deleted_at.
@@ -249,9 +250,10 @@ def markdown_dataframe(markdown):
 
 def image_editor(note,assets,uid_key):
     st.caption('圖片區塊：貼上圖片（Ctrl+V）、拖曳或本地上傳，無須編輯 Markdown。')
+    if st.session_state.pop('image_saved_'+uid_key,False):st.success('圖片已成功儲存至 Supabase。')
     for match in re.finditer(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',note.get('content') or ''):
         signed=asset_url(match.group(2),assets)
-        if signed:st.image(signed,caption=match.group(1),use_container_width=True)
+        if signed:st.image(signed,caption=match.group(1),width='stretch')
     upload=st.file_uploader('選擇或拖曳圖片',type=['png','jpg','jpeg','webp','gif'],key='upload_'+uid_key)
     paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
     pasted=paste(key='paste_'+uid_key,default=None)
@@ -268,7 +270,7 @@ def image_editor(note,assets,uid_key):
             clean=name.replace(']','').replace('\n',' ')
             old=note.get('content') or ''
             update_note(note['id'],content=(old+'\n' if old.strip() else '')+f'![{clean}](asset://{asset_id})')
-            st.success('圖片已儲存')
+            st.session_state['image_saved_'+uid_key]=True
             st.rerun()
         except Exception as exc:
             logging.getLogger(__name__).exception('Image save failed')
@@ -278,7 +280,7 @@ def table_editor(note,uid_key):
     original=markdown_dataframe(note.get('content') or '')
     if original.empty and not len(original.columns):original=pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
     st.caption('Excel 式表格：點選儲存格編輯；可直接貼上從 Excel 複製的資料。')
-    edited=st.data_editor(original,hide_index=True,use_container_width=True,num_rows='dynamic',key='sheet_'+uid_key)
+    edited=st.data_editor(original,hide_index=True,width='stretch',num_rows='dynamic',key='sheet_'+uid_key)
     if st.button('儲存表格',key='save_table_'+uid_key):
         try:
             update_note(note['id'],content=dataframe_markdown(edited))
@@ -295,7 +297,7 @@ def show_markdown(content,assets):
         match=re.fullmatch(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',part)
         if match:
             src=asset_url(match.group(2),assets)
-            if src:st.image(src,caption=match.group(1) or None,use_container_width=False)
+            if src:st.image(src,caption=match.group(1) or None,width='content')
             else:st.warning('圖片不存在或無法存取')
         elif part:st.markdown(part)
 
@@ -382,10 +384,10 @@ selected=byid.get(st.session_state['selected'])
 
 with st.sidebar:
     st.title('📚 AI Note')
-    with st.popover('☰ 功能選單',use_container_width=True):
+    with st.popover('☰ 功能選單',width='stretch'):
         st.caption('建立組別')
         newgroup=st.text_input('組別名稱',key='newgroup')
-        if st.button('＋ 創建新組別',use_container_width=True):
+        if st.button('＋ 創建新組別',width='stretch'):
             if newgroup.strip():
                 try:r=insert_note('GROUP',newgroup.strip(),has_page=False);st.session_state.selected=r['id'];st.rerun()
                 except Exception:st.error('建立失敗')
@@ -397,7 +399,7 @@ with st.sidebar:
             rootid=get_ancestors(selected['id'],byid)[-1]
             root=byid[rootid]
             if root['kind']=='GROUP':
-                try:st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name='AInote_'+root['id']+'.ainote',mime='application/zip',use_container_width=True)
+                try:st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name='AInote_'+root['id']+'.ainote',mime='application/zip',width='stretch')
                 except Exception:st.warning('暫時無法匯出')
         st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
     st.divider()
@@ -488,7 +490,7 @@ with st.sidebar:
                     logging.getLogger(__name__).exception('Account deletion request failed')
                     st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
     st.divider()
-    if st.button('登出',use_container_width=True):
+    if st.button('登出',width='stretch'):
         for k in ['user_id','access_token','refresh_token','selected','remember_enabled']:st.session_state.pop(k,None)
         st.session_state.skip_auto_login=True
         remember_action('clear')
@@ -519,58 +521,107 @@ except Exception:
 mode=st.radio('工作模式',['瀏覽模式','編輯模式'],horizontal=True,key='workspace_mode')
 if mode=='瀏覽模式':
     st.title(group['title'])
-    st.caption('以組別（GROUP）為單位呈現整份筆記，包含所有子文件的文字、圖片與表格。')
-    def show_group_node(node,depth=0):
+    st.caption('以組別（GROUP）為單位瀏覽；可利用下方目錄快速定位章節。')
+    # Build one stable table of contents for the whole group, preserving Explorer order.
+    def ordered_children(parent_id):
+        return sorted([n for n in active_notes if n.get('parent_id')==parent_id],
+            key=lambda n:(n.get('position',0),n.get('created_at') or ''))
+    sections=[]
+    def collect_sections(node,depth=0,seen=None):
+        seen=set() if seen is None else seen
+        if node['id'] in seen:return
+        seen.add(node['id'])
+        sections.append((node,depth))
+        if node['kind'] in CONTAINERS:
+            for child in ordered_children(node['id']):collect_sections(child,depth+1,seen)
+    collect_sections(group)
+    # Anchor IDs are derived only from UUIDs, never from untrusted titles.
+    def section_anchor(note):return 'ainote-'+re.sub(r'[^a-zA-Z0-9-]','',str(note['id']))
+    toc=[(node,depth) for node,depth in sections if node['kind'] in CONTAINERS]
+    if len(toc)>1:
+        with st.expander('☰ 快速定位目錄',expanded=True):
+            for node,depth in toc:
+                label=('　' * min(depth,8))+('▸ ' if depth else '▾ ')+node['title']
+                st.markdown(f'<a href="#{section_anchor(node)}" style="text-decoration:none">{html.escape(label)}</a>',unsafe_allow_html=True)
+    st.markdown('<a id="'+section_anchor(group)+'"></a>',unsafe_allow_html=True)
+    for node,depth in sections:
         if node['kind'] in CONTAINERS:
             if node['id']!=group['id']:
-                st.markdown('#'*(min(depth+1,6))+' '+node['title'])
-            if node.get('content','').strip():show_markdown(node['content'],assets)
-            children=sorted(
-                [n for n in active_notes if n.get('parent_id')==node['id']],
-                key=lambda n:(n.get('position',0),n.get('created_at',''))
-            )
-            for child in children:show_group_node(child,depth+1)
+                st.markdown('<a id="'+section_anchor(node)+'"></a>',unsafe_allow_html=True)
+                st.markdown('#'*min(depth+1,6)+' '+node['title'])
+            if (node.get('content') or '').strip():show_markdown(node['content'],assets)
         else:
             if node['kind'] in ('GRAPH','TABLE') and node.get('title'):
                 st.caption(('🖼️ ' if node['kind']=='GRAPH' else '▦ ')+node['title'])
-            if node.get('content','').strip():show_markdown(node['content'],assets)
-    show_group_node(group)
+            if (node.get('content') or '').strip():show_markdown(node['content'],assets)
 else:
     st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(workspace_id,byid))))
     st.title(workspace['title'])
     st.caption('編輯模式：同一父文件的文字、圖片、表格共用工作區，分別儲存。')
-    # Container Markdown remains editable; saving is explicit and persistent.
-    with st.form('editor_workspace_'+workspace_id):
-        st.markdown('**工作區正文（Markdown）**')
-        page_content=st.text_area('Markdown',value=workspace.get('content') or '',
-            height=230,key='workspace_content_'+workspace_id,
-            label_visibility='collapsed',placeholder='# 在這裡撰寫 Markdown…')
-        if st.form_submit_button('💾 儲存工作區正文',type='primary'):
-            try:
-                update_note(workspace_id,content=page_content,has_page=True)
-                st.success('工作區正文已儲存')
-                st.rerun()
-            except Exception as exc:
-                logging.getLogger(__name__).exception('Workspace save failed')
-                st.error('儲存失敗：'+type(exc).__name__)
+    # All editors share a single continuous workspace; no expander or form frames.
+    # Draft values are keyed by workspace and note IDs so reruns retain unsaved changes.
+    main_key='workspace_content_'+workspace_id
+    st.markdown('**工作區正文**')
+    st.text_area('工作區 Markdown',value=workspace.get('content') or '',
+        height=230,key=main_key,label_visibility='collapsed',
+        placeholder='# 在這裡撰寫 Markdown…')
+    draft_keys=[(workspace_id,main_key,'container')]
     for block in workspace_blocks:
-        with st.expander(('🖼️ ' if block['kind']=='GRAPH' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'],expanded=selected['id']==block['id']):
-            if block['kind']=='GRAPH':
-                image_editor(block,assets,block['id'])
-            elif block['kind']=='TABLE':
-                table_editor(block,block['id'])
-            else:
-                with st.form('editor_block_'+block['id']):
-                    text=st.text_area('Markdown (.md)',value=block.get('content') or '',height=190,
-                        key='block_content_'+block['id'],label_visibility='collapsed')
-                    if st.form_submit_button('💾 儲存文字區塊'):
-                        try:
-                            update_note(block['id'],content=text)
-                            st.success('文字已儲存')
-                            st.rerun()
-                        except Exception as exc:
-                            logging.getLogger(__name__).exception('Block save failed')
-                            st.error('儲存失敗：'+type(exc).__name__)
+        st.markdown('#### '+('🖼️ ' if block['kind']=='GRAPH' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'])
+        if block['kind']=='GRAPH':
+            image_editor(block,assets,block['id'])
+        elif block['kind']=='TABLE':
+            # Render the grid without a separate save button; global save collects all grids.
+            original=markdown_dataframe(block.get('content') or '')
+            if original.empty and not len(original.columns):
+                original=pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
+            st.caption('點選儲存格編輯，或從 Excel 複製貼上。')
+            sheet_key='sheet_'+block['id']
+            st.session_state['_editor_result_'+sheet_key]=st.data_editor(original,hide_index=True,width='stretch',num_rows='dynamic',key=sheet_key)
+            draft_keys.append((block['id'],sheet_key,'table'))
+        else:
+            text_key='block_content_'+block['id']
+            st.text_area('Markdown：'+block['title'],value=block.get('content') or '',
+                height=190,key=text_key,label_visibility='collapsed')
+            draft_keys.append((block['id'],text_key,'text'))
+    st.markdown('---')
+    st.caption('批量存檔會儲存目前工作區的正文、所有文字區塊及表格。圖片請使用各圖片區的「儲存圖片」。')
+    if st.button('💾 批量儲存工作區',type='primary',key='save_all_'+workspace_id):
+        successes=[]
+        failures=[]
+        for note_id,field_key,field_type in draft_keys:
+            try:
+                if field_type=='table':
+                    # st.data_editor stores deltas in widget state; obtain the complete
+                    # edited DataFrame from its return value on the current rerun.
+                    value=st.session_state.get('_editor_result_'+field_key)
+                    if value is None:
+                        raise ValueError('表格編輯狀態尚未初始化，請重新開啟工作區')
+                    content=dataframe_markdown(value)
+                else:
+                    content=st.session_state[field_key]
+                payload={'content':content}
+                if field_type=='container':payload['has_page']=True
+                update_note(note_id,**payload)
+                successes.append(note_id)
+            except Exception as exc:
+                logging.getLogger(__name__).exception('Batch save failed for note %s',note_id)
+                failures.append((note_id,type(exc).__name__,str(exc)))
+        st.session_state['save_report_'+workspace_id]={
+            'successes':len(successes),'total':len(draft_keys),'failures':failures
+        }
+        st.rerun()
+    report=st.session_state.get('save_report_'+workspace_id)
+    if report:
+        if not report['failures']:
+            st.success(f"儲存成功：{report['successes']}/{report['total']} 個區塊已寫入 Supabase。")
+        else:
+            st.error(f"批量存檔部分失敗：成功 {report['successes']}/{report['total']}；失敗 {len(report['failures'])}。")
+            for note_id,code,detail in report['failures']:
+                st.caption(f"區塊 {note_id}：{code}：{detail[:200]}")
+        if st.button('清除存檔報告',key='clear_report_'+workspace_id):
+            st.session_state.pop('save_report_'+workspace_id,None)
+            st.rerun()
     st.divider()
     st.subheader('新增內容')
     t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown'])
@@ -609,4 +660,4 @@ else:
                 logging.getLogger(__name__).exception('Create Markdown block failed')
                 st.error('新增失敗：'+type(exc).__name__)
 st.divider()
-st.caption('AInoteManagement v1.5 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('AInoteManagement v1.7 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
