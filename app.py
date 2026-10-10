@@ -317,16 +317,15 @@ def render_table(content):
     width,height=table_dimensions(content)
     table_id='ainote-table-'+uuid.uuid4().hex
     alignment=table_alignment(content)
-    head=''.join('<th>'+html.escape(str(c))+'</th>' for c in frame.columns)
-    body=''.join('<tr>'+''.join('<td>'+html.escape(str(v) if pd.notna(v) else '')+'</td>' for v in row)+'</tr>' for row in frame.itertuples(index=False,name=None))
+    body=''.join('<tr>'+''.join('<td title="('+str(r)+'*'+str(c)+')">'+html.escape(str(v) if pd.notna(v) else '')+'</td>' for c,v in enumerate(row))+'</tr>' for r,row in enumerate(frame.itertuples(index=False,name=None)))
     # Fixed pixel widths for all columns, including headers; scrolling on phones.
     cols=len(frame.columns)
     css=f"""<style>
     #{table_id}{{max-width:100%;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}}
     #{table_id} table{{table-layout:fixed;border-collapse:collapse;width:{cols*width}px;min-width:{cols*width}px;max-width:none}}
-    #{table_id} th,#{table_id} td{{box-sizing:border-box;width:{width}px;min-width:{width}px;max-width:{width}px;height:{height}px;min-height:{height}px;padding:4px 7px;border:1px solid #687080;vertical-align:middle;overflow-wrap:anywhere;white-space:normal;text-align:{alignment};font-size:13px}}
+    #{table_id} td{{box-sizing:border-box;width:{width}px;min-width:{width}px;max-width:{width}px;height:{height}px;min-height:{height}px;padding:4px 7px;border:1px solid #687080;vertical-align:middle;overflow-wrap:anywhere;white-space:normal;text-align:{alignment};font-size:13px}}
     </style>"""
-    st.markdown(css+f'<div id="{table_id}"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>',unsafe_allow_html=True)
+    st.markdown(css+f'<div id="{table_id}"><table><tbody>{body}</tbody></table></div>',unsafe_allow_html=True)
 
 def table_markdown(rows,cols):
     if not (1<=rows<=50 and 1<=cols<=30):raise ValueError('表格尺寸必須為 1–50 列、1–30 欄')
@@ -913,12 +912,28 @@ else:
             ev=matrix_component(cells=original.fillna('').astype(str).values.tolist(),headers=[str(x) for x in original.columns],width=cell_w,height=cell_h,align=table_alignment(block.get('content')),revision=revision,error=st.session_state.get('_matrix_error_'+block['id'],''),errorId=st.session_state.get('_matrix_error_id_'+block['id'],0),key='matrix_'+block['id'],default=None)
             if isinstance(ev,dict) and ev.get('nonce')!=st.session_state.get('_matrix_nonce_'+block['id']):
                 st.session_state['_matrix_nonce_'+block['id']]=ev.get('nonce')
-                if ev.get('action') in ('save','formula'):
+                if ev.get('action') in ('save','formula','format'):
                     try:
-                        op=operation_progress('表格'+('矩陣計算' if ev['action']=='formula' else '更新'))
+                        op=operation_progress('表格'+('矩陣計算' if ev['action']=='formula' else '數值格式' if ev['action']=='format' else '更新'))
                         op(20,'檢查資料')
                         values=ev['cells'];headers=ev['headers']
                         if len(values)>50 or len(headers)>30 or any(len(row)!=len(headers) for row in values):raise ValueError('表格尺寸無效')
+                        if ev['action']=='format':
+                            top,left,bottom,right=ev.get('selection',[])
+                            if not (0<=top<=bottom<len(values) and 0<=left<=right<len(headers)):raise ValueError('選取範圍無效')
+                            mode=ev.get('formatMode')
+                            digits=int(ev.get('digits',2))
+                            if mode not in ('decimal','significant') or not 0<=digits<=15 or (mode=='significant' and digits<1):raise ValueError('位數設定無效')
+                            for r in range(top,bottom+1):
+                                for c in range(left,right+1):
+                                    raw=str(values[r][c]).strip()
+                                    if not raw:continue
+                                    try:
+                                        number=float(raw)
+                                    except ValueError:
+                                        continue
+                                    if not __import__('math').isfinite(number):continue
+                                    values[r][c]=(f'{number:.{digits}f}' if mode=='decimal' else f'{number:.{digits}g}')
                         if ev['action']=='formula':
                             st.session_state['_matrix_error_'+block['id']]=''
                             op(50,'執行安全矩陣運算')
