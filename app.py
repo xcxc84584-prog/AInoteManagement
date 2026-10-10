@@ -229,28 +229,46 @@ def signed_markdown(content,assets):
         return f'![{alt}]({url})' if url else f'**[圖片無法讀取：{alt}]**'
     return re.sub(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',replace,content or '')
 
-TABLE_SIZES={'小':('9px','70px'),'中':('13px','105px'),'大':('17px','145px')}
-def table_size(content):
-    found=re.search(r'<!--\s*ainote-table-size:(small|medium|large)\s*-->',content or '')
-    return {'small':'小','medium':'中','large':'大'}.get(found.group(1),'中') if found else '中'
-def table_with_size(rows,cols,size):
-    tag={'小':'small','中':'medium','大':'large'}[size]
-    return f'<!-- ainote-table-size:{tag} -->\n'+table_markdown(rows,cols)
-def keep_table_size(content,size):
-    tag={'小':'small','中':'medium','大':'large'}[size]
-    return f'<!-- ainote-table-size:{tag} -->\n'+re.sub(r'<!--\s*ainote-table-size:(small|medium|large)\s*-->\s*','',content or '',count=1)
+# Table metadata is stored in the Markdown itself, so no database migration is needed.
+TABLE_DEFAULT_WIDTH=120
+TABLE_DEFAULT_HEIGHT=40
+TABLE_WIDTH_RANGE=(60,600)
+TABLE_HEIGHT_RANGE=(28,240)
+def table_dimensions(content):
+    match=re.search(r'<!--\s*ainote-cell:(\d+)x(\d+)\s*-->',content or '')
+    if match:
+        w,h=map(int,match.groups())
+        return (max(TABLE_WIDTH_RANGE[0],min(w,TABLE_WIDTH_RANGE[1])),
+                max(TABLE_HEIGHT_RANGE[0],min(h,TABLE_HEIGHT_RANGE[1])))
+    # Compatibility with tables created before v1.9.
+    old=re.search(r'<!--\s*ainote-table-size:(small|medium|large)\s*-->',content or '')
+    widths={'small':70,'medium':105,'large':145}
+    return (widths.get(old.group(1),TABLE_DEFAULT_WIDTH) if old else TABLE_DEFAULT_WIDTH,TABLE_DEFAULT_HEIGHT)
+def keep_table_dimensions(content,width,height):
+    width,height=int(width),int(height)
+    if not (TABLE_WIDTH_RANGE[0]<=width<=TABLE_WIDTH_RANGE[1] and TABLE_HEIGHT_RANGE[0]<=height<=TABLE_HEIGHT_RANGE[1]):
+        raise ValueError('格子寬高超出允許範圍')
+    body=re.sub(r'<!--\s*ainote-(?:cell:\d+x\d+|table-size:(?:small|medium|large))\s*-->\s*','',content or '')
+    return f'<!-- ainote-cell:{width}x{height} -->\n'+body
+
+def table_with_dimensions(rows,cols,width,height):
+    return keep_table_dimensions(table_markdown(rows,cols),width,height)
+
 def render_table(content):
     frame=markdown_dataframe(content)
     if not len(frame.columns):return
-    fontsize,minwidth=TABLE_SIZES[table_size(content)]
-    # CSS is scoped to this one table, with horizontal scrolling on narrow screens.
+    width,height=table_dimensions(content)
+    table_id='ainote-table-'+uuid.uuid4().hex
     head=''.join('<th>'+html.escape(str(c))+'</th>' for c in frame.columns)
     body=''.join('<tr>'+''.join('<td>'+html.escape(str(v) if pd.notna(v) else '')+'</td>' for v in row)+'</tr>' for row in frame.itertuples(index=False,name=None))
+    # Fixed pixel widths for all columns, including headers; scrolling on phones.
     cols=len(frame.columns)
-    markup=f'<div style="width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch"><table style="width:max(100%,{cols} * {minwidth});min-width:{cols * int(minwidth[:-2])}px;table-layout:fixed;border-collapse:collapse;font-size:{fontsize};"><colgroup>'+''.join(f'<col style="width:{100/cols:.5f}%">' for _ in range(cols))+f'</colgroup><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
-    # Streamlit Markdown HTML sanitizer permits HTML tables, but strips inline style in some versions.
-    # Provide a scoped CSS block for predictable widths and mobile scrolling.
-    st.markdown(f'<style>div[data-testid="stMarkdown"] table th,div[data-testid="stMarkdown"] table td{{min-width:{minwidth};max-width:320px;vertical-align:top;overflow-wrap:anywhere;padding:8px;border:1px solid #687080}}</style>'+markup,unsafe_allow_html=True)
+    css=f"""<style>
+    #{table_id}{{max-width:100%;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}}
+    #{table_id} table{{table-layout:fixed;border-collapse:collapse;width:{cols*width}px;min-width:{cols*width}px;max-width:none}}
+    #{table_id} th,#{table_id} td{{box-sizing:border-box;width:{width}px;min-width:{width}px;max-width:{width}px;height:{height}px;min-height:{height}px;padding:4px 7px;border:1px solid #687080;vertical-align:middle;overflow-wrap:anywhere;white-space:normal;text-align:left;font-size:13px}}
+    </style>"""
+    st.markdown(css+f'<div id="{table_id}"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>',unsafe_allow_html=True)
 
 def table_markdown(rows,cols):
     if not (1<=rows<=50 and 1<=cols<=30):raise ValueError('表格尺寸必須為 1–50 列、1–30 欄')
@@ -311,7 +329,7 @@ def table_editor(note,uid_key):
     edited=st.data_editor(original,hide_index=True,width='stretch',num_rows='dynamic',key='sheet_'+uid_key)
     if st.button('儲存表格',key='save_table_'+uid_key):
         try:
-            update_note(note['id'],content=keep_table_size(dataframe_markdown(edited),table_size(note.get('content'))))
+            update_note(note['id'],content=keep_table_dimensions(dataframe_markdown(edited),*table_dimensions(note.get('content'))))
             st.success('表格已儲存')
             st.rerun()
         except Exception as exc:
@@ -481,21 +499,28 @@ with st.sidebar:
             st.error(f'檔案操作失敗：{type(exc).__name__}。請至 Manage app → Logs 查看詳情。')
     pending=st.session_state.get('pending_table')
     if pending:
-        with st.form('sidebar_table_setup'):
-            st.markdown('**建立表格：'+pending['title']+'**')
-            m=st.number_input('M：資料列數',min_value=1,max_value=50,value=3)
-            n=st.number_input('N：欄數',min_value=1,max_value=30,value=3)
-            size=st.selectbox('格子大小',list(TABLE_SIZES),index=1)
-            ok=st.form_submit_button('建立表格')
+        st.markdown('**建立表格：'+pending['title']+'**')
+        with st.form('sidebar_table_setup',clear_on_submit=False):
+            m=st.number_input('M：資料列數',min_value=1,max_value=50,value=3,key='sidebar_rows')
+            n=st.number_input('N：欄數',min_value=1,max_value=30,value=3,key='sidebar_cols')
+            w=st.number_input('X：格子寬度（px）',min_value=60,max_value=600,value=TABLE_DEFAULT_WIDTH,key='sidebar_cell_w')
+            h=st.number_input('Y：格子高度（px）',min_value=28,max_value=240,value=TABLE_DEFAULT_HEIGHT,key='sidebar_cell_h')
+            ok=st.form_submit_button('確認建立表格',type='primary')
         if ok:
             try:
-                new=insert_note('TABLE',pending['title'],pending['parent'],content=table_with_size(m,n,size))
-                st.session_state.selected=new['id']
+                created=insert_note('TABLE',pending['title'],pending['parent'],content=table_with_dimensions(m,n,w,h))
+                st.session_state.selected=created['id']
                 st.session_state.pop('pending_table',None)
+                st.session_state['creation_notice']='已建立表格：'+created['title']
                 st.rerun()
-            except Exception as exc:st.error('建立表格失敗：'+str(exc))
+            except Exception as exc:
+                logging.getLogger(__name__).exception('Create table failed')
+                st.error('建立表格失敗：'+type(exc).__name__+'：'+str(exc))
         if st.button('取消建立',key='cancel_sidebar_table'):
-            st.session_state.pop('pending_table',None);st.rerun()
+            st.session_state.pop('pending_table',None)
+            st.rerun()
+    if st.session_state.get('creation_notice'):
+        st.success(st.session_state.pop('creation_notice'))
     nav_root=st.session_state.get('quick_nav_root')
     if nav_root in byid:
         with st.expander('☰ 快速定位',expanded=True):
@@ -659,12 +684,33 @@ else:
             if original.empty and not len(original.columns):
                 original=pd.DataFrame([['']*3 for _ in range(3)],columns=['欄位 1','欄位 2','欄位 3'])
             sheet_key='sheet_'+block['id']
-            st.session_state['_editor_result_'+sheet_key]=st.data_editor(original,hide_index=True,width='stretch',num_rows='dynamic',key=sheet_key)
+            edited_frame=st.data_editor(original,hide_index=True,width='stretch',num_rows='fixed',key=sheet_key)
+            st.session_state['_editor_result_'+sheet_key]=edited_frame.copy(deep=True)
+            cell_w,cell_h=table_dimensions(block.get('content') or '')
+            if st.button('💾 儲存表格：'+block['title'],key='save_table_inline_'+block['id']):
+                try:
+                    new_content=keep_table_dimensions(dataframe_markdown(edited_frame),cell_w,cell_h)
+                    update_note(block['id'],content=new_content)
+                    st.session_state[report_key]={'successes':1,'total':1,'failures':[],
+                        'names':[block['title']],'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
+                    st.rerun()
+                except Exception as exc:
+                    logging.getLogger(__name__).exception('Table save failed')
+                    st.error('表格儲存失敗：'+type(exc).__name__+'：'+str(exc))
             draft_keys.append((block['id'],sheet_key,'table'))
         else:
             text_key='block_content_'+block['id']
             st.text_area('Markdown：'+block['title'],value=block.get('content') or '',
                 height=190,key=text_key,label_visibility='collapsed')
+            if st.button('💾 儲存文件：'+block['title'],key='save_text_inline_'+block['id']):
+                try:
+                    update_note(block['id'],content=st.session_state[text_key])
+                    st.session_state[report_key]={'successes':1,'total':1,'failures':[],
+                        'names':[block['title']],'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
+                    st.rerun()
+                except Exception as exc:
+                    logging.getLogger(__name__).exception('Text save failed')
+                    st.error('文件儲存失敗：'+type(exc).__name__+'：'+str(exc))
             draft_keys.append((block['id'],text_key,'text'))
     # All editable text and tables are submitted in one explicit action.
     if st.button('💾 儲存全部變更',type='primary',key='save_all_'+workspace_id):
@@ -676,7 +722,7 @@ else:
                 if field_type=='table':
                     value=st.session_state.get('_editor_result_'+field_key)
                     if value is None:raise ValueError('表格尚未初始化，請重新開啟工作區')
-                    content=keep_table_size(dataframe_markdown(value),table_size(byid[note_id].get('content') or ''))
+                    content=keep_table_dimensions(dataframe_markdown(value),*table_dimensions(byid[note_id].get('content') or ''))
                 else:
                     content=st.session_state[field_key]
                 payload={'content':content}
@@ -686,6 +732,7 @@ else:
             except Exception as exc:
                 logging.getLogger(__name__).exception('Save failed: %s (%s)',note_name,note_id)
                 failures.append((note_name,type(exc).__name__,str(exc)))
+        if not draft_keys:failures.append(('工作區','NoEditableBlocks','此工作區沒有可儲存的文字或表格；請先建立文件'))
         st.session_state['save_report_'+workspace_id]={
             'successes':len(successes),'total':len(draft_keys),'failures':failures,
             'names':successes,'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
@@ -702,20 +749,25 @@ else:
                 logging.getLogger(__name__).exception('Create image block failed')
                 st.error('新增失敗：'+type(exc).__name__)
     with t2:
-        col_m,col_n=st.columns(2)
-        m=col_m.number_input('M：資料列數',min_value=1,max_value=50,value=3,step=1,key='rows_'+workspace_id)
-        n=col_n.number_input('N：欄數',min_value=1,max_value=30,value=3,step=1,key='cols_'+workspace_id)
-        table_name=st.text_input('表格名稱',value='新表格',key='table_name_'+workspace_id)
-        table_size_choice=st.selectbox('格子大小',list(TABLE_SIZES),index=1,key='table_size_'+workspace_id)
-        if st.button('建立可填寫表格',key='insert_table_'+workspace_id):
+        with st.form('new_table_'+workspace_id):
+            table_name=st.text_input('表格名稱',value='新表格')
+            col_m,col_n=st.columns(2)
+            m=col_m.number_input('M：資料列數',min_value=1,max_value=50,value=3,step=1)
+            n=col_n.number_input('N：欄數',min_value=1,max_value=30,value=3,step=1)
+            col_w,col_h=st.columns(2)
+            w=col_w.number_input('X：格子寬度（px）',min_value=60,max_value=600,value=TABLE_DEFAULT_WIDTH,step=5)
+            h=col_h.number_input('Y：格子高度（px）',min_value=28,max_value=240,value=TABLE_DEFAULT_HEIGHT,step=5)
+            create_table=st.form_submit_button('確認建立表格',type='primary')
+        if create_table:
             try:
                 created=insert_note('TABLE',table_name.strip() or '新表格',workspace_id,
-                    content=table_with_size(m,n,table_size_choice),position=len(workspace_blocks))
+                    content=table_with_dimensions(m,n,w,h),position=len(workspace_blocks))
                 st.session_state.selected=created['id']
+                st.session_state['creation_notice']='已建立表格：'+created['title']
                 st.rerun()
             except Exception as exc:
                 logging.getLogger(__name__).exception('Create table failed')
-                st.error('新增表格失敗：'+type(exc).__name__)
+                st.error('新增表格失敗：'+type(exc).__name__+'：'+str(exc))
     with t3:
         text_name=st.text_input('區塊名稱',value='新段落',key='text_name_'+workspace_id)
         if st.button('新增 Markdown 區塊',key='insert_text_'+workspace_id):
@@ -728,4 +780,4 @@ else:
                 logging.getLogger(__name__).exception('Create Markdown block failed')
                 st.error('新增失敗：'+type(exc).__name__)
 st.divider()
-st.caption('AInoteManagement v1.8 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('AInoteManagement v1.9 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
