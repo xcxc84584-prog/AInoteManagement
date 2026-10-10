@@ -7,6 +7,7 @@ import os
 import re
 import uuid
 import zipfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import streamlit as st
@@ -216,10 +217,41 @@ def upload_image(raw,note_id):
     return asset['id']
 
 def asset_url(asset_id,assets):
+    # Kept for export and compatibility. Supabase signedURL may be relative.
     a=assets.get(asset_id)
     if not a:return None
-    try:return c.storage.from_('note-images').create_signed_url(a['storage_path'],3600)['signedURL']
-    except Exception:return None
+    try:
+        signed=c.storage.from_('note-images').create_signed_url(a['storage_path'],3600)
+        path=signed.get('signedURL') or signed.get('signedUrl') or signed.get('signed_url')
+        if not path:return None
+        if path.startswith('http://') or path.startswith('https://'):return path
+        from urllib.parse import urljoin
+        return urljoin(url.rstrip('/')+'/',path.lstrip('/'))
+    except Exception:
+        logging.getLogger(__name__).exception('Failed to sign image URL')
+        return None
+
+def asset_image(asset_id,assets):
+    # Download with authenticated Supabase client; st.image(bytes) avoids
+    # relative signed URLs, expiring links, and browser-side Storage requests.
+    a=assets.get(asset_id)
+    if not a:return None
+    path=a.get('storage_path')
+    if not path:return None
+    cache=st.session_state.setdefault('_asset_image_cache',{})
+    cache_key=str(uid)+':'+str(path)
+    hit=cache.get(cache_key)
+    if hit and time.monotonic()-hit[0]<300:return hit[1]
+    try:
+        raw=c.storage.from_('note-images').download(path)
+        if not isinstance(raw,bytes):raw=bytes(raw)
+        # Limit memory consumption for long browsing sessions.
+        if len(cache)>24:cache.clear()
+        cache[cache_key]=(time.monotonic(),raw)
+        return raw
+    except Exception:
+        logging.getLogger(__name__).exception('Image download failed: %s',path)
+        return None
 
 def signed_markdown(content,assets):
     # Signed URLs are generated only for assets owned by the logged-in user.
@@ -299,13 +331,17 @@ def markdown_dataframe(markdown):
 def image_editor(note,assets,uid_key):
     if st.session_state.pop('image_saved_'+uid_key,False):st.success('圖片已成功儲存至 Supabase。')
     for match in re.finditer(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',note.get('content') or ''):
-        signed=asset_url(match.group(2),assets)
-        if signed:st.image(signed,caption=match.group(1),width='stretch')
+        raw=asset_image(match.group(2),assets)
+        if raw:st.image(raw,caption=match.group(1),width='stretch')
+        else:st.warning('圖片無法載入：請檢查 Storage 與 assets 權限')
     upload=st.file_uploader('選擇或拖曳圖片',type=['png','jpg','jpeg','webp','gif'],key='upload_'+uid_key)
     paste=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
     pasted=paste(key='paste_'+uid_key,default=None)
+    if isinstance(pasted,dict) and pasted.get('data'):
+        st.session_state['_paste_buffer_'+uid_key]=pasted
     incoming=upload.getvalue() if upload else None
     name=upload.name if upload else '貼上的圖片'
+    pasted=st.session_state.get('_paste_buffer_'+uid_key)
     if incoming is None and isinstance(pasted,dict) and pasted.get('data'):
         try:
             incoming=base64.b64decode(pasted['data'].split(',',1)[1],validate=True)
@@ -318,6 +354,7 @@ def image_editor(note,assets,uid_key):
             old=note.get('content') or ''
             update_note(note['id'],content=(old+'\n' if old.strip() else '')+f'![{clean}](asset://{asset_id})')
             st.session_state['image_saved_'+uid_key]=True
+            st.session_state.pop('_paste_buffer_'+uid_key,None)
             st.rerun()
         except Exception as exc:
             logging.getLogger(__name__).exception('Image save failed')
@@ -342,8 +379,8 @@ def show_markdown(content,assets):
     for part in parts:
         match=re.fullmatch(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',part)
         if match:
-            src=asset_url(match.group(2),assets)
-            if src:st.image(src,caption=match.group(1) or None,width='content')
+            raw=asset_image(match.group(2),assets)
+            if raw:st.image(raw,caption=match.group(1) or None,width='content')
             else:st.warning('圖片不存在或無法存取')
         elif part:st.markdown(part)
 
@@ -617,10 +654,13 @@ workspace_blocks=sorted(
     key=lambda n:(n.get('position',0),n.get('created_at',''))
 )
 assets={}
-try:
-    assets={a['id']:a for a in c.table('assets').select('*').eq('owner_id',uid).execute().data}
-except Exception:
-    logging.getLogger(__name__).exception('Asset list failed')
+# Load asset metadata only if the group/workspace contains image references.
+needs_assets=any('asset://' in (n.get('content') or '') for n in active_notes if n['kind']=='GRAPH')
+if needs_assets:
+    try:
+        assets={a['id']:a for a in c.table('assets').select('id,storage_path,mime_type,note_id').eq('owner_id',uid).execute().data}
+    except Exception:
+        logging.getLogger(__name__).exception('Asset list failed')
 
 mode=st.radio('工作模式',['瀏覽模式','編輯模式'],horizontal=True,key='workspace_mode')
 report_key='save_report_'+workspace_id
