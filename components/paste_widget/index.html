@@ -1,0 +1,7 @@
+<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;font:14px system-ui;color:#d4d9e5}#drop{border:1px dashed #788bb0;border-radius:9px;padding:14px;text-align:center;background:#242936;cursor:pointer}#drop:focus{outline:2px solid #7896e8}small{opacity:.7}</style></head><body><div id="drop" tabindex="0">點擊此處後按 Ctrl+V 貼上截圖，或拖曳圖片至此<br><small>PNG / JPEG / WebP / GIF，最大 10 MB</small></div><script>
+const drop=document.getElementById('drop');let count=0;
+function send(type,data){parent.postMessage({isStreamlitMessage:true,type,data},'*')}
+function resize(){send('streamlit:setFrameHeight',{height:document.body.scrollHeight+4})}
+async function receive(file){if(!file||!file.type.startsWith('image/'))return;if(file.size>10*1024*1024){drop.textContent='圖片超過 10MB';return}const reader=new FileReader();reader.onload=()=>{count++;send('streamlit:setComponentValue',{value:{name:file.name||'pasted.png',mime:file.type,data:reader.result,nonce:count}});drop.textContent='已接收圖片，等待儲存…'};reader.readAsDataURL(file)}
+drop.addEventListener('paste',e=>{let f=Array.from(e.clipboardData.files).find(f=>f.type.startsWith('image/'));if(f){e.preventDefault();receive(f)}});drop.addEventListener('dragover',e=>e.preventDefault());drop.addEventListener('drop',e=>{e.preventDefault();receive(e.dataTransfer.files[0])});window.addEventListener('message',e=>{if(e.data?.type==='streamlit:render')resize()});send('streamlit:componentReady',{apiVersion:1});resize();
+</script></body></html>
