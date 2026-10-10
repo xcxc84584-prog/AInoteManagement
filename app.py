@@ -531,6 +531,7 @@ report=st.session_state.get(report_key)
 if report:
     if not report['failures']:
         st.success(f"已儲存並驗證：{report['successes']}/{report['total']} 個區塊。{report['saved_at']}")
+        if report.get('names'):st.caption('已儲存：'+'、'.join(report['names']))
     else:
         st.error(f"儲存失敗：成功 {report['successes']}/{report['total']}，失敗 {len(report['failures'])}。")
         for note_id,code,detail in report['failures']:
@@ -584,16 +585,7 @@ else:
     st.text_area('工作區 Markdown',value=workspace.get('content') or '',
         height=230,key=main_key,label_visibility='collapsed',
         placeholder='# 在這裡撰寫 Markdown…')
-    if st.button('💾 儲存此工作區正文',key='save_main_'+workspace_id):
-        try:
-            update_note(workspace_id,content=st.session_state[main_key],has_page=True)
-            st.session_state['save_report_'+workspace_id]={
-                'successes':1,'total':1,'failures':[],
-                'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
-            st.rerun()
-        except Exception as exc:
-            logging.getLogger(__name__).exception('Workspace save failed: %s',workspace_id)
-            st.error('工作區儲存失敗：'+type(exc).__name__+'：'+str(exc)[:350])
+    st.caption('下方「💾 儲存全部變更」會同時儲存正文、T1 等文字文件和表格。')
     draft_keys=[(workspace_id,main_key,'container')]
     for block in workspace_blocks:
         st.markdown('#### '+('🖼️ ' if block['kind']=='GRAPH' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'])
@@ -615,30 +607,29 @@ else:
             draft_keys.append((block['id'],text_key,'text'))
     st.markdown('---')
     st.caption('批量存檔會儲存目前工作區的正文、所有文字區塊及表格。圖片請使用各圖片區的「儲存圖片」。寫入後會重新讀取 Supabase 驗證。')
-    if st.button('💾 批量儲存工作區',type='primary',key='save_all_'+workspace_id):
+    # All editable text and tables are submitted in one explicit action.
+    if st.button('💾 儲存全部變更（正文＋文字＋表格）',type='primary',key='save_all_'+workspace_id):
         successes=[]
         failures=[]
         for note_id,field_key,field_type in draft_keys:
+            note_name=byid.get(note_id,{}).get('title',note_id)
             try:
                 if field_type=='table':
-                    # st.data_editor stores deltas in widget state; obtain the complete
-                    # edited DataFrame from its return value on the current rerun.
                     value=st.session_state.get('_editor_result_'+field_key)
-                    if value is None:
-                        raise ValueError('表格編輯狀態尚未初始化，請重新開啟工作區')
+                    if value is None:raise ValueError('表格尚未初始化，請重新開啟工作區')
                     content=dataframe_markdown(value)
                 else:
                     content=st.session_state[field_key]
                 payload={'content':content}
                 if field_type=='container':payload['has_page']=True
                 update_note(note_id,**payload)
-                successes.append(note_id)
+                successes.append(note_name)
             except Exception as exc:
-                logging.getLogger(__name__).exception('Batch save failed for note %s',note_id)
-                failures.append((note_id,type(exc).__name__,str(exc)))
+                logging.getLogger(__name__).exception('Save failed: %s (%s)',note_name,note_id)
+                failures.append((note_name,type(exc).__name__,str(exc)))
         st.session_state['save_report_'+workspace_id]={
             'successes':len(successes),'total':len(draft_keys),'failures':failures,
-            'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+            'names':successes,'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
         }
         st.rerun()
     st.divider()
