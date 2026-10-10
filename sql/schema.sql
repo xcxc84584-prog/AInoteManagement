@@ -33,3 +33,12 @@ insert into storage.buckets (id,name,public,file_size_limit,allowed_mime_types) 
 create policy "note images select" on storage.objects for select to authenticated using (bucket_id = 'note-images' and (storage.foldername(name))[1] = (select auth.uid())::text);
 create policy "note images insert" on storage.objects for insert to authenticated with check (bucket_id = 'note-images' and (storage.foldername(name))[1] = (select auth.uid())::text);
 create policy "note images delete" on storage.objects for delete to authenticated using (bucket_id = 'note-images' and (storage.foldername(name))[1] = (select auth.uid())::text);
+
+-- v1.1 additions for fresh installs
+-- Execute once in Supabase SQL Editor. Preserves existing notes and assets.
+ALTER TABLE public.notes ADD COLUMN IF NOT EXISTS is_deleted boolean NOT NULL DEFAULT false;
+ALTER TABLE public.notes ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+GRANT USAGE ON SCHEMA public TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.notes TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.assets TO authenticated;
+CREATE INDEX IF NOT EXISTS notes_owner_deleted_idx ON public.notes(owner_id,is_deleted,parent_id,position);

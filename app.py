@@ -92,7 +92,30 @@ def update_note(nid,**values):
     values['updated_at']=datetime.utcnow().isoformat()+'Z'
     c.table('notes').update(values).eq('id',nid).eq('owner_id',uid).execute()
 
-def delete_note(nid):c.table('notes').delete().eq('id',nid).eq('owner_id',uid).execute()
+def delete_note(nid):
+    # Soft-delete the complete subtree so children remain recoverable.
+    ids=list(subtree(nid,notes))
+    c.table('notes').update({'is_deleted':True,'deleted_at':datetime.utcnow().isoformat()+'Z'}).in_('id',ids).eq('owner_id',uid).execute()
+
+def restore_note(nid):
+    ids=list(subtree(nid,notes))
+    c.table('notes').update({'is_deleted':False,'deleted_at':None}).in_('id',ids).eq('owner_id',uid).execute()
+
+def clone_note(nid,dest):
+    original=subtree(nid,notes)
+    if len(original)>200:raise ValueError('一次最多複製 200 個節點')
+    pending={n['id']:n for n in notes if n['id'] in original}
+    mapping={}
+    while pending:
+        progressed=False
+        for old,n in list(pending.items()):
+            if old!=nid and n['parent_id'] not in mapping:continue
+            parent=dest if old==nid else mapping[n['parent_id']]
+            copied=insert_note(n['kind'],n['title']+' - Copy' if old==nid else n['title'],parent,n['content'],n['has_page'],n['position'])
+            mapping[old]=copied['id'];del pending[old];progressed=True
+        if not progressed:raise ValueError('文件結構錯誤')
+    return mapping[nid]
+
 
 def get_ancestors(nid,byid):
     seen=set();result=[]
@@ -217,8 +240,9 @@ except Exception as exc:
     st.code(f'Error type: {type(exc).__name__}')
     st.stop()
 byid={n['id']:n for n in notes}
-roots=[n for n in notes if n['kind']=='GROUP' and not n['parent_id']]
-if st.session_state.get('selected') not in byid:st.session_state['selected']=roots[0]['id'] if roots else None
+active_notes=[n for n in notes if not n.get('is_deleted')]
+roots=[n for n in active_notes if n['kind']=='GROUP' and not n['parent_id']]
+if st.session_state.get('selected') not in {n['id'] for n in active_notes}:st.session_state['selected']=roots[0]['id'] if roots else None
 selected=byid.get(st.session_state['selected'])
 
 with st.sidebar:
@@ -243,13 +267,52 @@ with st.sidebar:
         st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
     st.divider()
     st.subheader('EXPLORER')
-    def tree(parent=None,depth=0):
-        for n in sorted((x for x in notes if x['parent_id']==parent),key=lambda x:(x['position'],x['created_at'])):
-            label=('📁 ' if n['kind'] in CONTAINERS else {'GRAPH':'🖼️ ','TABLE':'▦ ','MARKDOWN':'📄 '}[n['kind']])+n['title']
-            if st.button('　'*depth+label,key='tree_'+n['id'],use_container_width=True,type='primary' if selected and selected['id']==n['id'] else 'secondary'):
-                st.session_state.selected=n['id'];st.rerun()
-            if n['kind'] in CONTAINERS:tree(n['id'],depth+1)
-    tree()
+    st.caption('右鍵選單 · 拖曳移動 · F2 更名 · Delete 刪除 · Ctrl+C/X/V')
+    explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
+    import html as _html
+    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position']} for n in active_notes]
+    event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=510)
+    if event and event.get('event_id')!=st.session_state.get('last_explorer_event'):
+        st.session_state.last_explorer_event=event.get('event_id')
+        action=event.get('action');nid=event.get('id');target=event.get('target')
+        try:
+            if action=='select' and nid in byid:
+                st.session_state.selected=nid
+                tabs=st.session_state.setdefault('open_tabs',[])
+                if nid not in tabs:tabs.append(nid)
+            elif action=='rename' and nid in byid:
+                title=str(event.get('title','')).strip()
+                if title:update_note(nid,title=title[:200])
+            elif action=='create':
+                kind=event.get('kind');title=str(event.get('title','')).strip()
+                parent=target if target in byid and byid[target]['kind'] in CONTAINERS else None
+                if kind=='GROUP':parent=None
+                if kind in KINDS and title and (kind=='GROUP' or parent):
+                    new=insert_note(kind,title,parent,has_page=kind=='SUBFILE',position=len([x for x in active_notes if x['parent_id']==parent]))
+                    st.session_state.selected=new['id']
+            elif action in ('move','paste') and nid in byid:
+                source=byid[nid];dest=target if target in byid and byid[target]['kind'] in CONTAINERS else None
+                if dest and source['kind']!='GROUP' and dest not in subtree(nid,notes) and get_ancestors(dest,byid)[-1]==get_ancestors(nid,byid)[-1]:
+                    if action=='move' or event.get('cut'):
+                        update_note(nid,parent_id=dest,position=len([x for x in active_notes if x['parent_id']==dest]))
+                    else:clone_note(nid,dest)
+            elif action=='delete' and nid in byid:delete_note(nid)
+            elif action=='restore' and nid in byid:restore_note(nid)
+            elif action=='reorder' and nid in byid and target in byid:
+                a,b=byid[nid],byid[target]
+                if a['parent_id']==b['parent_id']:
+                    siblings=sorted([n for n in active_notes if n['parent_id']==a['parent_id']],key=lambda n:(n['position'],n['created_at']))
+                    ids=[n['id'] for n in siblings if n['id']!=nid];ids.insert(ids.index(target),nid)
+                    for i,ident in enumerate(ids):update_note(ident,position=i)
+            st.rerun()
+        except Exception as exc:
+            logging.getLogger(__name__).exception('Explorer action failed')
+            st.error('檔案操作失敗：'+type(exc).__name__)
+    with st.expander('資源回收區'):
+        deleted_roots=[n for n in notes if n.get('is_deleted') and (not n['parent_id'] or not byid.get(n['parent_id'],{}).get('is_deleted'))]
+        for n in deleted_roots:
+            cc=st.columns([3,1]);cc[0].caption(n['title'])
+            if cc[1].button('還原',key='restore_'+n['id']):restore_note(n['id']);st.rerun()
     st.divider()
     if st.button('登出',use_container_width=True):
         for k in ['user_id','access_token','refresh_token','selected']:st.session_state.pop(k,None)
@@ -260,6 +323,16 @@ if not selected:
     st.info('請在左側「功能選單」建立第一個組別，或匯入 .ainote 檔案。')
     st.stop()
 
+tabs=[tid for tid in st.session_state.setdefault('open_tabs',[]) if tid in {n['id'] for n in active_notes}]
+st.session_state.open_tabs=tabs
+if selected['id'] not in tabs:tabs.append(selected['id'])
+if tabs:
+    cols=st.columns(min(len(tabs),6)+1)
+    for i,tid in enumerate(tabs[-6:]):
+        if cols[i].button(('● ' if tid==selected['id'] else '')+byid[tid]['title'][:17],key='tab_'+tid):
+            st.session_state.selected=tid;st.rerun()
+    if cols[-1].button('×',key='close_tab'):
+        tabs.remove(selected['id']);st.session_state.selected=tabs[-1] if tabs else (roots[0]['id'] if roots else None);st.rerun()
 st.caption(' / '.join(byid[x]['title'] for x in reversed(get_ancestors(selected['id'],byid))))
 st.title(selected['title'])
 
@@ -269,25 +342,25 @@ with st.expander('文件管理：新增 / 更名 / 移動 / 刪除',expanded=Fal
             col1,col2=st.columns([1,2]);kind=col1.selectbox('類型', ['SUBFILE','MARKDOWN','GRAPH','TABLE'] if selected['kind']=='SUBFILE' else ['SUBFILE','MARKDOWN','GRAPH','TABLE']);title=col2.text_input('新文件名稱')
             has_page=st.checkbox('啟用子文件自身頁面',value=True) if kind=='SUBFILE' else False
             if st.form_submit_button('新增文件') and title.strip():
-                try:r=insert_note(kind,title.strip(),selected['id'],has_page=has_page,position=len([n for n in notes if n['parent_id']==selected['id']]));st.session_state.selected=r['id'];st.rerun()
+                try:r=insert_note(kind,title.strip(),selected['id'],has_page=has_page,position=len([n for n in active_notes if n['parent_id']==selected['id']]));st.session_state.selected=r['id'];st.rerun()
                 except Exception:st.error('新增失敗')
     with st.form('rename'):
         renamed=st.text_input('重新命名',value=selected['title'])
         if st.form_submit_button('儲存名稱') and renamed.strip():
             update_note(selected['id'],title=renamed.strip()[:200]);st.rerun()
     if selected['kind']!='GROUP':
-        allowed=[n for n in notes if n['kind'] in CONTAINERS and n['id'] not in subtree(selected['id'],notes) and get_ancestors(n['id'],byid)[-1]==get_ancestors(selected['id'],byid)[-1]]
+        allowed=[n for n in active_notes if n['kind'] in CONTAINERS and n['id'] not in subtree(selected['id'],notes) and get_ancestors(n['id'],byid)[-1]==get_ancestors(selected['id'],byid)[-1]]
         if allowed:
             dest=st.selectbox('移動至',allowed,format_func=lambda n:n['title'],key='move_target')
             if st.button('移動文件'):
                 update_note(selected['id'],parent_id=dest['id']);st.rerun()
-    confirm=st.checkbox('我確認要永久刪除此文件及其子文件',key='delete_confirm')
-    if st.button('刪除文件',disabled=not confirm):
+    confirm=st.checkbox('我確認要將此文件及其子文件移至資源回收區',key='delete_confirm')
+    if st.button('移至資源回收區',disabled=not confirm):
         try:delete_note(selected['id']);st.session_state.selected=None;st.rerun()
         except Exception:st.error('刪除失敗')
 
 if selected['kind'] in CONTAINERS:
-    children=[n for n in notes if n['parent_id']==selected['id']]
+    children=[n for n in active_notes if n['parent_id']==selected['id']]
     folders=[n for n in children if n['kind'] in CONTAINERS]
     blocks=[n for n in children if n['kind'] not in CONTAINERS]
     if folders:st.caption('下一層子文件：'+ ' · '.join(n['title'] for n in folders))
@@ -347,4 +420,4 @@ else:
         show_markdown(selected['content'],assets)
 
 st.divider()
-st.caption('AInoteManagement v1.0 · Streamlit + Supabase · 每次修改請按儲存 · 建議定期下載 .ainote 備份')
+st.caption('AInoteManagement v1.1 · Streamlit + Supabase · 每次修改請按儲存 · 建議定期下載 .ainote 備份')

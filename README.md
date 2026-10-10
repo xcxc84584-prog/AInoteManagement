@@ -47,3 +47,19 @@ Linux/macOS 使用 `source .venv/bin/activate` 後執行 `pip install -r require
 - 圖片使用私有 bucket 與時效性簽署 URL；使用 Pillow 驗證與轉檔。
 - 不要將 Supabase service_role key 放在 Streamlit Cloud Secrets 作為此應用的資料存取金鑰。
 - 此版未完成正式滲透測試，不應宣稱已達生產環境完整安全保證。
+
+## v1.1 VS Code Explorer 升級（既有 Supabase 專案必做）
+
+1. 在 Supabase Dashboard → SQL Editor 執行 `sql/migration_v1_1.sql`（只需一次）。這會增加軟刪除欄位、索引及修正 authenticated 資料表權限；保留現有筆記。
+2. 將本版專案檔案覆蓋原本 GitHub 專案，切勿上傳 `.streamlit/secrets.toml`。
+3. `git add . && git commit -m "AInoteManagement v1.1 Explorer" && git push origin main`。
+4. Streamlit Cloud 重新部署後登入，測試 Explorer 右鍵、新增、重新命名、拖曳、剪下貼上、資源回收區及頂部分頁。
+
+### 功能說明及限制
+
+- 新增自訂 Explorer 元件：右鍵選單、拖曳移動與排序、F2、Delete、Ctrl+C/X/V（快捷鍵僅在 Explorer 元件取得鍵盤焦點時生效）。
+- 複製文件會複製筆記節點及 Markdown 引用；圖片素材沿用原引用，不複製 Storage 物件。
+- 新增多分頁切換、資源回收區及軟刪除還原。
+- 原本 Markdown 編輯、圖片貼上與匯入匯出仍保留。
+- 此版為 v1.1 功能測試版；未完成瀏覽器端端到端測試。完整 VS Code 跨框架快捷鍵、批次多選與完全原子化拖曳操作仍待後續強化。
+- 建議先下載 `.ainote` 備份再升級。若出現 `column notes.is_deleted does not exist`，表示尚未執行 migration SQL。
