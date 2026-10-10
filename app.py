@@ -8,6 +8,7 @@ import re
 import uuid
 import zipfile
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 import streamlit as st
@@ -21,6 +22,7 @@ KINDS=['GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE']
 CONTAINERS=['GROUP','SUBFILE']
 MAX_IMAGE=10*1024*1024
 local_component=components.declare_component('ainote_local_save',path=str(Path(__file__).parent/'components'/'local_save'))
+paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
 
 def config(key):
     try:return st.secrets.get(key) or os.getenv(key)
@@ -124,7 +126,9 @@ def fetch_notes():
 
 def insert_note(kind,title,parent=None,content='',has_page=False,position=0):
     payload={'owner_id':uid,'parent_id':parent,'kind':kind,'title':title[:200], 'content':content,'has_page':has_page,'position':position}
-    return c.table('notes').insert(payload).execute().data[0]
+    result=c.table('notes').insert(payload).execute().data
+    if not result:raise RuntimeError('建立失敗：資料庫未回傳新文件')
+    return result[0]
 
 def update_note(nid,**values):
     values['updated_at']=datetime.now(timezone.utc).isoformat()
@@ -137,11 +141,17 @@ def update_note(nid,**values):
             raise RuntimeError('寫入後驗證失敗：資料庫內容與編輯器不同，請勿關閉此頁面')
     return result.data[0]
 
+def operation_progress(label):
+    bar=st.progress(0,text=label+'：準備中')
+    def update(pct,step):bar.progress(min(100,max(0,int(pct))),text=label+'：'+step)
+    return update
+
 def set_deleted(nid, deleted):
     # Gracefully support databases not yet migrated to deleted_at.
     ids=list(subtree(nid,notes))
     now=datetime.now(timezone.utc).isoformat()
-    for note_id in ids:
+    update_progress=operation_progress('批次'+('刪除' if deleted else '還原'))
+    for i,note_id in enumerate(ids):
         payload={'is_deleted':deleted,'deleted_at':now if deleted else None}
         try:
             result=c.table('notes').update(payload).eq('id',note_id).eq('owner_id',uid).select('id').execute()
@@ -152,6 +162,7 @@ def set_deleted(nid, deleted):
             result=c.table('notes').update({'is_deleted':deleted}).eq('id',note_id).eq('owner_id',uid).select('id').execute()
         if not result.data:
             raise RuntimeError('更新失敗：請確認 notes UPDATE/SELECT RLS 與 GRANT 權限')
+        update_progress((i+1)*100/max(len(ids),1),f'已處理 {i+1}/{len(ids)}')
 
 def delete_note(nid):
     set_deleted(nid,True)
@@ -191,16 +202,16 @@ def subtree(nid,allnotes):
 
 def image_bytes(raw):
     if len(raw)>MAX_IMAGE:raise ValueError('圖片不得超過 10MB')
-    im=Image.open(io.BytesIO(raw));im.verify()
     im=Image.open(io.BytesIO(raw))
     if im.width*im.height>25_000_000:raise ValueError('圖片像素過大')
     im=ImageOps.exif_transpose(im)
     if getattr(im,'is_animated',False):
         if im.format!='GIF':raise ValueError('不支援此動畫格式')
         return raw,'image/gif','gif'
+    im.load()
     im.thumbnail((2400,2400))
     if im.mode not in ('RGB','RGBA'):im=im.convert('RGBA' if 'A' in im.getbands() else 'RGB')
-    buf=io.BytesIO();im.save(buf,format='WEBP',quality=85,method=5)
+    buf=io.BytesIO();im.save(buf,format='WEBP',quality=82,method=3)
     return buf.getvalue(),'image/webp','webp'
 
 def upload_image(raw,note_id):
@@ -341,8 +352,7 @@ def image_editor(note,assets,uid_key):
                 if raw:st.image(raw,caption=match.group(1),width='stretch')
                 else:st.warning('圖片無法載入：請檢查 Storage 與 assets 權限')
     upload=st.file_uploader('選擇或拖曳圖片',type=['png','jpg','jpeg','webp','gif'],key='upload_'+uid_key)
-    paste_widget=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
-    pasted=paste_widget(key='paste_'+uid_key,default=None)
+    pasted=paste_component(key='paste_'+uid_key,default=None)
     buffer_key='_paste_buffer_'+uid_key
     if isinstance(pasted,dict) and pasted.get('data'):
         nonce=str(pasted.get('nonce',''))
@@ -384,6 +394,9 @@ def image_editor(note,assets,uid_key):
                 # Do not delete an uploaded asset when the note update fails:
                 # retaining it allows recovery rather than silently losing the image.
                 raise
+            progress.progress(90,text='驗證圖片檔案是否可讀…')
+            downloaded=c.storage.from_('note-images').download(path)
+            if not downloaded:raise RuntimeError('Storage 驗證失敗：圖片無法下載')
             progress.progress(100,text='圖片已儲存並驗證')
             st.session_state['image_saved_'+uid_key]=True
             st.session_state.pop(buffer_key,None)
@@ -495,6 +508,9 @@ except Exception as exc:
     st.stop()
 byid={n['id']:n for n in notes}
 active_notes=[n for n in notes if not n.get('is_deleted')]
+children_index=defaultdict(list)
+for _node in active_notes:children_index[_node.get('parent_id')].append(_node)
+for _siblings in children_index.values():_siblings.sort(key=lambda x:(x.get('position',0),x.get('created_at') or ''))
 roots=[n for n in active_notes if n['kind']=='GROUP' and not n['parent_id']]
 if st.session_state.get('selected') not in {n['id'] for n in active_notes}:st.session_state['selected']=roots[0]['id'] if roots else None
 selected=byid.get(st.session_state['selected'])
@@ -506,8 +522,13 @@ with st.sidebar:
         newgroup=st.text_input('組別名稱',key='newgroup')
         if st.button('＋ 創建新組別',width='stretch'):
             if newgroup.strip():
-                try:r=insert_note('GROUP',newgroup.strip(),has_page=False);st.session_state.selected=r['id'];st.rerun()
-                except Exception:st.error('建立失敗')
+                try:
+                    progress=operation_progress('建立組別');progress(30,'送出新增請求')
+                    r=insert_note('GROUP',newgroup.strip(),has_page=False)
+                    progress(100,'建立完成')
+                    st.session_state['creation_notice']='已建立組別：'+r['title']
+                    st.session_state.selected=r['id'];st.rerun()
+                except Exception as exc:st.error('建立失敗：'+str(exc))
         uploaded=st.file_uploader('開啟本地組別 (.ainote / .zip)',type=['ainote','zip'],key='import')
         if uploaded and st.button('匯入組別'):
             try:st.session_state.selected=import_group(uploaded.getvalue());st.rerun()
@@ -529,6 +550,8 @@ with st.sidebar:
         st.session_state.last_explorer_event=event.get('event_id')
         action=event.get('action');nid=event.get('id');target=event.get('target')
         try:
+            op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav') else None
+            if op_progress:op_progress(15,'正在處理 '+str(action))
             if action=='select' and nid in byid:
                 st.session_state.selected=nid
                 tabs=st.session_state.setdefault('open_tabs',[])
@@ -564,6 +587,9 @@ with st.sidebar:
                     siblings=sorted([n for n in active_notes if n['parent_id']==a['parent_id']],key=lambda n:(n['position'],n['created_at']))
                     ids=[n['id'] for n in siblings if n['id']!=nid];ids.insert(ids.index(target),nid)
                     for i,ident in enumerate(ids):update_note(ident,position=i)
+            if op_progress:
+                op_progress(100,'操作完成')
+                st.session_state['operation_notice']='操作完成：'+str(action)
             st.rerun()
         except Exception as exc:
             logging.getLogger(__name__).exception('Explorer action failed')
@@ -579,7 +605,9 @@ with st.sidebar:
             ok=st.form_submit_button('確認建立表格',type='primary')
         if ok:
             try:
+                op=operation_progress('建立表格');op(20,'檢查列欄與格子大小')
                 created=insert_note('TABLE',pending['title'],pending['parent'],content=table_with_dimensions(m,n,w,h))
+                op(100,'表格已建立')
                 st.session_state.selected=created['id']
                 st.session_state.pop('pending_table',None)
                 st.session_state['creation_notice']='已建立表格：'+created['title']
@@ -592,6 +620,8 @@ with st.sidebar:
             st.rerun()
     if st.session_state.get('creation_notice'):
         st.success(st.session_state.pop('creation_notice'))
+    if st.session_state.get('operation_notice'):
+        st.success(st.session_state.pop('operation_notice'))
     nav_root=st.session_state.get('quick_nav_root')
     if nav_root in byid:
         with st.expander('☰ 快速定位',expanded=True):
@@ -602,7 +632,7 @@ with st.sidebar:
                 if node['id'] in visited:return []
                 visited.add(node['id'])
                 result=[(node,depth)]
-                for child in sorted([n for n in active_notes if n.get('parent_id')==node['id']],key=lambda n:(n.get('position',0),n.get('title',''))):
+                for child in sorted(children_index.get(node['id'],[]),key=lambda n:(n.get('position',0),n.get('title',''))):
                     if child['kind'] in CONTAINERS:result+=nav_children(child,depth+1,visited)
                     else:result.append((child,depth+1))
                 return result
@@ -687,7 +717,7 @@ while group.get('parent_id') and group['kind']!='GROUP':
 workspace=selected if selected['kind'] in CONTAINERS else byid.get(selected.get('parent_id'),selected)
 workspace_id=workspace['id']
 workspace_blocks=sorted(
-    [n for n in active_notes if n.get('parent_id')==workspace_id and n['kind'] not in CONTAINERS],
+    [n for n in children_index.get(workspace_id,[]) if n['kind'] not in CONTAINERS],
     key=lambda n:(n.get('position',0),n.get('created_at',''))
 )
 assets={}
@@ -722,7 +752,7 @@ if mode=='瀏覽模式':
         st.info('定位：'+byid[nav_target]['title'])
     # Build one stable table of contents for the whole group, preserving Explorer order.
     def ordered_children(parent_id):
-        return sorted([n for n in active_notes if n.get('parent_id')==parent_id],
+        return sorted(children_index.get(parent_id,[]),
             key=lambda n:(n.get('position',0),n.get('created_at') or ''))
     sections=[]
     def collect_sections(node,depth=0,seen=None):
@@ -768,8 +798,10 @@ else:
             cell_w,cell_h=table_dimensions(block.get('content') or '')
             if st.button('💾 儲存表格：'+block['title'],key='save_table_inline_'+block['id']):
                 try:
+                    op=operation_progress('更新表格');op(20,'整理格子內容')
                     new_content=keep_table_dimensions(dataframe_markdown(edited_frame),cell_w,cell_h)
                     update_note(block['id'],content=new_content)
+                    op(100,'已寫入並驗證')
                     st.session_state[report_key]={'successes':1,'total':1,'failures':[],
                         'names':[block['title']],'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
                     st.rerun()
@@ -783,7 +815,9 @@ else:
                 height=190,key=text_key,label_visibility='collapsed')
             if st.button('💾 儲存文件：'+block['title'],key='save_text_inline_'+block['id']):
                 try:
+                    op=operation_progress('更新文件');op(25,'寫入資料庫')
                     update_note(block['id'],content=st.session_state[text_key])
+                    op(100,'已寫入並驗證')
                     st.session_state[report_key]={'successes':1,'total':1,'failures':[],
                         'names':[block['title']],'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
                     st.rerun()
@@ -791,7 +825,7 @@ else:
                     logging.getLogger(__name__).exception('Text save failed')
                     st.error('文件儲存失敗：'+type(exc).__name__+'：'+str(exc))
             draft_keys.append((block['id'],text_key,'text'))
-    # Local-first save: browser writes the .ainote file before the server updates Supabase.
+    # Independent actions: local backup never triggers a cloud write.
     draft_values={}
     for note_id,field_key,field_type in draft_keys:
         if field_type=='table':
@@ -800,42 +834,43 @@ else:
                 draft_values[note_id]=keep_table_dimensions(dataframe_markdown(frame),*table_dimensions(byid[note_id].get('content') or ''))
         else:
             draft_values[note_id]=st.session_state.get(field_key,byid[note_id].get('content') or '')
-    # The backup includes the current unsaved editor drafts and all assets in the group.
-    try:
-        local_zip=export_group(group,active_notes,draft_values)
-        local_b64=base64.b64encode(local_zip).decode('ascii')
-        backup_error=None
-    except Exception as exc:
-        local_b64=''
-        backup_error=str(exc)
-    if backup_error:st.error('無法準備本地備份，已停止雲端儲存：'+backup_error)
-    local_event=local_component(mode='save',data=local_b64,
-        filename='AInote_'+re.sub(r'[^\w\-]+','_',group['title'])+'_'+datetime.now().strftime('%Y%m%d')+'.ainote',
-        disabled=bool(backup_error) or not bool(draft_keys),key='local_save_action_'+workspace_id,default=None)
-    if isinstance(local_event,dict) and local_event.get('action')=='saved':
-        token=local_event.get('token')
-        if token and token!=st.session_state.get('last_local_save_'+workspace_id):
-            st.session_state['last_local_save_'+workspace_id]=token
-            successes=[];failures=[]
-            save_progress=st.progress(0,text='本地備份已啟動，準備寫入雲端…')
-            for index,(note_id,field_key,field_type) in enumerate(draft_keys):
-                note_name=byid.get(note_id,{}).get('title',note_id)
-                try:
-                    if note_id not in draft_values:raise ValueError('無法取得編輯器資料')
-                    update_note(note_id,content=draft_values[note_id])
-                    successes.append(note_name)
-                except Exception as exc:
-                    logging.getLogger(__name__).exception('Save failed: %s (%s)',note_name,note_id)
-                    failures.append((note_name,type(exc).__name__,str(exc)))
-                save_progress.progress(int((index+1)*100/max(len(draft_keys),1)),
-                    text=f'雲端儲存進度 {index+1}/{len(draft_keys)}：{note_name}')
-            st.session_state[report_key]={
-                'successes':len(successes),'total':len(draft_keys),'failures':failures,
-                'names':successes,'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC'),
-                'local_status':local_event.get('method','download')}
-            st.rerun()
-    elif isinstance(local_event,dict) and local_event.get('action')=='error':
-        st.error('本地儲存失敗，未執行雲端儲存：'+str(local_event.get('message','')))
+    st.markdown('#### 儲存操作')
+    with st.expander('💻 本地備份（不寫入雲端）',expanded=False):
+        try:
+            local_zip=export_group(group,active_notes,draft_values)
+            local_b64=base64.b64encode(local_zip).decode('ascii')
+            backup_error=None
+        except Exception as exc:
+            local_b64='';backup_error=str(exc)
+        if backup_error:st.error('本地備份準備失敗：'+backup_error)
+        local_event=local_component(mode='save',data=local_b64,
+            filename='AInote_'+re.sub(r'[^\w\-]+','_',group['title'])+'_'+datetime.now().strftime('%Y%m%d')+'.ainote',
+            disabled=bool(backup_error),key='local_save_action_'+workspace_id,default=None)
+        if isinstance(local_event,dict):
+            token=local_event.get('token')
+            if token and token!=st.session_state.get('last_local_save_'+workspace_id):
+                st.session_state['last_local_save_'+workspace_id]=token
+                if local_event.get('action')=='saved':
+                    st.success('本地備份：'+('已寫入選定資料夾' if local_event.get('method')=='folder' else '已啟動下載，請確認瀏覽器下載完成'))
+                elif local_event.get('action')=='error':st.error('本地備份失敗：'+str(local_event.get('message','')))
+    if st.button('☁️ 儲存全部變更至雲端',key='cloud_save_'+workspace_id,width='stretch',type='primary',disabled=not bool(draft_keys)):
+        successes=[];failures=[]
+        save_progress=operation_progress('雲端儲存')
+        save_progress(5,'正在檢查編輯內容')
+        for index,(note_id,field_key,field_type) in enumerate(draft_keys):
+            note_name=byid.get(note_id,{}).get('title',note_id)
+            try:
+                if note_id not in draft_values:raise ValueError('無法取得編輯器資料')
+                update_note(note_id,content=draft_values[note_id])
+                successes.append(note_name)
+            except Exception as exc:
+                logging.getLogger(__name__).exception('Cloud save failed: %s (%s)',note_name,note_id)
+                failures.append((note_name,type(exc).__name__,str(exc)))
+            save_progress(5+int((index+1)*95/max(len(draft_keys),1)),f'已處理 {index+1}/{len(draft_keys)}：{note_name}')
+        st.session_state[report_key]={
+            'successes':len(successes),'total':len(draft_keys),'failures':failures,
+            'names':successes,'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
+        st.rerun()
     t1,t2,t3=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown'])
     with t1:
         if st.button('新增圖片區塊',key='new_graph_'+workspace_id):
@@ -858,8 +893,10 @@ else:
             create_table=st.form_submit_button('確認建立表格',type='primary')
         if create_table:
             try:
+                op=operation_progress('建立表格');op(20,'檢查表格尺寸')
                 created=insert_note('TABLE',table_name.strip() or '新表格',workspace_id,
                     content=table_with_dimensions(m,n,w,h),position=len(workspace_blocks))
+                op(100,'表格已建立')
                 st.session_state.selected=created['id']
                 st.session_state['creation_notice']='已建立表格：'+created['title']
                 st.rerun()
@@ -878,4 +915,4 @@ else:
                 logging.getLogger(__name__).exception('Create Markdown block failed')
                 st.error('新增失敗：'+type(exc).__name__)
 st.divider()
-st.caption('AInoteManagement v2.1 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('AInoteManagement v2.3 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
