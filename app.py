@@ -1,4 +1,5 @@
 import base64
+import html
 import io
 import json
 import logging
@@ -127,6 +128,12 @@ def update_note(nid,**values):
     values['updated_at']=datetime.now(timezone.utc).isoformat()
     result=c.table('notes').update(values).eq('id',nid).eq('owner_id',uid).select('id').execute()
     if not result.data:raise RuntimeError('資料庫未確認更新（0 筆）；請檢查 RLS 與資料是否存在')
+    # A successful HTTP response is not enough: verify persisted content by reading it back.
+    if 'content' in values:
+        checked=c.table('notes').select('id,content').eq('id',nid).eq('owner_id',uid).limit(1).execute().data
+        if not checked or checked[0].get('content')!=values['content']:
+            raise RuntimeError('寫入後驗證失敗：資料庫內容與編輯器不同，請勿關閉此頁面')
+    return result.data[0]
 
 def set_deleted(nid, deleted):
     # Gracefully support databases not yet migrated to deleted_at.
@@ -585,7 +592,7 @@ else:
                 height=190,key=text_key,label_visibility='collapsed')
             draft_keys.append((block['id'],text_key,'text'))
     st.markdown('---')
-    st.caption('批量存檔會儲存目前工作區的正文、所有文字區塊及表格。圖片請使用各圖片區的「儲存圖片」。')
+    st.caption('批量存檔會儲存目前工作區的正文、所有文字區塊及表格。圖片請使用各圖片區的「儲存圖片」。寫入後會重新讀取 Supabase 驗證。')
     if st.button('💾 批量儲存工作區',type='primary',key='save_all_'+workspace_id):
         successes=[]
         failures=[]
@@ -608,13 +615,14 @@ else:
                 logging.getLogger(__name__).exception('Batch save failed for note %s',note_id)
                 failures.append((note_id,type(exc).__name__,str(exc)))
         st.session_state['save_report_'+workspace_id]={
-            'successes':len(successes),'total':len(draft_keys),'failures':failures
+            'successes':len(successes),'total':len(draft_keys),'failures':failures,
+            'saved_at':datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
         }
         st.rerun()
     report=st.session_state.get('save_report_'+workspace_id)
     if report:
         if not report['failures']:
-            st.success(f"儲存成功：{report['successes']}/{report['total']} 個區塊已寫入 Supabase。")
+            st.success(f"儲存成功：{report['successes']}/{report['total']} 個區塊已寫入並核對 Supabase。時間：{report['saved_at']}")
         else:
             st.error(f"批量存檔部分失敗：成功 {report['successes']}/{report['total']}；失敗 {len(report['failures'])}。")
             for note_id,code,detail in report['failures']:
@@ -660,4 +668,4 @@ else:
                 logging.getLogger(__name__).exception('Create Markdown block failed')
                 st.error('新增失敗：'+type(exc).__name__)
 st.divider()
-st.caption('AInoteManagement v1.7 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('AInoteManagement v1.7.1 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
