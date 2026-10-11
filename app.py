@@ -1198,11 +1198,11 @@ DEMO_GUIDE = """# BV-Text 使用說明書
 
 ## AINOTE網頁格式：AI提示詞（請整段複製給 AI）
 
-> 你是 BV-Text / AI-NOTE 文件封裝助手。請根據我指定的主題製作繁體中文教學文件，**輸出真正的 ZIP 壓縮檔（可命名 `.zip` 或 `.ainote`）**，不能只將 Markdown 改副檔名。**排版規則：只有 `#` 用於章節標題、`##` 用於小節標題；內文不要使用 `###` 或更大標題，重點只用 `**粗體**`。**每節包含定義、例子、Markdown 表格、適當示意圖片及說明。所有圖片都要實際放入 ZIP，不能只給外部網址。
+> 你是 BV-Text / AI-NOTE 文件封裝助手。**每一次聊天回應只能生成一個 FOLD（對應 `GROUP` 根節點），不得生成第二個 FOLD，也不得生成任何子 FOLD（`SUBFILE`）**。所有章節、知識點與例題都必須建立成這個 FOLD 下的直接子 FILE（`MARKDOWN`、`TABLE`、`GRAPH` 或 `HANDWRITE`），禁止 FILE 再包含子節點。請根據我指定的主題製作繁體中文教學文件，輸出真正的 ZIP 壓縮檔（`.zip` 或 `.ainote`），不能只將 Markdown 改副檔名。**排版規則：只有 `#` 用於章節標題、`##` 用於小節標題；內文不要使用 `###` 或更大標題，重點只用 `**粗體**`。**每節包含定義、例子、Markdown 表格，以及適當的示意圖片與說明；引用的圖片必須實際打包，不能只給外部網址。
 >
-> **封裝規格（v1）**：ZIP 根目錄必須有 `manifest.json`、`structure.json`；可以有 `documents/<note-id>.md` 與 `assets/<asset-id>.<副檔名>`。`manifest.json` 是 JSON 物件，包含 `format: "ainote"`、`version: 1`、`root_id: <GROUP UUID>`、`name: <組別名稱>`。`structure.json` 是節點 JSON 陣列；每個節點要有唯一 `id`（UUID 字串）、`parent_id`（根節點為 null）、`kind`、`title`、`content`、`position`、`has_page`。根節點必須為 `GROUP`，其餘節點的 `parent_id` 必須指向存在的父節點。`GROUP` 只能作為根節點，`SUBFILE` 為資料夾／子文件，`MARKDOWN`、`TABLE`、`GRAPH`、`HANDWRITE` 為內容區塊。請將文字與 Markdown 表格放入 `MARKDOWN` 或 `TABLE` 的 `content`，並同步寫入 `documents/<id>.md`。圖片應放在 `assets/<圖片UUID>.png` 等路徑，節點內容以 `![圖片說明](asset://<圖片UUID>)` 引用。每個圖片 UUID 必須和 ZIP 內檔名相同；所有引用必須存在。
+> **封裝規格（v1）**：ZIP 根目錄必須有 `manifest.json`、`structure.json`；可以有 `documents/<note-id>.md` 與 `assets/<asset-id>.<副檔名>`。`manifest.json` 是 JSON 物件，包含 `format: "ainote"`、`version: 1`、`root_id: <GROUP UUID>`、`name: <組別名稱>`。`structure.json` 是節點 JSON 陣列；每個節點要有唯一 `id`（UUID 字串）、`parent_id`（根節點為 null）、`kind`、`title`、`content`、`position`、`has_page`。根節點必須為 `GROUP`，其餘節點的 `parent_id` 必須指向存在的父節點。`GROUP` 只能有一個且必須是根節點；**嚴禁建立 `SUBFILE`、巢狀 `GROUP` 或其他子資料夾**。所有 `MARKDOWN`、`TABLE`、`GRAPH`、`HANDWRITE` 節點的 `parent_id` 必須直接等於根 `GROUP` 的 `id`。請將文字與 Markdown 表格放入 `MARKDOWN` 或 `TABLE` 的 `content`，並同步寫入 `documents/<id>.md`。圖片應放在 `assets/<圖片UUID>.png` 等路徑，節點內容以 `![圖片說明](asset://<圖片UUID>)` 引用。每個圖片 UUID 必須和 ZIP 內檔名相同；所有引用必須存在。
 >
-> **資料一致性**：請勿依賴外部圖片連結、絕對路徑或不存在的媒體。檢查 ZIP 可解壓、manifest 正確、所有 ID 唯一、父子關係無循環、圖片檔案實際存在。輸出前最好使用我提供的現有 `.ainote` 範例做匯入相容性測試。請提供下載 ZIP，並列出章節目錄、表格清單、圖片清單。若無法建立或驗證 ZIP，請明確說明，不要宣稱可直接匯入。
+> **結構強制驗證**：`structure.json` 必須恰好包含一個 `GROUP`，不得包含任何 `SUBFILE`；所有其他節點都必須是根 `GROUP` 的直接子節點。違反時請重新生成，不得交付。\n>\n> **資料一致性**：請勿依賴外部圖片連結、絕對路徑或不存在的媒體。檢查 ZIP 可解壓、manifest 正確、所有 ID 唯一、父子關係無循環、圖片檔案實際存在。輸出前最好使用我提供的現有 `.ainote` 範例做匯入相容性測試。請提供下載 ZIP，並列出章節目錄、表格清單、圖片清單。若無法建立或驗證 ZIP，請明確說明，不要宣稱可直接匯入。
 
 **最小目錄示意：**
 
@@ -1298,14 +1298,23 @@ lesson.ainote  （實際是 ZIP）
 if not selected:
     st.title('歡迎使用 BV-Text')
     st.info('目前沒有組別。')
-    if st.button('＋ 新建組別文件',type='primary'):
-        try:
-            op=operation_progress('建立範例組別');op(20,'建立組別')
-            root=insert_note('GROUP','我的第一份筆記')
-            op(65,'建立使用說明書')
-            insert_note('MARKDOWN','使用說明書',root['id'],content=DEMO_GUIDE)
-            op(100,'建立完成');st.session_state.selected=root['id'];st.rerun()
-        except Exception as exc:st.error('建立失敗：'+str(exc))
+    creation_type=st.radio('新增文件類型',options=['空 FOLD','教學 FOLD'],horizontal=True,key='empty_workspace_creation_type',help='兩種模式都只建立一個根 FOLD，不會產生子 FOLD。')
+    creation_title=st.text_input('FOLD 名稱',value='我的第一份筆記' if creation_type=='教學 FOLD' else '新 FOLD',key='empty_workspace_creation_title')
+    if st.button('＋ 新增文件',type='primary',key='empty_workspace_create'):
+        if not creation_title.strip():
+            st.warning('請輸入 FOLD 名稱。')
+        else:
+            try:
+                op=operation_progress('建立 FOLD');op(20,'建立根節點')
+                root=insert_note('GROUP',creation_title.strip(),has_page=False)
+                if creation_type=='教學 FOLD':
+                    op(65,'建立教學 FILE')
+                    insert_note('MARKDOWN','使用說明書',root['id'],content=DEMO_GUIDE,position=1)
+                op(100,'建立完成')
+                st.session_state.selected=root['id']
+                st.rerun()
+            except Exception as exc:
+                st.error('建立失敗：'+str(exc))
     st.stop()
 
 # The GROUP is the browsing unit. Editing remains at the selected workspace level.
