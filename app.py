@@ -24,7 +24,7 @@ from manual_sync import pull_from_cloud,push_to_cloud
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title='BV-Text',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
-KINDS=['GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE','HANDWRITE','COMPOSITE']
+KINDS=['GROUP','SUBFILE','GRAPH','HANDWRITE','COMPOSITE']
 CONTAINERS=['GROUP','SUBFILE']
 MAX_IMAGE=10*1024*1024
 local_component=components.declare_component('ainote_local_save',path=str(Path(__file__).parent/'components'/'local_save'))
@@ -818,6 +818,21 @@ def download_filename(title):
     name=re.sub(r'[\\\\/:*?"<>|\\x00-\\x1f]+','_',str(title or '')).strip(' .')
     return (name[:150] or '未命名')+'.'+st.session_state.get('download_format','ainote')
 
+@st.dialog('新增文件',width='small')
+def v43_new_file_dialog(parent_id):
+    st.caption('請選擇文件類型')
+    choice=st.radio('文件類型',['圖文文件','圖片','手寫稿'],horizontal=True)
+    title=st.text_input('文件名稱',value='新'+choice)
+    if st.button('建立',type='primary',use_container_width=True):
+        kind={'圖文文件':'COMPOSITE','圖片':'GRAPH','手寫稿':'HANDWRITE'}[choice]
+        if kind=='HANDWRITE':
+            st.session_state.pending_handwrite={'title':title.strip(),'parent':parent_id,'after':None}
+        else:
+            new=insert_note(kind,title.strip() or '新文件',parent_id,position=len(children_index.get(parent_id,[]))+1)
+            st.session_state.selected=new['id']
+        st.session_state.pop('new_file_parent',None)
+        st.rerun()
+
 with st.sidebar:
     st.title('📚 BV-Text')
     with st.popover('☰ 功能選單',width='stretch'):
@@ -842,12 +857,22 @@ with st.sidebar:
             if root['kind']=='GROUP':
                 try:st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name=download_filename(root['title']),mime='application/zip',width='stretch')
                 except Exception:st.warning('暫時無法匯出')
+        with st.expander('v4.3 舊表格清理（不可復原）'):
+            table_notes=[n for n in notes if n.get('kind')=='TABLE' and not n.get('is_deleted')]
+            st.warning(f'目前共有 {len(table_notes)} 個舊 TABLE。清理前請先下載完整備份。')
+            confirm_table=st.checkbox('我已完成備份，確定永久刪除舊 TABLE 文件',key='v43_table_confirm')
+            if st.button('永久清理舊 TABLE',disabled=not confirm_table or not table_notes,key='v43_table_purge'):
+                try:
+                    for row in table_notes:
+                        c.table('notes').delete().eq('id',row['id']).eq('owner_id',uid).execute()
+                    st.success('舊 TABLE 已清理');st.rerun()
+                except Exception as exc:st.error('清理失敗：'+str(exc))
         st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
     st.divider()
     st.subheader('EXPLORER')
     st.caption('右鍵操作 · 拖曳移動 · F2 · Delete')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
-    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position']} for n in active_notes]
+    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position']} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
     if event and event.get('event_id')!=st.session_state.get('last_explorer_event'):
         st.session_state.last_explorer_event=event.get('event_id')
@@ -860,6 +885,15 @@ with st.sidebar:
             elif action=='full_edit' and nid in byid:
                 st.session_state.full_edit_id=nid
                 st.session_state.selected=nid
+            elif action=='full_read' and nid in byid:
+                st.session_state.full_read_id=nid
+                st.session_state.selected=nid
+            elif action=='workspace_save' and nid in byid:
+                st.session_state.workspace_save_requested=True
+            elif action=='workspace_close' and nid in byid:
+                st.session_state.workspace_close_requested=True
+            elif action=='new_file_dialog' and nid in byid:
+                st.session_state.new_file_parent=nid if byid[nid]['kind'] in CONTAINERS else byid[nid]['parent_id']
             elif action=='quick_nav' and nid in byid:
                 st.session_state.quick_nav_root=nid
                 st.session_state.selected=nid
@@ -910,6 +944,10 @@ with st.sidebar:
                 if target not in byid or byid[target]['kind'] not in CONTAINERS:raise ValueError('請選擇組別或子文件')
                 st.session_state.import_child_target=target
             elif action=='delete' and nid in byid:delete_note(nid)
+            elif action=='delete_forever' and nid in byid:
+                ids=list(subtree(nid,notes))
+                for x in reversed(ids):
+                    c.table('notes').delete().eq('id',x).eq('owner_id',uid).execute()
             elif action=='restore' and nid in byid:restore_note(nid)
             elif action=='reorder' and nid in byid and target in byid:
                 a,b=byid[nid],byid[target]
@@ -926,6 +964,8 @@ with st.sidebar:
             st.error(f'檔案操作失敗：{type(exc).__name__}。請至 Manage app → Logs 查看詳情。')
 
             st.rerun()
+    if st.session_state.get('new_file_parent') in byid:
+        v43_new_file_dialog(st.session_state.new_file_parent)
     if st.session_state.get('creation_notice'):
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
@@ -1427,106 +1467,7 @@ if st.session_state.get('main_page')=='⚙️ 設定':
                     st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
     st.stop()
 
-DEMO_GUIDE = """# BV-Text 使用說明書
-
-## AINOTE網頁格式：AI提示詞（請整段複製給 AI）
-
-> 你是 BV-Text / AI-NOTE 文件封裝助手。**每一次聊天回應只能生成一個 FOLD（對應 `GROUP` 根節點），不得生成第二個 FOLD，也不得生成任何子 FOLD（`SUBFILE`）**。所有章節、知識點與例題都必須建立成這個 FOLD 下的直接子 FILE（`MARKDOWN`、`TABLE`、`GRAPH` 或 `HANDWRITE`），禁止 FILE 再包含子節點。請根據我指定的主題製作繁體中文教學文件，輸出真正的 ZIP 壓縮檔（`.zip` 或 `.ainote`），不能只將 Markdown 改副檔名。**排版規則：只有 `#` 用於章節標題、`##` 用於小節標題；內文不要使用 `###` 或更大標題，重點只用 `**粗體**`。**每節包含定義、例子、Markdown 表格，以及適當的示意圖片與說明；引用的圖片必須實際打包，不能只給外部網址。
->
-> **封裝規格（v1）**：ZIP 根目錄必須有 `manifest.json`、`structure.json`；可以有 `documents/<note-id>.md` 與 `assets/<asset-id>.<副檔名>`。`manifest.json` 是 JSON 物件，包含 `format: "ainote"`、`version: 1`、`root_id: <GROUP UUID>`、`name: <組別名稱>`。`structure.json` 是節點 JSON 陣列；每個節點要有唯一 `id`（UUID 字串）、`parent_id`（根節點為 null）、`kind`、`title`、`content`、`position`、`has_page`。根節點必須為 `GROUP`，其餘節點的 `parent_id` 必須指向存在的父節點。`GROUP` 只能有一個且必須是根節點；**嚴禁建立 `SUBFILE`、巢狀 `GROUP` 或其他子資料夾**。所有 `MARKDOWN`、`TABLE`、`GRAPH`、`HANDWRITE` 節點的 `parent_id` 必須直接等於根 `GROUP` 的 `id`。請將文字與 Markdown 表格放入 `MARKDOWN` 或 `TABLE` 的 `content`，並同步寫入 `documents/<id>.md`。圖片應放在 `assets/<圖片UUID>.png` 等路徑，節點內容以 `![圖片說明](asset://<圖片UUID>)` 引用。每個圖片 UUID 必須和 ZIP 內檔名相同；所有引用必須存在。
->
-> **結構強制驗證**：`structure.json` 必須恰好包含一個 `GROUP`，不得包含任何 `SUBFILE`；所有其他節點都必須是根 `GROUP` 的直接子節點。違反時請重新生成，不得交付。\n>\n> **資料一致性**：請勿依賴外部圖片連結、絕對路徑或不存在的媒體。檢查 ZIP 可解壓、manifest 正確、所有 ID 唯一、父子關係無循環、圖片檔案實際存在。輸出前最好使用我提供的現有 `.ainote` 範例做匯入相容性測試。請提供下載 ZIP，並列出章節目錄、表格清單、圖片清單。若無法建立或驗證 ZIP，請明確說明，不要宣稱可直接匯入。
-
-**最小目錄示意：**
-
-```text
-lesson.ainote  （實際是 ZIP）
-├── manifest.json
-├── structure.json
-├── documents/
-│   └── <note-uuid>.md
-└── assets/
-    └── <image-uuid>.png
-```
-
-**manifest.json 範例：**
-
-```json
-{"format":"ainote","version":1,"root_id":"11111111-1111-4111-8111-111111111111","name":"網路安全"}
-```
-
-**structure.json 範例（精簡示意，UUID 請自行產生）：**
-
-```json
-[
-  {"id":"11111111-1111-4111-8111-111111111111","parent_id":null,"kind":"GROUP","title":"網路安全","content":"","position":0,"has_page":false},
-  {"id":"22222222-2222-4222-8222-222222222222","parent_id":"11111111-1111-4111-8111-111111111111","kind":"SUBFILE","title":"第一章","content":"","position":0,"has_page":true},
-  {"id":"33333333-3333-4333-8333-333333333333","parent_id":"22222222-2222-4222-8222-222222222222","kind":"MARKDOWN","title":"防火牆","content":"# 第一章｜網路安全\n## 1.1 防火牆\n**防火牆**用於過濾封包。","position":0,"has_page":false}
-]
-```
-
-**匯入注意事項：** `.ainote` 與 `.zip` 使用相同的 ZIP 封裝，但不是任意 ZIP 都能匯入。匯入器要求 `format=ainote`、`version=1`、有效的 `GROUP` 根節點及可追蹤的父子關係。`documents/` 是方便檢視的 Markdown 副本，**匯入時以 `structure.json` 內的 `content` 為準**；`assets/` 依 `asset://UUID` 重新上傳到私有 Storage。若圖片上傳失敗，原始封裝可能只部分匯入，請先用測試組別驗證。
-
-**文件排版範例：**
-
-# 第一章｜網路安全
-
-## 1.1 防火牆
-
-**防火牆（Firewall）**：依安全規則過濾網路流量。
-
-| 設備 | 用途 |
-|---|---|
-| Firewall | 封包過濾 |
-| WAF | HTTP 應用層防護 |
-
-圖片示例：在 ZIP 內附 `network-diagram.png`，並以匯入器支援的資產引用方式連結，不要使用未打包的本地絕對路徑。
-
-# AInoteManagement 使用說明書
-
-## 一、文件結構
-
-- **GROUP（組別）**：最上層筆記集合，可匯出為 `.ainote`。
-- **SUBFILE（子文件）**：組別內的子層級，能容納多個內容區塊。
-- **MARKDOWN（文字）**：支援 Markdown 筆記。
-- **GRAPH（圖片）**：獨立圖片區塊，可上傳照片。
-- **TABLE（表格）**：可選取儲存格並套用公式。
-- **HANDWRITE（手寫稿）**：畫布式手寫筆記，可設定寬高。
-
-例如：`我的第一份筆記（GROUP） → 課堂筆記（SUBFILE） → 文字 / 圖片 / 表格 / 手寫稿`。左側 Explorer 可建立、選取、重新命名、移動或刪除節點。圖片組件可一次上傳最多 20 張照片；手寫稿組件可包含 1–20 頁。
-
-## 二、表格運算式語法
-
-在表格選取要填入的範圍，輸入公式；`row` 與 `column` **從 0 起算**。`@N` 代表保留 N 位小數（0–15），可省略。
-
-| 用途 | 範例 |
-|---|---|
-| 四則運算 | `row*2+column` |
-| 指定精度 | `row/3@2` |
-| 比較條件 | `row<=3` |
-| 條件分支 | `choose(row<3,1,0)` |
-| 等差求和 1+…+row | `row*(row+1)/2@0` |
-| 遞迴求和 | `choose(row<=0,0,row+f(row-1,column))@0` |
-| Fibonacci | `choose(row<=1,row,f(row-1,column)+f(row-2,column))@0` |
-| 遞迴終止 | `f(row-1,column).stop(row<0)` |
-| 指定終止值 | `f(row-1,column).stop(row<=1,row)` |
-| 矩陣範圍引用 | `A[0,0][2,2]` |
-| 矩陣加法 | `A[0,0][1,1]+A[2,0][3,1]` |
-| 舊版相容格式 | `f(row,column)=(row*2+column)<3>` |
-
-`choose(條件,成立時,否則時)` 只計算選中的分支；`f(列,欄)` 呼叫同一公式在其他座標的值。矩陣 `*` 依矩陣乘法規則運算。**目前不保證支援 `sum(A[...][...])` 聚合命令**；需要求和時可使用上述數列公式。計算失敗會中止，不應套用部分結果。
-
-## 三、儲存機制
-
-1. **編輯中**：文字與表格的變更可能先保存在頁面工作階段，尚未代表雲端持久化。
-2. **按「存儲」**：先產生本地 `.ainote` 備份（本地資料夾模式須確認寫入成功），再寫入 Supabase PostgreSQL，最後重新讀取驗證。
-3. **瀏覽器下載模式限制**：網頁能觸發下載，但不能確認檔案已實際寫入磁碟；請自行確認下載位置及檔案。
-4. **圖片／手寫稿**：媒體檔案儲存於私有 Supabase Storage `note-images`，筆記資料透過 `asset://` 參照；這類媒體有獨立儲存操作，不能假設與文字存儲按鈕完全相同。
-5. **匯出／匯入**：組別可匯出 `.ainote`（ZIP 格式，含筆記與可取得的媒體資產）；可從功能選單重新匯入。
-6. **刪除／回收區**：一般刪除採軟刪除，可由回收區管理；實際資料是否永久保存仍受 Supabase 專案、權限、配額及備份政策影響。
-
-**重要：** 雲端存儲不等於永久保存。建議定期下載 `.ainote` 備份，並確認瀏覽器下載完成。
-"""
+DEMO_GUIDE = '# BV-Text 使用者操作指南\n\n## 1. 開始使用\n開啟 BV-Text 後進入筆記工作臺。若尚無文件，可以建立「空 FOLD」或「教學 FOLD」。FOLD 是資料夾，FILE 是可編輯的內容；教學 FOLD 會包含本操作指南。\n\n## 2. 文件類型\n- **圖文文件**：編輯文字、標題、清單、Markdown 表格及圖片。\n- **圖片**：上傳與檢視照片。\n- **手寫稿**：使用畫布手寫、繪圖與管理多頁內容。\n\n## 3. 新增文件\n1. 在左側 Explorer 選取 FOLD。\n2. 右鍵選擇「新增文件」，再次右鍵展開子選單，選擇圖文文件、圖片或手寫稿。\n3. 直接點擊「新增文件」則會在畫面中央顯示小型類型選擇視窗。\n4. 輸入名稱並建立。手機使用觸控選單操作。\n\n## 4. 單一編輯\n1. 選取 FILE，開啟完全單一編輯。\n2. 編輯區置於畫面中央，上方提供「儲存」「返回」「更多操作」。\n3. 「儲存」保存變更而不離開；「返回」遇到未儲存內容時會要求確認。\n4. 頁面下方的「提交」會儲存後關閉。\n5. 工作臺編輯模式僅顯示節點標題及輸入框；保存增量更新與關閉可由右鍵選單操作。\n\n## 5. 完全單一閱讀\n- 對 FILE 開啟：閱讀單一文件。\n- 對 FOLD 開啟：依節點優先權將其下所有文件串成連續長頁面。\n- 閱讀不會更改文件內容；結束時返回原工作臺。\n\n## 6. 文件操作\n1. 在 Explorer 對 FOLD 或 FILE 右鍵。\n2. 選擇「文件操作」並再次右鍵展開。\n3. 可調整節點優先權、複製、剪下、移動、貼上、移動回收桶或永久刪除。\n4. 永久刪除無法依賴回收桶復原，操作前先匯出備份。\n\n## 7. 瀏覽與快速定位\n切換至瀏覽模式，選擇快速定位的目標段落。系統會嘗試捲動至目前頁面的對應位置；若瀏覽器限制自動捲動，可點擊段落連結。\n\n## 8. 保存與備份\n- 增量儲存會保存編輯中的變更。\n- 本地備份可下載 `.ainote` 文件，或在瀏覽器支援且取得授權時寫入本地資料夾。\n- 可以從本機選擇 `.ainote` 或支援的 ZIP 文件重新匯入。\n- 手機瀏覽器可能改用下載，請確認下載檔案實際存在。\n- 建議定期保存獨立備份，勿只依賴單一瀏覽器或雲端。\n\n## 9. 行程表\n1. 開啟行程表，選擇日期並建立行程卡。\n2. 可設定連續建立天數；標題運算式中的 `d` 從 0 起算。\n3. 例如 `ipas複習第(10+d)張` 連續三天會得到第 10、11、12 張。\n4. 批量建立時保留原始標題 Tag，可依 Tag 批量刪除。\n5. 行程表可以保存為本地 JSON 備份，也可選擇備份檔案載入。\n\n## 10. 常見問題\n**儲存後沒有下載檔案？** 檢查瀏覽器下載設定與權限，必要時使用直接下載。\n\n**關閉頁面後找不到內容？** 確認先前已完成儲存，並檢查本地備份。\n\n**手機無法寫入指定資料夾？** 部分瀏覽器不支援資料夾寫入 API，請使用下載方式。\n\n**舊表格怎麼辦？** v4.3 將移除獨立 TABLE 類型。升級前先匯出備份，確認資料不再需要後再執行清理。\n'
 
 if not selected:
     st.title('歡迎使用 BV-Text')
@@ -1542,7 +1483,7 @@ if not selected:
                 root=insert_note('GROUP',creation_title.strip(),has_page=False)
                 if creation_type=='教學 FOLD':
                     op(65,'建立教學 FILE')
-                    insert_note('MARKDOWN','使用說明書',root['id'],content=DEMO_GUIDE,position=1)
+                    insert_note('COMPOSITE','使用說明書',root['id'],content=DEMO_GUIDE,position=1)
                 op(100,'建立完成')
                 st.session_state.selected=root['id']
                 st.rerun()
@@ -1558,7 +1499,7 @@ while group.get('parent_id') and group['kind']!='GROUP':
 workspace=selected if selected['kind'] in CONTAINERS else byid.get(selected.get('parent_id'),selected)
 workspace_id=workspace['id']
 workspace_blocks=sorted(
-    [n for n in children_index.get(workspace_id,[]) if n['kind'] not in CONTAINERS],
+    [n for n in children_index.get(workspace_id,[]) if n['kind'] not in CONTAINERS and n['kind']!='TABLE'],
     key=lambda n:(n.get('position',0),n.get('created_at',''))
 )
 assets={}
@@ -1612,46 +1553,81 @@ if selected:
                     op(100,'關閉完成');st.rerun()
                 except Exception as exc:st.error('關閉失敗：'+str(exc))
         elif close_event.get('action')=='error':st.error('本地備份失敗：'+close_event.get('message','未知錯誤'))
+# v4.3 distraction-free continuous reading for a FILE or a complete FOLD subtree.
+read_id=st.session_state.get('full_read_id')
+if read_id and read_id in byid:
+    root_read=byid[read_id]
+    st.markdown('<style>[data-testid="stSidebar"]{display:none!important}.block-container{max-width:900px!important;margin:auto!important}</style>',unsafe_allow_html=True)
+    head,exit_col=st.columns([7,1])
+    with head:st.title('完全單一閱讀 · '+root_read['title'])
+    with exit_col:
+        if st.button('↩ 返回',key='v43_read_exit'):
+            st.session_state.pop('full_read_id',None);st.rerun()
+    def walk_read(n,seen=None):
+        seen=set() if seen is None else seen
+        if n['id'] in seen:return
+        seen.add(n['id'])
+        if n['kind'] in CONTAINERS:
+            if n['id']!=read_id:st.header(n['title'])
+            for child in sorted(children_index.get(n['id'],[]),key=lambda x:(x.get('position',0),x.get('created_at') or '')):
+                walk_read(child,seen)
+        elif n['kind']!='TABLE':
+            st.subheader(n['title'])
+            if n.get('content'):show_markdown(n['content'],assets)
+            else:st.caption('此文件尚無內容')
+    walk_read(root_read)
+    st.stop()
 # Full-focus editor: suppress the workspace and sidebar until Return/Escape.
 full_id=st.session_state.get('full_edit_id')
 if full_id and full_id in byid:
     full_note=byid[full_id]
-    st.markdown("""<style>[data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"]{display:none!important} .block-container{max-width:100%!important;padding:1rem 2rem!important}</style>""",unsafe_allow_html=True)
-    col_title,col_return=st.columns([8,1])
-    with col_title:st.subheader('完全單一編輯 · '+full_note['title'])
-    with col_return:
-        if st.button('↩ Return',key='full_return'):
-            st.session_state.pop('full_edit_id',None);st.rerun()
-    if full_note['kind']=='COMPOSITE':
-        full_event=composite_component(content=full_note.get('content') or '',revision=st.session_state.get('full_revision_'+full_id,0),key='full_composite_'+full_id,default=None)
-        if isinstance(full_event,dict) and full_event.get('action')=='save' and full_event.get('nonce')!=st.session_state.get('full_nonce_'+full_id):
-            st.session_state['full_nonce_'+full_id]=full_event.get('nonce')
-            try:
-                converted=str(full_event.get('markdown',''))
-                for i,item in enumerate(full_event.get('images',[])):
-                    data=item.get('data','')
-                    if not data.startswith('data:image/') or ';base64,' not in data:continue
-                    aid=upload_image(base64.b64decode(data.split(';base64,',1)[1],validate=True),full_id)
-                    converted=converted.replace('clipboard-image://'+str(i),'asset://'+aid)
-                update_note(full_id,content=converted)
-                st.session_state['full_revision_'+full_id]=st.session_state.get('full_revision_'+full_id,0)+1
-                st.success('已增量儲存圖文文件，不觸發 ZIP 下載')
+    st.markdown('<style>[data-testid="stSidebar"]{display:none!important}.block-container{max-width:900px!important;margin:auto!important;padding-top:1.5rem!important}</style>',unsafe_allow_html=True)
+    draft_key='v43_draft_'+full_id
+    original=full_note.get('content') or ''
+    if draft_key not in st.session_state:st.session_state[draft_key]=original
+    draft=st.session_state[draft_key]
+    dirty=draft!=original
+    def save_focus():
+        value=st.session_state.get(draft_key,original)
+        if value!=original:update_note(full_id,content=value)
+    a,b,c=st.columns([6,1,1])
+    with a:st.subheader('編輯 · '+full_note['title'])
+    with b:
+        if st.button('💾 儲存',key='v43_save'):
+            try:save_focus();st.success('已儲存')
             except Exception as exc:st.error('儲存失敗：'+str(exc))
-    elif full_note['kind'] in ('MARKDOWN','SUBFILE','GROUP'):
-        full_text=st.text_area('文件內容',value=full_note.get('content') or '',height=650,key='full_text_'+full_id)
-        if st.button('💾 儲存變更',type='primary',key='full_save_'+full_id):
-            try:
-                if full_text!=(full_note.get('content') or ''):update_note(full_id,content=full_text)
-                st.success('已增量儲存，不觸發本地下載')
-            except Exception as exc:st.error('儲存失敗：'+str(exc))
-    elif full_note['kind']=='TABLE':
-        st.info('表格可使用 Markdown 表格語法編輯；儲存後會更新原始表格內容。')
-        full_text=st.text_area('表格 Markdown',value=full_note.get('content') or '',height=600,key='full_table_'+full_id)
-        if st.button('💾 儲存表格',key='full_save_table'):
-            update_note(full_id,content=full_text);st.success('已儲存')
-    else:
-        st.info('圖片與手寫稿請返回原工作臺使用專用編輯器。')
-    st.caption('ESC：離開完全單一編輯（當游標在文字框內時，請使用 Return 按鈕）。')
+    with c:
+        if st.button('↩ 返回',key='v43_back'):
+            if dirty:st.session_state['v43_confirm_back']=True
+            else:st.session_state.pop('full_edit_id',None);st.session_state.pop(draft_key,None);st.rerun()
+    if st.session_state.get('v43_confirm_back'):
+        st.warning('有尚未儲存的內容，確定要返回嗎？')
+        x,y,z=st.columns(3)
+        with x:
+            if st.button('儲存並返回'):
+                try:save_focus();st.session_state.pop('full_edit_id',None);st.session_state.pop(draft_key,None);st.session_state.pop('v43_confirm_back',None);st.rerun()
+                except Exception as exc:st.error(str(exc))
+        with y:
+            if st.button('不儲存返回'):
+                st.session_state.pop('full_edit_id',None);st.session_state.pop(draft_key,None);st.session_state.pop('v43_confirm_back',None);st.rerun()
+        with z:
+            if st.button('取消返回'):st.session_state.pop('v43_confirm_back',None);st.rerun()
+    with st.popover('⋯ 更多操作'):
+        st.caption('文件類型：'+full_note['kind'])
+        if st.button('完全單一閱讀',key='v43_read_from_edit'):
+            st.session_state.full_read_id=full_id;st.session_state.pop('full_edit_id',None);st.rerun()
+    st.divider()
+    if full_note['kind'] in ('COMPOSITE','MARKDOWN','SUBFILE','GROUP'):
+        st.text_area('內容',key=draft_key,height=560,label_visibility='collapsed',placeholder='開始輸入內容…')
+    elif full_note['kind']=='GRAPH':image_editor(full_note,assets,full_id)
+    elif full_note['kind']=='HANDWRITE':handwriting_editor(full_note,assets)
+    else:st.warning('此舊版文件類型已停止編輯。請先備份並遷移內容。')
+    st.divider()
+    if st.button('✓ 提交（儲存後關閉）',type='primary',use_container_width=True,key='v43_submit'):
+        try:
+            if full_note['kind'] in ('COMPOSITE','MARKDOWN','SUBFILE','GROUP'):save_focus()
+            st.session_state.pop('full_edit_id',None);st.session_state.pop(draft_key,None);st.rerun()
+        except Exception as exc:st.error('提交失敗：'+str(exc))
     st.stop()
 mode=st.radio('工作模式' ,['瀏覽模式','編輯模式'],horizontal=True,key='workspace_mode')
 report_key='save_report_'+workspace_id
@@ -1708,7 +1684,7 @@ if mode=='瀏覽模式':
             st.markdown('<a id="'+section_anchor(node)+'"></a>',unsafe_allow_html=True)
             if node['kind'] in ('GRAPH','TABLE','HANDWRITE') and node.get('title'):
                 st.caption(('🖼️ ' if node['kind']=='GRAPH' else '✍️ ' if node['kind']=='HANDWRITE' else '▦ ')+node['title'])
-            if node['kind']=='TABLE':render_table(node.get('content') or '')
+            if node['kind']=='TABLE':continue
             elif (node.get('content') or '').strip():show_markdown(node['content'],assets)
 else:
     st.title(workspace['title'])
@@ -1829,7 +1805,7 @@ else:
                         st.rerun()
             st.text_area('Markdown：'+block['title'],value=block.get('content') or '',
                 height=190,key=text_key,label_visibility='collapsed')
-            if st.button('💾 儲存文件：'+block['title'],key='save_text_inline_'+block['id']):
+            if False:
                 try:
                     op=operation_progress('更新文件');op(25,'寫入資料庫')
                     update_note(block['id'],content=st.session_state[text_key])
@@ -1852,10 +1828,10 @@ else:
                 draft_values[note_id]=keep_table_dimensions(dataframe_markdown(frame),*table_dimensions(byid[note_id].get('content') or ''))
         else:
             draft_values[note_id]=st.session_state.get(field_key,byid[note_id].get('content') or '')
-    st.markdown('#### 增量儲存')
+    # v4.3: workspace save is requested from Explorer context menu, not inline.
     changed={nid:val for nid,val in draft_values.items() if val!=(byid.get(nid,{}).get('content') or '')}
     st.caption(f'偵測到 {len(changed)} 個變更文件。僅更新變更內容，不下載 ZIP。完整備份請使用側邊欄「下載當前組別」。')
-    if st.button('💾 儲存變更文件',key='save_delta_'+workspace_id,disabled=not bool(changed)):
+    if st.session_state.pop('workspace_save_requested',False) and changed:
         successes=[];failures=[]
         for nid,val in changed.items():
             try:update_note(nid,content=val);successes.append(nid)
@@ -1865,7 +1841,7 @@ else:
         if successes:
             st.success(f'已更新 {len(successes)} 個文件（無本地下載）')
             st.rerun()
-    t1,t2,t3,t4,t5=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown','✍️ 手寫稿','📝 圖文文件'])
+    t1,t4,t5=st.tabs(['🖼️ 圖片','✍️ 手寫稿','📝 圖文文件'])
     with t1:
         photo_title=st.text_input('圖片名稱',value='新圖片',key='graph_title_'+workspace_id)
         st.caption('每次建立一個圖片組件；組件內可一次上傳 1–20 張照片。')
@@ -1875,21 +1851,6 @@ else:
                 st.session_state.selected=created['id']
                 st.rerun()
             except Exception as exc:st.error('新增失敗：'+str(exc))
-    with t2:
-        if st.button('＋ 建立表格',key='open_table_modal_'+workspace_id):
-            st.session_state.pending_table={'title':'新表格','parent':workspace_id}
-            st.rerun()
-    with t3:
-        text_name=st.text_input('區塊名稱',value='新段落',key='text_name_'+workspace_id)
-        if st.button('新增 Markdown 區塊',key='insert_text_'+workspace_id):
-            try:
-                created=insert_note('MARKDOWN',text_name.strip() or '新段落',workspace_id,
-                    position=len(workspace_blocks))
-                st.session_state.selected=created['id']
-                st.rerun()
-            except Exception as exc:
-                logging.getLogger(__name__).exception('Create Markdown block failed')
-                st.error('新增失敗：'+type(exc).__name__)
     with t4:
         if st.button('＋ 建立手寫稿',key='new_handwrite_'+workspace_id):
             st.session_state.pending_handwrite={'title':'新手寫稿','parent':workspace_id}
@@ -1903,10 +1864,8 @@ else:
                 st.rerun()
             except Exception as exc:st.error('新增圖文文件失敗：'+str(exc))
 st.divider()
-st.caption('BV-Text v3.9.11 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('BV-Text v4.3 · 圖文文件 · 圖片 · 手寫稿 · 完全單一閱讀')
 
-if st.session_state.get("pending_table"):
-    table_creation_dialog()
 
 if st.session_state.get('pending_handwrite'):
     handwriting_creation_dialog()
