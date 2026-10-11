@@ -1707,13 +1707,13 @@ if full_id and full_id in byid:
     def save_focus():
         value=st.session_state.get(draft_key,original)
         if full_note['kind']!='COMPOSITE' and value!=original:update_note(full_id,content=value)
-    a,b,c=st.columns([6,1,1])
-    with a:st.subheader('編輯 · '+full_note['title'])
-    with b:
+    focus_heading_col,focus_save_col,focus_back_col=st.columns([6,1,1])
+    with focus_heading_col:st.subheader('編輯 · '+full_note['title'])
+    with focus_save_col:
         if st.button('💾 儲存',key='v43_save'):
             try:save_focus();st.success('已儲存')
             except Exception as exc:st.error('儲存失敗：'+str(exc))
-    with c:
+    with focus_back_col:
         if st.button('↩ 返回',key='v43_back'):
             if dirty:st.session_state['v43_confirm_back']=True
             else:st.session_state.pop('full_edit_id',None);st.session_state.pop(draft_key,None);st.rerun()
