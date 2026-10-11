@@ -690,6 +690,11 @@ def import_group(raw, parent=None):
         return mapping[rootid]
 
 st.markdown('''<style>
+/* Mobile markdown tables: preserve columns and enable horizontal scrolling. */
+[data-testid="stMarkdownContainer"]{min-width:0;max-width:100%}
+[data-testid="stMarkdownContainer"] table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;border-collapse:collapse}
+[data-testid="stMarkdownContainer"] table th,[data-testid="stMarkdownContainer"] table td{min-width:85px;padding:7px 10px;white-space:normal;overflow-wrap:anywhere}
+
 html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{max-width:100%;overflow-x:hidden!important}
 [data-testid="stMain"], [data-testid="stMainBlockContainer"], .block-container{min-width:0!important;max-width:100%!important;box-sizing:border-box!important}
 .block-container{padding:1.25rem clamp(.75rem,3vw,2rem) 3rem!important}
@@ -903,7 +908,43 @@ with st.sidebar:
                 except Exception as exc:st.error('清理失敗：'+str(exc))
         st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
     st.divider()
-    st.subheader('EXPLORER')
+    nav_history=st.session_state.setdefault('_nav_history',[])
+    nav_now=(st.session_state.get('selected'),st.session_state.get('full_edit_id'),st.session_state.get('full_read_id'),st.session_state.get('view_mode',''))
+    if st.session_state.get('_nav_last')!=nav_now:
+        if st.session_state.get('_nav_last') is not None and not st.session_state.pop('_nav_back_in_progress',False):
+            nav_history.append(st.session_state['_nav_last'])
+            if len(nav_history)>50:del nav_history[:-50]
+        st.session_state['_nav_last']=nav_now
+    heading_col,previous_col=st.columns([3,2],vertical_alignment='center')
+    with heading_col:st.subheader('EXPLORER')
+    with previous_col:
+        if st.button('← Previous',disabled=not bool(nav_history),key='nav_previous'):
+            previous=nav_history.pop()
+            st.session_state['_nav_back_in_progress']=True
+            for field,value in zip(('selected','full_edit_id','full_read_id','view_mode'),previous):
+                if value is None:st.session_state.pop(field,None)
+                else:st.session_state[field]=value
+            st.session_state['_nav_last']=previous
+            st.rerun()
+    # Keep last active document and workspace mode in the URL across browser refreshes.
+    try:
+        if not st.session_state.get('_nav_url_restored'):
+            st.session_state['_nav_url_restored']=True
+            requested=st.query_params.get('doc')
+            if requested and requested in byid and not byid[requested].get('is_deleted'):
+                st.session_state.selected=requested
+                mode=st.query_params.get('area','workspace')
+                if mode=='edit':st.session_state.full_edit_id=requested
+                elif mode=='read':st.session_state.full_read_id=requested
+                st.rerun()
+        active_id=st.session_state.get('full_edit_id') or st.session_state.get('full_read_id') or st.session_state.get('selected')
+        if active_id in byid and not byid[active_id].get('is_deleted'):
+            area='edit' if st.session_state.get('full_edit_id') else 'read' if st.session_state.get('full_read_id') else 'workspace'
+            if st.query_params.get('doc')!=active_id or st.query_params.get('area')!=area:
+                st.query_params['doc']=active_id
+                st.query_params['area']=area
+    except Exception:pass
+
     st.caption('右鍵操作 · 拖曳移動 · F2 · Delete · Ctrl+D/C/V/X')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
     payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',st.session_state.get('block_content_'+n['id'],n.get('content') or '')) if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
@@ -1698,7 +1739,7 @@ if full_id and full_id in byid:
     st.divider()
     if full_note['kind']=='COMPOSITE':
         text_key='block_content_'+full_id
-        current=st.session_state.get(text_key,original)
+        current=str(st.session_state.get(text_key,original) or '')
         event=composite_component(content=current,revision=st.session_state.get('_composite_rev_'+full_id,0),focusHeading=st.session_state.get('_composite_toc_target_'+full_id,-1),key='focus_composite_'+full_id,default=None)
         if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_focus_composite_nonce_'+full_id):
             st.session_state['_focus_composite_nonce_'+full_id]=event.get('nonce')
