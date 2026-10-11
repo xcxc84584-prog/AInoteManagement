@@ -895,6 +895,8 @@ with st.sidebar:
     st.subheader('EXPLORER')
     st.caption('右鍵操作 · 拖曳移動 · F2 · Delete')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
+    hidden_roots=set(st.session_state.get('v46_hidden_roots',[]))
+    active_notes=[n for n in active_notes if not any(a in hidden_roots for a in get_ancestors(n['id'],byid))]
     payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',st.session_state.get('block_content_'+n['id'],n.get('content') or '')) if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
     if event and event.get('event_id')!=st.session_state.get('last_explorer_event'):
@@ -903,7 +905,7 @@ with st.sidebar:
         try:
             op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav','import_child') else None
             if op_progress:op_progress(15,'正在處理 '+str(action))
-            if action in ('select','full_edit','full_read','quick_nav','toc_nav') and nid in byid:
+            if action in ('select','full_edit','full_read','quick_nav','toc_nav','toc_edit_nav','toc_browse_nav') and nid in byid:
                 # Every Explorer navigation commits the current focused draft, even
                 # when navigating to the same node or changing reading mode.
                 v431_commit_focus_before_navigation()
@@ -912,6 +914,10 @@ with st.sidebar:
                 st.session_state.selected=nid
                 st.session_state.full_edit_id=nid
                 st.session_state['_composite_toc_target_'+nid]=int(event.get('index',0))
+            elif action=='toc_browse_nav' and nid in byid:
+                st.session_state.selected=nid
+                st.session_state.full_read_id=nid
+                st.session_state['_composite_browse_target_'+nid]=int(event.get('index',0))
             elif action=='select' and nid in byid:
                 st.session_state.selected=nid
             elif action=='full_edit' and nid in byid:
@@ -1031,43 +1037,52 @@ with st.sidebar:
         remember_action('clear')
         st.rerun()
 
-# Explorer ROOT close: full-group local backup, then close after browser confirms save initiation.
-close_target=st.session_state.get('workspace_close_requested')
-if close_target:
-    close_node=byid.get(close_target)
-    if close_node:
-        root_id=get_ancestors(close_node['id'],byid)[-1]
-        root=byid.get(root_id)
-        if root and root.get('kind')=='GROUP':
-            try:
-                overrides={}
-                for node in notes:
-                    nid=node['id']
-                    for key in ('v43_draft_'+nid,'edit_'+nid,'text_'+nid):
-                        if key in st.session_state and isinstance(st.session_state[key],str):
-                            overrides[nid]=st.session_state[key]
-                            break
-                payload=export_group(root,notes,overrides)
-                with st.sidebar:
-                    st.markdown('#### 📦 ROOT 本地保存')
-                    st.caption('保存整個 ROOT：'+root['title'])
-                    result=local_component(mode='close',data=base64.b64encode(payload).decode('ascii'),filename=download_filename(root['title']),key='root_close_'+root_id,default=None)
-                    if isinstance(result,dict) and result.get('action')=='saved':
-                        st.session_state.pop('workspace_close_requested',None)
-                        st.session_state.pop('full_edit_id',None)
-                        st.session_state.pop('full_read_id',None)
-                        st.session_state.selected=None
-                        st.success('已啟動保存；請確認裝置中的檔案。')
-                        st.rerun()
-                    if isinstance(result,dict) and result.get('action')=='error':
-                        st.error('保存失敗，尚未關閉：'+str(result.get('message','')))
-                    if st.button('取消關閉',key='cancel_root_close'):
-                        st.session_state.pop('workspace_close_requested',None)
-                        st.rerun()
-            except Exception as exc:
-                st.error('建立 ROOT 備份失敗：'+str(exc))
-    else:
+# v4.6: modal ROOT backup; Explorer removal only after confirmed local save.
+@st.dialog('保存並關閉 ROOT',width='large')
+def v46_close_root_dialog(root_id):
+    root=byid.get(root_id)
+    if not root or root.get('kind')!='GROUP':
         st.session_state.pop('workspace_close_requested',None)
+        return
+    st.write('將整個 ROOT「'+root['title']+'」保存至本地，再從目前 Explorer 關閉。')
+    st.caption('PC 優先寫入授權資料夾；手機可能使用瀏覽器下載。下載啟動不代表檔案已落地。')
+    overrides={}
+    for node in notes:
+        nid=node['id']
+        for key in ('v43_draft_'+nid,'edit_'+nid,'text_'+nid,'block_content_'+nid):
+            if isinstance(st.session_state.get(key),str):
+                overrides[nid]=st.session_state[key]
+                break
+    try:
+        payload=export_group(root,notes,overrides)
+        result=local_component(mode='close',data=base64.b64encode(payload).decode('ascii'),filename=download_filename(root['title']),key='root_close_modal_'+root_id,default=None)
+        if isinstance(result,dict) and result.get('action')=='saved':
+            st.session_state['v46_close_saved_'+root_id]=result.get('method')
+        if isinstance(result,dict) and result.get('action')=='error':
+            st.error('保存失敗：'+str(result.get('message','')))
+        method=st.session_state.get('v46_close_saved_'+root_id)
+        if method:
+            if method=='folder':st.success('已寫入本地檔案。可關閉 ROOT。')
+            else:st.warning('已啟動下載，請先在裝置確認檔案存在且可開啟。')
+            verified=st.checkbox('我已確認本地備份完整，可從 Explorer 關閉此 ROOT',key='v46_verified_'+root_id)
+            if st.button('確認關閉 ROOT',type='primary',disabled=not verified,key='v46_finish_'+root_id):
+                # Close in this Explorer session, without deleting stored data.
+                hidden=set(st.session_state.get('v46_hidden_roots',[]))
+                hidden.add(root_id)
+                st.session_state['v46_hidden_roots']=list(hidden)
+                for k in ('workspace_close_requested','full_edit_id','full_read_id'):
+                    st.session_state.pop(k,None)
+                st.session_state.selected=None
+                st.session_state.pop('v46_close_saved_'+root_id,None)
+                st.rerun()
+    except Exception as exc:st.error('建立 ROOT 備份失敗：'+str(exc))
+    if st.button('取消',key='v46_cancel_close'):
+        st.session_state.pop('workspace_close_requested',None)
+        st.rerun()
+close_target=st.session_state.get('workspace_close_requested')
+if close_target and close_target in byid:
+    root_id=get_ancestors(close_target,byid)[-1]
+    v46_close_root_dialog(root_id)
 
 if st.session_state.get('import_child_target'):
     import_child_dialog()
@@ -1603,7 +1618,19 @@ if read_id and read_id in byid:
                 walk_read(child,seen)
         elif n['kind']!='TABLE':
             st.subheader(n['title'])
-            if n.get('content'):show_markdown(n['content'],assets)
+            if n.get('content'):
+                if n['kind']=='COMPOSITE' and n['id']==read_id and '_composite_browse_target_'+read_id in st.session_state:
+                    target=st.session_state.pop('_composite_browse_target_'+read_id)
+                    chunks=re.split(r'(//\[[^\]\n]+\]//)',n['content'])
+                    count=0
+                    for chunk in chunks:
+                        if re.fullmatch(r'//\[[^\]\n]+\]//',chunk):
+                            anchor='v46-browse-'+str(count)
+                            st.markdown('<div id=\"'+anchor+'\"></div>',unsafe_allow_html=True)
+                            if count==target:section_scroll_component(anchor=anchor,key='v46_scroll_'+n['id']+'_'+str(count),default=None)
+                            count+=1
+                        show_markdown(chunk,assets)
+                else:show_markdown(n['content'],assets)
             else:st.caption('此文件尚無內容')
     walk_read(root_read)
     st.stop()
