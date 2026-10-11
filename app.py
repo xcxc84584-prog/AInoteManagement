@@ -187,6 +187,42 @@ def insert_note(kind,title,parent=None,content='',has_page=False,position=0):
     if not result:raise RuntimeError('建立失敗：資料庫未回傳新文件')
     return result[0]
 
+def priority_siblings(parent, exclude=None):
+    """Current active siblings in display order, with stable creation-time tie break."""
+    rows=c.table('notes').select('*').eq('owner_id',uid).eq('parent_id',parent).eq('is_deleted',False).execute().data or []
+    return sorted([r for r in rows if r['id']!=exclude],key=lambda r:(int(r.get('position') or 0),str(r.get('created_at') or ''),r['id']))
+
+def apply_priority_order(parent, ordered_ids):
+    """Persist contiguous 1-based priority within a folder."""
+    for index,note_id in enumerate(ordered_ids,1):
+        update_note(note_id,position=index)
+
+def place_after(note_id, target_id):
+    """Move a node to immediately after target, shifting subsequent priorities."""
+    source=byid[note_id];target_node=byid[target_id]
+    if note_id==target_id: return
+    if target_id in subtree(note_id,notes):raise ValueError('不可移入自己的子節點')
+    destination=target_node['parent_id']
+    if source['kind']=='GROUP' and destination is not None:
+        new_kind='SUBFILE';new_has_page=True
+    else:new_kind=source['kind'];new_has_page=source['has_page']
+    if source['kind']!='GROUP' and destination is not None and get_ancestors(destination,byid)[-1]!=get_ancestors(note_id,byid)[-1]:
+        raise ValueError('一般文件跨組別請使用複製')
+    old_parent=source['parent_id']
+    target_siblings=priority_siblings(destination,exclude=note_id)
+    ordered=[r['id'] for r in target_siblings]
+    ordered.insert(ordered.index(target_id)+1,note_id)
+    update_note(note_id,parent_id=destination,kind=new_kind,has_page=new_has_page)
+    apply_priority_order(destination,ordered)
+    if old_parent!=destination:apply_priority_order(old_parent,[r['id'] for r in priority_siblings(old_parent)])
+
+def set_priority(note_id,rank):
+    parent=byid[note_id]['parent_id']
+    ordered=[r['id'] for r in priority_siblings(parent,exclude=note_id)]
+    rank=max(1,min(int(rank),len(ordered)+1))
+    ordered.insert(rank-1,note_id)
+    apply_priority_order(parent,ordered)
+
 def create_blocks_batch(kind, title, parent, count, content=''):
     """Create 1–20 independent blocks; roll back created rows if any insert fails."""
     count=int(count)
@@ -823,8 +859,13 @@ with st.sidebar:
                     st.session_state.selected=parent
                     st.rerun()
                 if kind in KINDS and title and (kind=='GROUP' or parent):
-                    new=insert_note(kind,title,parent,has_page=kind=='SUBFILE',position=len([x for x in active_notes if x['parent_id']==parent]))
+                    new=insert_note(kind,title,parent,has_page=kind=='SUBFILE',position=len([x for x in active_notes if x['parent_id']==parent])+1)
                     st.session_state.selected=new['id']
+            elif action=='priority' and nid in byid:
+                set_priority(nid,event.get('priority',1))
+            elif action=='move_after' and nid in byid and target in byid:
+                place_after(nid,target)
+                st.session_state.selected=nid
             elif action in ('move','paste','copy'):
                 if nid not in byid:raise ValueError('來源文件不存在或已被刪除')
                 source=byid[nid]
@@ -834,7 +875,10 @@ with st.sidebar:
                     if dest in subtree(nid,notes):raise ValueError('不能移入自己或自己的子節點')
                     if source['kind']!='GROUP' and get_ancestors(dest,byid)[-1]!=get_ancestors(nid,byid)[-1]:raise ValueError('一般文件移動僅限同一組別；跨組別請使用複製')
                     if source['parent_id']!=dest:
-                        update_note(nid,parent_id=dest,kind='SUBFILE' if source['kind']=='GROUP' else source['kind'],has_page=True if source['kind']=='GROUP' else source['has_page'],position=len([x for x in active_notes if x['parent_id']==dest]))
+                        update_note(nid,parent_id=dest,kind='SUBFILE' if source['kind']=='GROUP' else source['kind'],has_page=True if source['kind']=='GROUP' else source['has_page'],position=len([x for x in active_notes if x['parent_id']==dest])+1)
+                    if source['parent_id']!=dest:
+                        apply_priority_order(source['parent_id'],[r['id'] for r in priority_siblings(source['parent_id'],exclude=nid)])
+                        apply_priority_order(dest,[r['id'] for r in priority_siblings(dest)])
                     st.session_state.selected=nid
                 else:
                     copied_id=clone_note(nid,dest)
@@ -849,7 +893,7 @@ with st.sidebar:
                 if a['parent_id']==b['parent_id']:
                     siblings=sorted([n for n in active_notes if n['parent_id']==a['parent_id']],key=lambda n:(n['position'],n['created_at']))
                     ids=[n['id'] for n in siblings if n['id']!=nid];ids.insert(ids.index(target),nid)
-                    for i,ident in enumerate(ids):update_note(ident,position=i)
+                    apply_priority_order(a['parent_id'],ids)
             if op_progress:
                 op_progress(100,'操作完成')
                 st.session_state['operation_notice']='操作完成：'+str(action)
@@ -1283,6 +1327,16 @@ if selected:
         close_err=None
     except Exception as exc:
         close_b64='';close_err=str(exc)
+    st.caption('可選擇保存後繼續編輯，或保存後關閉文件。')
+    continue_event=local_component(mode='continue',data=close_b64,
+        filename=download_filename(group['title']),disabled=bool(close_err),
+        key='continue_local_'+workspace_id,default=None)
+    if isinstance(continue_event,dict) and continue_event.get('token')!=st.session_state.get('continue_last_token_'+workspace_id):
+        st.session_state['continue_last_token_'+workspace_id]=continue_event.get('token')
+        if continue_event.get('action')=='saved':
+            st.success('本地備份完成，文件保持開啟，可繼續編輯。')
+        elif continue_event.get('action')=='error':
+            st.error('本地保存失敗：'+continue_event.get('message','未知錯誤'))
     close_event=local_component(mode='close',data=close_b64,
         filename=download_filename(group['title']),
         disabled=bool(close_err),key='close_local_'+workspace_id,default=None)
