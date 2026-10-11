@@ -30,6 +30,7 @@ MAX_IMAGE=10*1024*1024
 local_component=components.declare_component('ainote_local_save',path=str(Path(__file__).parent/'components'/'local_save'))
 matrix_component=components.declare_component('ainote_matrix_table',path=str(Path(__file__).parent/'components'/'matrix_table'))
 paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
+rich_paste_component=components.declare_component('bv_rich_paste',path=str(Path(__file__).parent/'components'/'rich_paste'))
 schedule_calendar_component=components.declare_component('bv_schedule_calendar',path=str(Path(__file__).parent/'components'/'schedule_calendar'))
 section_scroll_component=components.declare_component('bv_section_scroll',path=str(Path(__file__).parent/'components'/'section_scroll'))
 
@@ -1059,17 +1060,92 @@ def schedule_edit_dialog(card):
             st.rerun()
         except Exception as exc:st.error('修改失敗：'+str(exc))
 
+SCHEDULE_BACKUP_FIELDS=('id','title','schedule_date','scheduled_at','details','created_at','is_completed','batch_tag','batch_id')
+def make_schedule_backup(cards):
+    return json.dumps({'format':'bvtext.schedule','version':1,'exported_at':datetime.now(timezone.utc).isoformat(),
+                       'cards':[{k:row.get(k) for k in SCHEDULE_BACKUP_FIELDS} for row in cards]},
+                      ensure_ascii=False,indent=2).encode('utf-8')
+def read_schedule_backup(raw):
+    if len(raw)>10*1024*1024:raise ValueError('備份檔案不可超過 10 MB')
+    doc=json.loads(raw.decode('utf-8-sig'))
+    if not isinstance(doc,dict) or doc.get('format')!='bvtext.schedule' or doc.get('version')!=1:
+        raise ValueError('不支援的行程表格式或版本')
+    rows=doc.get('cards')
+    if not isinstance(rows,list) or len(rows)>20000:raise ValueError('行程卡數量或格式不正確')
+    cleaned=[];ids=set()
+    for row in rows:
+        if not isinstance(row,dict):raise ValueError('行程卡資料格式不正確')
+        rid=str(uuid.UUID(str(row.get('id'))))
+        if rid in ids:raise ValueError('備份內含重複行程卡 ID')
+        ids.add(rid)
+        day=date.fromisoformat(str(row['schedule_date']))
+        if row.get('scheduled_at'):datetime.fromisoformat(str(row['scheduled_at']).replace('Z','+00:00'))
+        title=row.get('title')
+        if not isinstance(title,str) or not title.strip() or len(title)>200:raise ValueError('行程卡標題不正確')
+        details=row.get('details') or ''
+        if not isinstance(details,str) or len(details)>50000:raise ValueError('行程內容不正確')
+        cleaned.append({'id':rid,'owner_id':uid,'title':title,'schedule_date':day.isoformat(),
+                        'scheduled_at':row.get('scheduled_at'),'details':details,
+                        'created_at':row.get('created_at') or datetime.now(timezone.utc).isoformat(),
+                        'is_completed':bool(row.get('is_completed')),
+                        'batch_tag':row.get('batch_tag'),'batch_id':row.get('batch_id')})
+    return cleaned
+def restore_schedule_backup(rows,mode):
+    # One SQLite transaction: no partial imports on errors.
+    with local_db.lock,local_db.conn:
+        if mode=='取代現有行程表':
+            local_db.conn.execute('DELETE FROM schedule_cards WHERE owner_id=?',(uid,))
+        for row in rows:
+            cols=list(row)
+            existing=local_db.conn.execute('SELECT owner_id FROM schedule_cards WHERE id=?',(row['id'],)).fetchone()
+            if existing and existing['owner_id']!=uid:raise ValueError('行程卡 ID 與其他帳號衝突')
+            local_db.conn.execute('INSERT OR REPLACE INTO schedule_cards ('+','.join(cols)+') VALUES ('+
+                                  ','.join('?' for _ in cols)+')',[int(row[k]) if k=='is_completed' else row[k] for k in cols])
+    mark_local_change()
+
 if st.session_state.get('main_page')=='📅 行程表':
     st.title('📅 行程表')
-    save_col,help_col=st.columns([1,3])
-    if save_col.button('💾 手動保存行程表',key='schedule_manual_save',type='primary'):
-        if STORAGE_MODE=='browser':
-            st.session_state['_browser_revision']=st.session_state.get('_browser_revision',0)+1
-            st.toast('已要求寫入瀏覽器 IndexedDB，請等待儲存完成提示。')
-        else:
-            st.toast('SQLite 已保存至固定本地路徑。')
-        st.rerun()
-    help_col.caption('編輯會先保存至本地；手動保存可再次觸發瀏覽器持久化。不會上傳 Supabase。')
+    st.caption('行程卡編輯後會先保存在本機 SQLite 或瀏覽器 IndexedDB。下方可另外匯出獨立的行程表備份，並從本地檔案還原。')
+    try:
+        schedule_backup_cards=c.table('schedule_cards').select('*').eq('owner_id',uid).execute().data or []
+        schedule_backup_bytes=make_schedule_backup(schedule_backup_cards)
+    except Exception as exc:
+        st.error('無法準備行程表備份：'+str(exc))
+        schedule_backup_bytes=None
+    with st.expander('💾 保存行程表到本地',expanded=False):
+        st.caption('與筆記相同：桌面瀏覽器優先寫入已授權的本地資料夾；手機瀏覽器改為下載。請確認下載檔案確實存在。')
+        if schedule_backup_bytes is not None:
+            schedule_event=local_component(mode='schedule',data=base64.b64encode(schedule_backup_bytes).decode('ascii'),
+                filename='BV-Text-Schedule-'+date.today().isoformat()+'.bvcalendar.json',
+                key='schedule_local_backup_v1',default=None)
+            if isinstance(schedule_event,dict) and schedule_event.get('token')!=st.session_state.get('schedule_last_save_token'):
+                st.session_state.schedule_last_save_token=schedule_event['token']
+                if schedule_event.get('action')=='saved':
+                    if schedule_event.get('method')=='folder':st.success('行程表已寫入授權的本地資料夾。')
+                    else:st.info('已啟動下載，請確認手機下載項目內有備份檔案。')
+                elif schedule_event.get('action')=='error':st.error('行程表保存失敗：'+str(schedule_event.get('message')))
+            st.download_button('⬇️ 直接下載行程表 JSON',data=schedule_backup_bytes,
+                file_name='BV-Text-Schedule-'+date.today().isoformat()+'.bvcalendar.json',
+                mime='application/json',key='schedule_download_fallback')
+    with st.expander('📂 從本地選擇行程表載入',expanded=False):
+        upload=st.file_uploader('選擇先前保存的 .bvcalendar.json 行程表備份',
+                                type=['json'],key='schedule_import_file')
+        import_mode=st.radio('載入方式',['合併行程（相同 ID 更新）','取代現有行程表'],key='schedule_import_mode',
+                             help='合併不刪除既有行程；取代會刪除本帳號原有的全部行程卡。')
+        if upload is not None:
+            try:
+                import_rows=read_schedule_backup(upload.getvalue())
+                st.info(f'檔案驗證通過：包含 {len(import_rows)} 張行程卡。')
+                if import_mode=='取代現有行程表':
+                    st.warning(f'取代模式將移除目前 {len(schedule_backup_cards)} 張行程卡。請先保存備份。')
+                confirm_import=st.checkbox('我確認要載入此行程表',key='schedule_import_confirm')
+                if st.button('載入行程表',disabled=not confirm_import,key='schedule_import_apply',type='primary'):
+                    restore_schedule_backup(import_rows,import_mode)
+                    st.session_state.pop('schedule_import_file',None)
+                    st.session_state.pop('schedule_import_confirm',None)
+                    st.success(f'已載入 {len(import_rows)} 張行程卡。')
+                    st.rerun()
+            except Exception as exc:st.error('無法載入行程表：'+str(exc))
     st.caption('點選日期可查看或新增行程；滑鼠停留日期按鈕可查看當日行程簡表。')
     try:
         cards=c.table('schedule_cards').select('id,title,schedule_date,scheduled_at,details,created_at,is_completed,batch_tag,batch_id').eq('owner_id',uid).execute().data or []
@@ -1578,6 +1654,33 @@ else:
             draft_keys.append((block['id'],sheet_key,'matrix'))
         else:
             text_key='block_content_'+block['id']
+            with st.expander('📋 ChatGPT 富文本貼上（保留標題、表格、程式碼與圖片）'):
+                rich_event=rich_paste_component(key='rich_paste_'+block['id'],default=None)
+                if isinstance(rich_event,dict) and rich_event.get('nonce'):
+                    pending_key='_rich_pending_'+block['id']
+                    if st.session_state.get(pending_key,{}).get('nonce')!=rich_event['nonce']:
+                        st.session_state[pending_key]=rich_event
+                pending=st.session_state.get('_rich_pending_'+block['id'])
+                if pending:
+                    st.caption('已收到貼上內容，確認後才會更新 Markdown 草稿。')
+                    if st.button('套用貼上內容',key='apply_rich_'+block['id']):
+                        try:
+                            converted=pending.get('markdown','')
+                            for i,item in enumerate(pending.get('images',[])):
+                                data=item.get('data','')
+                                if not data.startswith('data:image/') or ';base64,' not in data:continue
+                                raw=base64.b64decode(data.split(';base64,',1)[1],validate=True)
+                                aid=upload_image(raw,block['id'])
+                                converted=converted.replace('clipboard-image://'+str(i),'asset://'+aid)
+                            existing=st.session_state.get(text_key,block.get('content') or '')
+                            st.session_state[text_key]=(existing.rstrip()+'\n\n'+converted).strip() if existing.strip() else converted
+                            del st.session_state['_rich_pending_'+block['id']]
+                            st.rerun()
+                        except Exception as exc:
+                            st.error('轉換貼上內容失敗：'+str(exc))
+                    if st.button('取消此次貼上',key='cancel_rich_'+block['id']):
+                        del st.session_state['_rich_pending_'+block['id']]
+                        st.rerun()
             st.text_area('Markdown：'+block['title'],value=block.get('content') or '',
                 height=190,key=text_key,label_visibility='collapsed')
             if st.button('💾 儲存文件：'+block['title'],key='save_text_inline_'+block['id']):
