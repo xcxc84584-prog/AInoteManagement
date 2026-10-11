@@ -24,12 +24,13 @@ from manual_sync import pull_from_cloud,push_to_cloud
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title='BV-Text',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
-KINDS=['GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE','HANDWRITE']
+KINDS=['GROUP','SUBFILE','MARKDOWN','GRAPH','TABLE','HANDWRITE','COMPOSITE']
 CONTAINERS=['GROUP','SUBFILE']
 MAX_IMAGE=10*1024*1024
 local_component=components.declare_component('ainote_local_save',path=str(Path(__file__).parent/'components'/'local_save'))
 matrix_component=components.declare_component('ainote_matrix_table',path=str(Path(__file__).parent/'components'/'matrix_table'))
 paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
+composite_component=components.declare_component('bv_composite_editor',path=str(Path(__file__).parent/'components'/'composite_editor'))
 rich_paste_component=components.declare_component('bv_rich_paste',path=str(Path(__file__).parent/'components'/'rich_paste'))
 schedule_calendar_component=components.declare_component('bv_schedule_calendar',path=str(Path(__file__).parent/'components'/'schedule_calendar'))
 section_scroll_component=components.declare_component('bv_section_scroll',path=str(Path(__file__).parent/'components'/'section_scroll'))
@@ -607,6 +608,8 @@ def table_editor(note,uid_key):
             st.error('表格儲存失敗：'+type(exc).__name__)
 
 def show_markdown(content,assets):
+    # Composite section delimiters are structural metadata, not visible text.
+    content=re.sub(r'(?m)^\s*//\[([^\]\n]+)\]//\s*$',lambda m:'\n### '+m.group(1).strip()+'\n',content)
     # Resolve private asset identifiers without embedding unsafe HTML.
     parts=re.split(r'(!\[[^\]]*\]\(asset://[0-9a-fA-F-]{36}\))',content)
     for part in parts:
@@ -1482,7 +1485,7 @@ workspace_blocks=sorted(
 )
 assets={}
 # Load asset metadata only if the group/workspace contains image references.
-needs_assets=any('asset://' in (n.get('content') or '') for n in active_notes if n['kind'] in ('GRAPH','HANDWRITE'))
+needs_assets=any('asset://' in (n.get('content') or '') for n in active_notes if n['kind'] in ('GRAPH','HANDWRITE','COMPOSITE','MARKDOWN'))
 if needs_assets:
     try:
         assets={a['id']:a for a in c.table('assets').select('id,storage_path,mime_type,note_id').eq('owner_id',uid).execute().data}
@@ -1593,8 +1596,30 @@ else:
     # GROUP/SUBFILE are structural folders; content lives in child documents only.
     draft_keys=[]
     for block in workspace_blocks:
-        st.markdown('#### '+('🖼️ ' if block['kind']=='GRAPH' else '✍️ ' if block['kind']=='HANDWRITE' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'])
-        if block['kind']=='HANDWRITE':
+        st.markdown('#### '+('🖼️ ' if block['kind']=='GRAPH' else '✍️ ' if block['kind']=='HANDWRITE' else '📝 ' if block['kind']=='COMPOSITE' else '▦ ' if block['kind']=='TABLE' else '📄 ')+block['title'])
+        if block['kind']=='COMPOSITE':
+            text_key='block_content_'+block['id']
+            current=st.session_state.get(text_key,block.get('content') or '')
+            event=composite_component(content=current,revision=st.session_state.get('_composite_rev_'+block['id'],0),key='composite_'+block['id'],default=None)
+            if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_composite_nonce_'+block['id']):
+                st.session_state['_composite_nonce_'+block['id']]=event.get('nonce')
+                if event.get('action')=='save':
+                    try:
+                        converted=str(event.get('markdown',''))
+                        for i,item in enumerate(event.get('images',[])):
+                            data=item.get('data','')
+                            if not data.startswith('data:image/') or ';base64,' not in data:continue
+                            raw=base64.b64decode(data.split(';base64,',1)[1],validate=True)
+                            aid=upload_image(raw,block['id'])
+                            converted=converted.replace('clipboard-image://'+str(i),'asset://'+aid)
+                        update_note(block['id'],content=converted)
+                        st.session_state[text_key]=converted
+                        st.session_state['_composite_rev_'+block['id']]=st.session_state.get('_composite_rev_'+block['id'],0)+1
+                        st.success('圖文文件已儲存')
+                        st.rerun()
+                    except Exception as exc:st.error('圖文文件儲存失敗：'+str(exc))
+            draft_keys.append((block['id'],text_key,'text'))
+        elif block['kind']=='HANDWRITE':
             handwriting_editor(block,assets)
         elif block['kind']=='GRAPH':
             image_editor(block,assets,block['id'])
@@ -1654,7 +1679,7 @@ else:
             draft_keys.append((block['id'],sheet_key,'matrix'))
         else:
             text_key='block_content_'+block['id']
-            with st.expander('📋 ChatGPT 富文本貼上（保留標題、表格、程式碼與圖片）'):
+            with st.expander('📋 舊版貼上工具（推薦改用「圖文文件」）'):
                 rich_event=rich_paste_component(key='rich_paste_'+block['id'],default=None)
                 if isinstance(rich_event,dict) and rich_event.get('nonce'):
                     pending_key='_rich_pending_'+block['id']
@@ -1756,7 +1781,7 @@ else:
     elif st.session_state.get(save_key,{}).get('stage')=='failed':
         st.error('存儲流程未完成：'+str(st.session_state[save_key].get('error')))
     st.caption('本地資料夾模式確認寫入後才上傳；瀏覽器下載模式只能確認已啟動下載，無法確認磁碟寫入完成。')
-    t1,t2,t3,t4=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown','✍️ 手寫稿'])
+    t1,t2,t3,t4,t5=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown','✍️ 手寫稿','📝 圖文文件'])
     with t1:
         photo_title=st.text_input('圖片名稱',value='新圖片',key='graph_title_'+workspace_id)
         st.caption('每次建立一個圖片組件；組件內可一次上傳 1–20 張照片。')
@@ -1785,8 +1810,16 @@ else:
         if st.button('＋ 建立手寫稿',key='new_handwrite_'+workspace_id):
             st.session_state.pending_handwrite={'title':'新手寫稿','parent':workspace_id}
             st.rerun()
+    with t5:
+        composite_name=st.text_input('圖文文件名稱',value='新圖文文件',key='composite_name_'+workspace_id)
+        if st.button('＋ 建立圖文文件',key='new_composite_'+workspace_id):
+            try:
+                created=insert_note('COMPOSITE',composite_name.strip() or '新圖文文件',workspace_id,position=len(workspace_blocks))
+                st.session_state.selected=created['id']
+                st.rerun()
+            except Exception as exc:st.error('新增圖文文件失敗：'+str(exc))
 st.divider()
-st.caption('BV-Text v3.2.1 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
+st.caption('BV-Text v3.9.11 · 組別瀏覽 · 工作區儲存 · 圖片貼上 · Excel 式表格')
 
 if st.session_state.get("pending_table"):
     table_creation_dialog()
