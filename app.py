@@ -895,7 +895,7 @@ with st.sidebar:
     st.subheader('EXPLORER')
     st.caption('右鍵操作 · 拖曳移動 · F2 · Delete')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
-    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',n.get('content') or '') if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
+    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',st.session_state.get('block_content_'+n['id'],n.get('content') or '')) if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
     if event and event.get('event_id')!=st.session_state.get('last_explorer_event'):
         st.session_state.last_explorer_event=event.get('event_id')
@@ -1544,49 +1544,8 @@ if needs_assets:
     except Exception:
         logging.getLogger(__name__).exception('Asset list failed')
 
-# 文件關閉不使用頂部標籤列；關閉是先完整本地備份，再移入回收區。
-if selected:
-    st.caption('關閉文件會先在授權資料夾建立本地備份，再從網站工作臺移入回收區。')
-    try:
-        close_drafts={}
-        for draft_note in active_notes:
-            dk='block_content_'+draft_note['id']
-            if dk in st.session_state:close_drafts[draft_note['id']]=st.session_state[dk]
-        close_bytes=export_group(group,active_notes,close_drafts)
-        close_b64=base64.b64encode(close_bytes).decode('ascii')
-        close_err=None
-    except Exception as exc:
-        close_b64='';close_err=str(exc)
-    st.caption('可選擇保存後繼續編輯，或保存後關閉文件。')
-    continue_event=local_component(mode='continue',data=close_b64,
-        filename=download_filename(group['title']),disabled=bool(close_err),
-        key='continue_local_'+workspace_id,default=None)
-    if isinstance(continue_event,dict) and continue_event.get('token')!=st.session_state.get('continue_last_token_'+workspace_id):
-        st.session_state['continue_last_token_'+workspace_id]=continue_event.get('token')
-        if continue_event.get('action')=='saved':
-            st.success('本地備份完成，文件保持開啟，可繼續編輯。')
-        elif continue_event.get('action')=='error':
-            st.error('本地保存失敗：'+continue_event.get('message','未知錯誤'))
-    close_event=local_component(mode='close',data=close_b64,
-        filename=download_filename(group['title']),
-        disabled=bool(close_err),key='close_local_'+workspace_id,default=None)
-    if close_err:st.error('無法準備關閉備份：'+close_err)
-    if isinstance(close_event,dict) and close_event.get('token')!=st.session_state.get('close_last_token_'+workspace_id):
-        st.session_state['close_last_token_'+workspace_id]=close_event.get('token')
-        if close_event.get('action')=='saved':
-            if close_event.get('method')!='folder':
-                st.error('關閉需要確認本地檔案已寫入。請先在設定中心授權本地資料夾。')
-            else:
-                try:
-                    op=operation_progress('關閉文件');op(35,'本地備份完成')
-                    delete_note(selected['id'])
-                    op(90,'已移入回收區，重新載入工作臺')
-                    st.session_state.selected=None
-                    st.session_state.pop('open_tabs',None)
-                    op(100,'關閉完成');st.rerun()
-                except Exception as exc:st.error('關閉失敗：'+str(exc))
-        elif close_event.get('action')=='error':st.error('本地備份失敗：'+close_event.get('message','未知錯誤'))
-# v4.3 distraction-free continuous reading for a FILE or a complete FOLD subtree.
+# 本地備份與關閉操作保留在 Explorer 右鍵選單；不在編輯頁面頂部顯示。
+
 read_id=st.session_state.get('full_read_id')
 if read_id and read_id in byid:
     root_read=byid[read_id]
@@ -1659,6 +1618,9 @@ if full_id and full_id in byid:
         event=composite_component(content=current,revision=st.session_state.get('_composite_rev_'+full_id,0),focusHeading=st.session_state.get('_composite_toc_target_'+full_id,-1),key='focus_composite_'+full_id,default=None)
         if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_focus_composite_nonce_'+full_id):
             st.session_state['_focus_composite_nonce_'+full_id]=event.get('nonce')
+            if event.get('action')=='headings':
+                st.session_state[text_key]=str(event.get('markdown',current))
+                st.rerun()
             if event.get('action')=='save':
                 try:
                     converted=str(event.get('markdown',''))
