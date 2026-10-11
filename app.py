@@ -1021,7 +1021,7 @@ def schedule_quick_create_dialog():
     with st.form('schedule_quick_create_form'):
         title=st.text_input('標題',max_chars=200)
         no_time=st.checkbox('無指定時間',key='quick_no_time')
-        planned=st.time_input('排定時間',value=st.session_state.get('schedule_quick_time',datetime.now().time().replace(second=0,microsecond=0)),step=900,disabled=no_time)
+        planned=st.time_input('排定時間（無指定時間時忽略）',value=st.session_state.get('schedule_quick_time',datetime.now().time().replace(second=0,microsecond=0)),step=900)
         details=st.text_area('詳細內容（可留空）',max_chars=10000)
         days=st.number_input('連續建立天數',min_value=1,max_value=365,value=1,step=1,key='quick_schedule_days')
         st.caption('標題可使用 (10+d)、(501+20*d) 等算式；第一天 d=0。')
@@ -1050,8 +1050,8 @@ def schedule_edit_dialog(card):
     with st.form('schedule_edit_form'):
         new_title=st.text_input('標題',value=card.get('title') or '',max_chars=200)
         new_date=st.date_input('日期',value=original_date)
-        no_time=st.checkbox('無指定時間',value=not bool(card.get('scheduled_at')))
-        new_clock=st.time_input('排定時間',value=old_clock,step=900,disabled=no_time)
+        no_time=st.checkbox('無指定時間',value=not bool(card.get('scheduled_at')),key='edit_no_time_'+str(card['id']))
+        new_clock=st.time_input('排定時間（勾選無指定時間時，此欄值不會保存）',value=old_clock,step=900,key='edit_clock_'+str(card['id']))
         new_details=st.text_area('詳細內容',value=card.get('details') or '',max_chars=10000)
         new_completed=st.checkbox('已完成',value=bool(card.get('is_completed')))
         submitted=st.form_submit_button('儲存修改',type='primary')
@@ -1067,14 +1067,15 @@ def schedule_edit_dialog(card):
         except Exception as exc:st.error('修改失敗：'+str(exc))
 
 SCHEDULE_BACKUP_FIELDS=('id','title','schedule_date','scheduled_at','details','created_at','is_completed','batch_tag','batch_id')
-def make_schedule_backup(cards):
-    return json.dumps({'format':'bvtext.schedule','version':1,'exported_at':datetime.now(timezone.utc).isoformat(),
+def make_schedule_backup(cards,tasks=None,checks=None):
+    return json.dumps({'format':'bvtext.schedule','version':2,'exported_at':datetime.now(timezone.utc).isoformat(),
+                       'daily_tasks':tasks or [],'daily_task_checks':checks or [],
                        'cards':[{k:row.get(k) for k in SCHEDULE_BACKUP_FIELDS} for row in cards]},
                       ensure_ascii=False,indent=2).encode('utf-8')
 def read_schedule_backup(raw):
     if len(raw)>10*1024*1024:raise ValueError('備份檔案不可超過 10 MB')
     doc=json.loads(raw.decode('utf-8-sig'))
-    if not isinstance(doc,dict) or doc.get('format')!='bvtext.schedule' or doc.get('version')!=1:
+    if not isinstance(doc,dict) or doc.get('format')!='bvtext.schedule' or doc.get('version') not in (1,2):
         raise ValueError('不支援的行程表格式或版本')
     rows=doc.get('cards')
     if not isinstance(rows,list) or len(rows)>20000:raise ValueError('行程卡數量或格式不正確')
@@ -1095,12 +1096,24 @@ def read_schedule_backup(raw):
                         'created_at':row.get('created_at') or datetime.now(timezone.utc).isoformat(),
                         'is_completed':bool(row.get('is_completed')),
                         'batch_tag':row.get('batch_tag'),'batch_id':row.get('batch_id')})
+    st.session_state['_schedule_import_daily']=(doc.get('daily_tasks',[]),doc.get('daily_task_checks',[])) if doc.get('version')==2 else ([],[])
     return cleaned
 def restore_schedule_backup(rows,mode):
     # One SQLite transaction: no partial imports on errors.
     with local_db.lock,local_db.conn:
         if mode=='取代現有行程表':
             local_db.conn.execute('DELETE FROM schedule_cards WHERE owner_id=?',(uid,))
+        if mode=='取代現有行程表':
+            local_db.conn.execute('DELETE FROM daily_task_checks WHERE owner_id=?',(uid,))
+            local_db.conn.execute('DELETE FROM daily_tasks WHERE owner_id=?',(uid,))
+        tasks,checks=st.session_state.get('_schedule_import_daily',([],[]))
+        for table,entries,fields in [('daily_tasks',tasks,('id','owner_id','title','no_time','task_time','details','created_at')),('daily_task_checks',checks,('id','owner_id','task_id','task_date','is_completed','created_at'))]:
+            if not isinstance(entries,list) or len(entries)>20000:raise ValueError('每日任務備份格式不正確')
+            for item in entries:
+                if not isinstance(item,dict) or item.get('owner_id')!=uid:raise ValueError('每日任務帳號不符')
+                cols=[k for k in fields if k in item]
+                if 'id' not in cols:raise ValueError('每日任務缺少 ID')
+                local_db.conn.execute('INSERT OR REPLACE INTO '+table+' ('+','.join(cols)+') VALUES ('+','.join('?' for _ in cols)+')',[int(item[k]) if k in ('no_time','is_completed') else item[k] for k in cols])
         for row in rows:
             cols=list(row)
             existing=local_db.conn.execute('SELECT owner_id FROM schedule_cards WHERE id=?',(row['id'],)).fetchone()
@@ -1114,7 +1127,7 @@ if st.session_state.get('main_page')=='📅 行程表':
     st.caption('行程卡編輯後會先保存在本機 SQLite 或瀏覽器 IndexedDB。下方可另外匯出獨立的行程表備份，並從本地檔案還原。')
     try:
         schedule_backup_cards=c.table('schedule_cards').select('*').eq('owner_id',uid).execute().data or []
-        schedule_backup_bytes=make_schedule_backup(schedule_backup_cards)
+        schedule_backup_bytes=make_schedule_backup(schedule_backup_cards,c.table('daily_tasks').select('*').eq('owner_id',uid).execute().data or [],c.table('daily_task_checks').select('*').eq('owner_id',uid).execute().data or [])
     except Exception as exc:
         st.error('無法準備行程表備份：'+str(exc))
         schedule_backup_bytes=None
@@ -1170,11 +1183,11 @@ if st.session_state.get('main_page')=='📅 行程表':
     for card in cards:
         d=parse_card_day(card)
         if d:schedule_by_day[d].append(card)
-    # 指定時間者依時間排序；無指定時間者依建立順序排序。
+    # 每日內無時間者優先，接著依指定時間、建立順序。
     def schedule_sort_key(item):
-        if item.get('scheduled_at'):
-            return (0,item['scheduled_at'],item.get('created_at') or '',item['id'])
-        return (1,item.get('created_at') or '',item['id'])
+        if not item.get('scheduled_at'):
+            return (0,item.get('created_at') or '',item['id'])
+        return (1,parse_card_clock(item),item.get('created_at') or '',item['id'])
     for entries in schedule_by_day.values():entries.sort(key=schedule_sort_key)
     if 'schedule_target' not in st.session_state:st.session_state.schedule_target=date.today()
     if 'schedule_selected' not in st.session_state:st.session_state.schedule_selected=date.today()
@@ -1203,8 +1216,60 @@ if st.session_state.get('main_page')=='📅 行程表':
                     st.session_state.schedule_quick_time=datetime.now(timezone(timedelta(hours=8))).time().replace(second=0,microsecond=0)
                 st.rerun()
             except (ValueError,KeyError,TypeError):pass
+        st.divider()
+        st.markdown('### 每日任務')
+        st.caption('每日任務獨立於行程卡，不計入日曆的行程數量。勾選狀態依日期分別保存。')
+        daily_day=st.session_state.schedule_selected.isoformat()
+        try:
+            daily_templates=c.table('daily_tasks').select('*').eq('owner_id',uid).execute().data or []
+            daily_checks=c.table('daily_task_checks').select('*').eq('owner_id',uid).eq('task_date',daily_day).execute().data or []
+        except Exception as exc:
+            daily_templates=[];daily_checks=[]
+            st.error('每日任務資料無法載入，請確認已完成 v4.1 資料表升級：'+str(exc))
+        checked_ids={x['task_id'] for x in daily_checks if x.get('is_completed')}
+        for task in sorted(daily_templates,key=lambda x:(not bool(x.get('no_time')),x.get('task_time') or '',x.get('created_at') or '',x['id'])):
+            with st.container(border=True):
+                done=st.checkbox(task['title'],value=task['id'] in checked_ids,key='daily_check_'+daily_day+'_'+task['id'])
+                if done!=(task['id'] in checked_ids):
+                    try:
+                        old=next((x for x in daily_checks if x['task_id']==task['id']),None)
+                        if old:c.table('daily_task_checks').update({'is_completed':done}).eq('id',old['id']).eq('owner_id',uid).execute()
+                        else:c.table('daily_task_checks').insert({'owner_id':uid,'task_id':task['id'],'task_date':daily_day,'is_completed':done}).execute()
+                        st.rerun()
+                    except Exception as exc:st.error('儲存每日完成狀態失敗：'+str(exc))
+                st.caption('無指定時間' if task.get('no_time') else '時間：'+str(task.get('task_time') or '09:00'))
+                if task.get('details'):st.write(task['details'])
+        with st.expander('⚙️ 每日任務設定／新增／編輯／刪除',expanded=False):
+            choices={'＋ 新增每日任務':None,**{x['title']+' · '+x['id'][:8]:x for x in daily_templates}}
+            choice=st.selectbox('選擇每日任務',list(choices),key='daily_task_choice')
+            editing_task=choices[choice]
+            with st.form('daily_task_form_'+(editing_task['id'] if editing_task else 'new')):
+                task_title=st.text_input('任務標題',value=(editing_task or {}).get('title') or '',max_chars=200)
+                task_no_time=st.checkbox('無指定時間',value=bool((editing_task or {}).get('no_time',True)))
+                try:task_clock=dt_time.fromisoformat((editing_task or {}).get('task_time') or '09:00')
+                except ValueError:task_clock=dt_time(9,0)
+                task_time=st.time_input('時間（無指定時間時忽略）',value=task_clock,step=900)
+                task_details=st.text_area('詳細內容',value=(editing_task or {}).get('details') or '',max_chars=10000)
+                ca,cb=st.columns(2)
+                save_task=ca.form_submit_button('儲存每日任務',type='primary')
+                delete_task=cb.form_submit_button('刪除每日任務',disabled=editing_task is None)
+            if save_task:
+                if not task_title.strip():st.warning('請輸入任務標題')
+                else:
+                    values={'title':task_title.strip(),'no_time':task_no_time,'task_time':None if task_no_time else task_time.strftime('%H:%M'),'details':task_details}
+                    try:
+                        if editing_task:c.table('daily_tasks').update(values).eq('id',editing_task['id']).eq('owner_id',uid).execute()
+                        else:c.table('daily_tasks').insert({'owner_id':uid,**values}).execute()
+                        st.rerun()
+                    except Exception as exc:st.error('儲存每日任務失敗：'+str(exc))
+            if delete_task and editing_task:
+                try:
+                    c.table('daily_task_checks').delete().eq('task_id',editing_task['id']).eq('owner_id',uid).execute()
+                    c.table('daily_tasks').delete().eq('id',editing_task['id']).eq('owner_id',uid).execute()
+                    st.rerun()
+                except Exception as exc:st.error('刪除每日任務失敗：'+str(exc))
     with right:
-        st.markdown('### 當日行程卡')
+        st.markdown('### 全部行程卡（依距離目前時間排序）')
         with st.expander('⋯ 行程選項',expanded=False):
             st.markdown('**批量刪除**')
             tagged={x['batch_tag'] for x in cards if x.get('batch_tag')}
@@ -1228,13 +1293,23 @@ if st.session_state.get('main_page')=='📅 行程表':
             else:st.caption('目前沒有帶批量建立標籤的行程卡。')
         chosen=st.date_input('查詢日期',key='schedule_selected')
         top_n=st.number_input('顯示最上方 N 張',min_value=1,max_value=100,value=5,step=1,key='schedule_top_n')
-        today_cards=schedule_by_day.get(chosen,[])
-        st.caption(f'{chosen.isoformat()} · 共 {len(today_cards)} 張，顯示 {min(len(today_cards),int(top_n))} 張')
+        now_tw=datetime.now(timezone(timedelta(hours=8)))
+        def upcoming_sort_key(item):
+            day=parse_card_day(item)
+            if day is None:return (float('inf'),1,'',item.get('created_at') or '',item['id'])
+            clock=dt_time(0,0)
+            if item.get('scheduled_at'):
+                try:clock=datetime.fromisoformat(item['scheduled_at'].replace('Z','+00:00')).astimezone(timezone(timedelta(hours=8))).time()
+                except (ValueError,TypeError):pass
+            moment=datetime.combine(day,clock).replace(tzinfo=timezone(timedelta(hours=8)))
+            return (abs((moment-now_tw).total_seconds()),0 if not item.get('scheduled_at') else 1,day.isoformat(),item.get('created_at') or '',item['id'])
+        today_cards=sorted(cards,key=upcoming_sort_key)
+        st.caption(f'所有日期共 {len(today_cards)} 張，依與現在時間的距離排序，顯示 {min(len(today_cards),int(top_n))} 張；無時間者視為當天 00:00')
         with st.container(height=410,border=True):
             for item in today_cards[:int(top_n)]:
                 with st.container(border=True):
                     st.markdown('**'+item['title'].replace('*',r'\*')+'**')
-                    st.caption('排定時間：'+parse_card_clock(item))
+                    st.caption('日期：'+str(item.get('schedule_date') or '')+' · 排定時間：'+parse_card_clock(item))
                     if item.get('batch_tag'):st.caption('批量標籤：'+item['batch_tag'])
                     completed=st.checkbox('已完成',value=bool(item.get('is_completed')),key='schedule_completed_'+item['id'])
                     if completed!=bool(item.get('is_completed')):
@@ -1251,12 +1326,12 @@ if st.session_state.get('main_page')=='📅 行程表':
                             c.table('schedule_cards').delete().eq('id',item['id']).eq('owner_id',uid).execute()
                             st.rerun()
                         except Exception as exc:st.error('刪除失敗：'+str(exc))
-            if not today_cards:st.info('當日沒有行程。')
+            if not today_cards:st.info('尚無行程卡。')
         with st.expander('＋ 建立新行程',expanded=False):
             with st.form('schedule_create',clear_on_submit=True):
                 title=st.text_input('標題',max_chars=200)
                 no_time=st.checkbox('無指定時間',key='schedule_create_no_time')
-                planned=st.time_input('排定時間',value=dt_time(9,0),step=900,disabled=no_time)
+                planned=st.time_input('排定時間（無指定時間時忽略）',value=dt_time(9,0),step=900)
                 details=st.text_area('詳細內容（可留空）',max_chars=10000)
                 days=st.number_input('連續建立天數',min_value=1,max_value=365,value=1,step=1,key='schedule_create_days')
                 st.caption('支援 (10+d)、(501+20*d)；第一天 d=0。')
