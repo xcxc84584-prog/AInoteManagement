@@ -565,14 +565,23 @@ def handwriting_editor(note,assets):
     legacy=re.search(r'!\[手寫稿\]\(asset://([0-9a-fA-F-]{36})\)',content)
     if legacy and 1 not in refs:refs[1]=legacy.group(1)
     aid=refs.get(page)
-    initial_image=asset_url(aid,assets) if aid else None
+    # Use the same authenticated asset bytes as the browsing view. Local
+    # SQLite/IndexedDB storage cannot produce a signed remote image URL.
+    initial_image=None
+    if aid:
+        image_data=asset_image(aid,assets)
+        if image_data:
+            mime=(assets.get(aid) or {}).get('mime_type') or 'image/webp'
+            initial_image=f'data:{mime};base64,{base64.b64encode(image_data).decode("ascii")}'
+        else:
+            st.error('已保存的手寫稿圖片無法讀取，請勿在空白畫布上覆寫；請先檢查本地資料。')
     locked_key='hw_locked_'+note['id']
     pending_key='_hw_lock_pending_'+note['id']
     if st.session_state.pop(pending_key,False):
         st.session_state[locked_key]=True
     if locked_key not in st.session_state:st.session_state[locked_key]=bool(refs)
     locked=st.checkbox('屏蔽觸控（防止誤觸；取消勾選可繼續編輯）',key=locked_key)
-    event=handwriting_component(key=f'handwrite_{note["id"]}_{page}',width_px=dims[0],height_px=dims[1],image_url=initial_image,locked=locked,default=None,height=510)
+    event=handwriting_component(key=f'handwrite_{note["id"]}_{page}',width_px=dims[0],height_px=dims[1],image_url=initial_image,locked=locked,load_error=bool(aid and not initial_image),default=None,height=510)
     seen_key=f'_hw_seen_{note["id"]}_{page}'
     if isinstance(event,dict) and event.get('action')=='save' and event.get('nonce')!=st.session_state.get(seen_key):
         st.session_state[seen_key]=event['nonce']
