@@ -12,7 +12,7 @@ from types import SimpleNamespace
 FIELDS={
  'notes':{'id','owner_id','parent_id','kind','title','content','has_page','position','is_deleted','deleted_at','created_at','updated_at'},
  'assets':{'id','owner_id','note_id','storage_path','mime_type','created_at'},
- 'schedule_cards':{'id','owner_id','title','schedule_date','scheduled_at','details','created_at','is_completed'},
+ 'schedule_cards':{'id','owner_id','title','schedule_date','scheduled_at','details','created_at','is_completed','batch_tag','batch_id'},
 }
 BOOL={'has_page','is_deleted','is_completed'}
 def now():return datetime.now(timezone.utc).isoformat()
@@ -29,11 +29,14 @@ class LocalDB:
    self.conn.execute('PRAGMA journal_mode=WAL')
    self.conn.executescript('''CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,parent_id TEXT,kind TEXT,title TEXT,content TEXT DEFAULT '',has_page INTEGER DEFAULT 0,position INTEGER DEFAULT 0,is_deleted INTEGER DEFAULT 0,deleted_at TEXT,created_at TEXT,updated_at TEXT);
 CREATE TABLE IF NOT EXISTS assets(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,note_id TEXT,storage_path TEXT,mime_type TEXT,created_at TEXT);
-CREATE TABLE IF NOT EXISTS schedule_cards(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,title TEXT,schedule_date TEXT,scheduled_at TEXT,details TEXT DEFAULT '',created_at TEXT,is_completed INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS schedule_cards(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,title TEXT,schedule_date TEXT,scheduled_at TEXT,details TEXT DEFAULT '',created_at TEXT,is_completed INTEGER DEFAULT 0,batch_tag TEXT,batch_id TEXT);
 CREATE TABLE IF NOT EXISTS media(path TEXT PRIMARY KEY,content BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS sync_state(key TEXT PRIMARY KEY,value TEXT);
 CREATE INDEX IF NOT EXISTS idx_notes_owner ON notes(owner_id,position);
 CREATE INDEX IF NOT EXISTS idx_schedule_owner ON schedule_cards(owner_id,schedule_date);''')
+   existing={r[1] for r in self.conn.execute('PRAGMA table_info(schedule_cards)')}
+   for col in ('batch_tag','batch_id'):
+    if col not in existing:self.conn.execute('ALTER TABLE schedule_cards ADD COLUMN '+col+' TEXT')
    self.conn.commit()
  def table(self,name):
   if name not in FIELDS:raise ValueError('Unknown table')

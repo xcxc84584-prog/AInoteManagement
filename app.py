@@ -986,12 +986,13 @@ def create_schedule_series(start_day,title,days,no_time,planned,details):
     if not 1<=days<=365:raise ValueError('連續天數必須介於 1～365')
     # Prevalidate the complete batch before inserting any row.
     payload=[]
+    batch_id=uuid.uuid4().hex if days>1 else None
     for d in range(days):
         current=start_day+timedelta(days=d)
         resolved=schedule_title_for_day(title.strip(),d)
         if not resolved.strip() or len(resolved)>200:raise ValueError(f'第 {d+1} 天標題為空或超過 200 字元')
         timestamp=None if no_time else datetime.combine(current,planned).replace(tzinfo=timezone(timedelta(hours=8))).isoformat()
-        payload.append({'owner_id':uid,'title':resolved,'schedule_date':current.isoformat(),'scheduled_at':timestamp,'details':details})
+        payload.append({'owner_id':uid,'title':resolved,'schedule_date':current.isoformat(),'scheduled_at':timestamp,'details':details,'batch_tag':title.strip() if days>1 else None,'batch_id':batch_id})
     created=[]
     try:
         for row in payload:
@@ -1071,7 +1072,7 @@ if st.session_state.get('main_page')=='📅 行程表':
     help_col.caption('編輯會先保存至本地；手動保存可再次觸發瀏覽器持久化。不會上傳 Supabase。')
     st.caption('點選日期可查看或新增行程；滑鼠停留日期按鈕可查看當日行程簡表。')
     try:
-        cards=c.table('schedule_cards').select('id,title,schedule_date,scheduled_at,details,created_at,is_completed').eq('owner_id',uid).execute().data or []
+        cards=c.table('schedule_cards').select('id,title,schedule_date,scheduled_at,details,created_at,is_completed,batch_tag,batch_id').eq('owner_id',uid).execute().data or []
     except Exception as exc:
         st.error('無法載入行程表。請先執行專案內 migrations/20261011_schedule_cards.sql，並確認 RLS 權限。')
         st.code(str(exc))
@@ -1122,6 +1123,27 @@ if st.session_state.get('main_page')=='📅 行程表':
             except (ValueError,KeyError,TypeError):pass
     with right:
         st.markdown('### 當日行程卡')
+        with st.expander('⋯ 行程選項',expanded=False):
+            st.markdown('**批量刪除**')
+            tagged={x['batch_tag'] for x in cards if x.get('batch_tag')}
+            if tagged:
+                tag=st.selectbox('選擇批量建立時的原始標題',sorted(tagged),key='schedule_batch_delete_tag')
+                tagged_cards=[x for x in cards if x.get('batch_tag')==tag]
+                st.caption(f'符合此標籤：{len(tagged_cards)} 張（涵蓋不同日期，包含已編輯標題的卡片）')
+                if len({x.get('batch_id') for x in tagged_cards if x.get('batch_id')})>1:
+                    st.caption('不同批次使用同一個原始標題時，也會一併選取。')
+                confirm=st.checkbox('確認刪除以上所有符合標籤的行程卡',key='schedule_batch_delete_confirm')
+                if st.button('刪除所選標題的所有行程',type='primary',disabled=not confirm,key='schedule_batch_delete_action'):
+                    deleted=0
+                    try:
+                        for card in tagged_cards:
+                            c.table('schedule_cards').delete().eq('id',card['id']).eq('owner_id',uid).execute()
+                            deleted+=1
+                        st.toast(f'已刪除 {deleted} 張行程卡')
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f'已刪除 {deleted}/{len(tagged_cards)} 張，後續刪除失敗：{exc}')
+            else:st.caption('目前沒有帶批量建立標籤的行程卡。')
         chosen=st.date_input('查詢日期',key='schedule_selected')
         top_n=st.number_input('顯示最上方 N 張',min_value=1,max_value=100,value=5,step=1,key='schedule_top_n')
         today_cards=schedule_by_day.get(chosen,[])
@@ -1131,6 +1153,7 @@ if st.session_state.get('main_page')=='📅 行程表':
                 with st.container(border=True):
                     st.markdown('**'+item['title'].replace('*',r'\*')+'**')
                     st.caption('排定時間：'+parse_card_clock(item))
+                    if item.get('batch_tag'):st.caption('批量標籤：'+item['batch_tag'])
                     completed=st.checkbox('已完成',value=bool(item.get('is_completed')),key='schedule_completed_'+item['id'])
                     if completed!=bool(item.get('is_completed')):
                         try:
