@@ -838,7 +838,7 @@ def v431_commit_focus_before_navigation():
     fid=st.session_state.get('full_edit_id')
     if not fid:return
     current=byid.get(fid)
-    if current and current.get('kind') in ('COMPOSITE','MARKDOWN','SUBFILE','GROUP'):
+    if current and current.get('kind') in ('MARKDOWN','SUBFILE','GROUP'):
         key='v43_draft_'+fid
         value=st.session_state.get(key,current.get('content') or '')
         if value!=(current.get('content') or ''):
@@ -895,7 +895,7 @@ with st.sidebar:
     st.subheader('EXPLORER')
     st.caption('右鍵操作 · 拖曳移動 · F2 · Delete')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
-    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position']} for n in active_notes if n['kind']!='TABLE']
+    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',n.get('content') or '') if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
     if event and event.get('event_id')!=st.session_state.get('last_explorer_event'):
         st.session_state.last_explorer_event=event.get('event_id')
@@ -903,12 +903,16 @@ with st.sidebar:
         try:
             op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav','import_child') else None
             if op_progress:op_progress(15,'正在處理 '+str(action))
-            if action in ('select','full_edit','full_read','quick_nav') and nid in byid:
+            if action in ('select','full_edit','full_read','quick_nav','toc_nav') and nid in byid:
                 # Every Explorer navigation commits the current focused draft, even
                 # when navigating to the same node or changing reading mode.
                 v431_commit_focus_before_navigation()
                 st.session_state.pop('full_read_id',None)
-            if action=='select' and nid in byid:
+            if action=='toc_nav' and nid in byid:
+                st.session_state.selected=nid
+                st.session_state.full_edit_id=nid
+                st.session_state['_composite_toc_target_'+nid]=int(event.get('index',0))
+            elif action=='select' and nid in byid:
                 st.session_state.selected=nid
             elif action=='full_edit' and nid in byid:
                 st.session_state.full_edit_id=nid
@@ -1618,7 +1622,7 @@ if full_id and full_id in byid:
     dirty=draft!=original
     def save_focus():
         value=st.session_state.get(draft_key,original)
-        if value!=original:update_note(full_id,content=value)
+        if full_note['kind']!='COMPOSITE' and value!=original:update_note(full_id,content=value)
     a,b,c=st.columns([6,1,1])
     with a:st.subheader('編輯 · '+full_note['title'])
     with b:
@@ -1649,7 +1653,29 @@ if full_id and full_id in byid:
                 st.session_state.full_read_id=full_id;st.rerun()
             except Exception as exc:st.error('跳轉前儲存失敗：'+str(exc))
     st.divider()
-    if full_note['kind'] in ('COMPOSITE','MARKDOWN','SUBFILE','GROUP'):
+    if full_note['kind']=='COMPOSITE':
+        text_key='block_content_'+full_id
+        current=st.session_state.get(text_key,original)
+        event=composite_component(content=current,revision=st.session_state.get('_composite_rev_'+full_id,0),focusHeading=st.session_state.get('_composite_toc_target_'+full_id,-1),key='focus_composite_'+full_id,default=None)
+        if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_focus_composite_nonce_'+full_id):
+            st.session_state['_focus_composite_nonce_'+full_id]=event.get('nonce')
+            if event.get('action')=='save':
+                try:
+                    converted=str(event.get('markdown',''))
+                    for i,item in enumerate(event.get('images',[])):
+                        data=item.get('data','')
+                        if not data.startswith('data:image/') or ';base64,' not in data:continue
+                        raw=base64.b64decode(data.split(';base64,',1)[1],validate=True)
+                        aid=upload_image(raw,full_id)
+                        converted=converted.replace('clipboard-image://'+str(i),'asset://'+aid)
+                    update_note(full_id,content=converted)
+                    st.session_state[text_key]=converted
+                    st.session_state[draft_key]=converted
+                    st.session_state['_composite_rev_'+full_id]=st.session_state.get('_composite_rev_'+full_id,0)+1
+                    st.success('圖文文件已儲存')
+                    st.rerun()
+                except Exception as exc:st.error('圖文文件儲存失敗：'+str(exc))
+    elif full_note['kind'] in ('MARKDOWN','SUBFILE','GROUP'):
         st.text_area('內容',key=draft_key,height=560,label_visibility='collapsed',placeholder='開始輸入內容…')
     elif full_note['kind']=='GRAPH':image_editor(full_note,assets,full_id)
     elif full_note['kind']=='HANDWRITE':handwriting_editor(full_note,assets)
@@ -1657,7 +1683,7 @@ if full_id and full_id in byid:
     st.divider()
     if st.button('✓ 提交（儲存後關閉）',type='primary',use_container_width=True,key='v43_submit'):
         try:
-            if full_note['kind'] in ('COMPOSITE','MARKDOWN','SUBFILE','GROUP'):save_focus()
+            if full_note['kind'] in ('MARKDOWN','SUBFILE','GROUP'):save_focus()
             st.session_state.pop('full_edit_id',None);st.session_state.pop(draft_key,None);st.rerun()
         except Exception as exc:st.error('提交失敗：'+str(exc))
     st.stop()

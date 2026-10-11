@@ -5,7 +5,7 @@
 <div class="hint">輸入 <b>//[章節名稱]//</b> 可建立左側目錄；可在編輯區按 Ctrl+V 貼上 ChatGPT 富文本或圖片。</div>
 <div class="split"><nav id="toc"><strong>文件目錄</strong><div id="links"></div></nav><div id="main"><div id="editor" contenteditable="true" spellcheck="false"></div><textarea id="raw" aria-label="Markdown 原始碼"></textarea></div></div>
 <script>
-const editor=document.getElementById('editor'),raw=document.getElementById('raw'),status=document.getElementById('status'),links=document.getElementById('links');let images=[],revision=-1,source=false;
+const editor=document.getElementById('editor'),raw=document.getElementById('raw'),status=document.getElementById('status'),links=document.getElementById('links');let images=[],revision=-1,source=false,lastFocus=-1;
 function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')};function resize(){send('streamlit:setFrameHeight',{height:Math.min(document.body.scrollHeight+20,1000)})};function safe(s){return (s||'').replace(/\r/g,'').replace(/\u00a0/g,' ')};
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function inline(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase(),v=Array.from(n.childNodes).map(inline).join('');if(t==='br')return '\n';if(t==='img'){let src=n.getAttribute('src')||'';return '!['+(n.getAttribute('alt')||'圖片').replace(/[\[\]]/g,'')+']('+src+')'}if(t==='b'||t==='strong')return '**'+v+'**';if(t==='em'||t==='i')return '*'+v+'*';if(t==='code')return '`'+v.replace(/`/g,'\\`')+'`';if(t==='a'){let href=n.getAttribute('href')||'';return /^https?:/i.test(href)?'['+v+']('+href+')':v}if(t==='s'||t==='del')return '~~'+v+'~~';return v}
@@ -26,5 +26,5 @@ document.getElementById('source').onclick=()=>{if(!source){raw.value=syncMarkdow
 document.getElementById('rich').onclick=()=>{if(source){editor.innerHTML=renderMarkdown(raw.value);raw.style.display='none';editor.style.display='block';source=false;updateToc()}};
 document.getElementById('insert').onclick=()=>{let name=prompt('目錄名稱');if(!name||!name.trim())return;let marker='//['+name.replace(/[\]\n]/g,'').trim()+']//';if(source){raw.value+='\n\n'+marker+'\n';}else{let p=document.createElement('p');p.textContent=marker;insertAtCaret(p)}updateToc()};
 editor.addEventListener('input',updateToc);raw.addEventListener('input',updateToc);
-window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.revision!==revision){revision=args.revision;restore(args.content||'')}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
+window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.revision!==revision){revision=args.revision;restore(args.content||'')}if(Number.isInteger(args.focusHeading)&&args.focusHeading>=0&&args.focusHeading!==lastFocus){lastFocus=args.focusHeading;let buttons=links.querySelectorAll('button');if(buttons[args.focusHeading])buttons[args.focusHeading].click()}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
 </script></body></html>
