@@ -833,6 +833,29 @@ def v43_new_file_dialog(parent_id):
         st.session_state.pop('new_file_parent',None)
         st.rerun()
 
+def v431_commit_focus_before_navigation():
+    """Persist focused text draft before navigating away; leave focus intact on failure."""
+    fid=st.session_state.get('full_edit_id')
+    if not fid:return
+    current=byid.get(fid)
+    if current and current.get('kind') in ('COMPOSITE','MARKDOWN','SUBFILE','GROUP'):
+        key='v43_draft_'+fid
+        value=st.session_state.get(key,current.get('content') or '')
+        if value!=(current.get('content') or ''):
+            update_note(fid,content=value)
+    st.session_state.pop('full_edit_id',None)
+    st.session_state.pop('v43_draft_'+fid,None)
+    st.session_state.pop('v43_confirm_back',None)
+
+def v431_change_page():
+    try:
+        v431_commit_focus_before_navigation()
+        st.session_state.pop('full_read_id',None)
+    except Exception as exc:
+        st.session_state['v431_navigation_error']='跳轉前儲存失敗：'+str(exc)
+        st.session_state['main_page']='📝 筆記工作區'
+
+
 with st.sidebar:
     st.title('📚 BV-Text')
     with st.popover('☰ 功能選單',width='stretch'):
@@ -880,6 +903,11 @@ with st.sidebar:
         try:
             op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav','import_child') else None
             if op_progress:op_progress(15,'正在處理 '+str(action))
+            if action in ('select','full_edit','full_read','quick_nav') and nid in byid:
+                # Every Explorer navigation commits the current focused draft, even
+                # when navigating to the same node or changing reading mode.
+                v431_commit_focus_before_navigation()
+                st.session_state.pop('full_read_id',None)
             if action=='select' and nid in byid:
                 st.session_state.selected=nid
             elif action=='full_edit' and nid in byid:
@@ -961,16 +989,17 @@ with st.sidebar:
             st.rerun()
         except Exception as exc:
             logging.getLogger(__name__).exception('Explorer action failed')
-            st.error(f'檔案操作失敗：{type(exc).__name__}。請至 Manage app → Logs 查看詳情。')
+            st.error('檔案操作或跳轉前儲存失敗：'+str(exc))
 
-            st.rerun()
     if st.session_state.get('new_file_parent') in byid:
         v43_new_file_dialog(st.session_state.new_file_parent)
     if st.session_state.get('creation_notice'):
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
         st.success(st.session_state.pop('operation_notice'))
-    page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','⚙️ 設定'],key='main_page',horizontal=True)
+    page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','⚙️ 設定'],key='main_page',horizontal=True,on_change=v431_change_page)
+    if st.session_state.get('v431_navigation_error'):st.error(st.session_state.pop('v431_navigation_error'))
+    if page_choice!='📝 筆記工作區':st.session_state.pop('full_read_id',None)
     st.divider()
     st.divider()
     st.caption('本地優先 · '+('SQLite：'+str(db_root) if STORAGE_MODE=='sqlite' else 'IndexedDB：目前瀏覽器'))
@@ -1557,7 +1586,7 @@ if selected:
 read_id=st.session_state.get('full_read_id')
 if read_id and read_id in byid:
     root_read=byid[read_id]
-    st.markdown('<style>[data-testid="stSidebar"]{display:none!important}.block-container{max-width:900px!important;margin:auto!important}</style>',unsafe_allow_html=True)
+    st.markdown('<style>.block-container{max-width:900px!important;margin:auto!important}</style>',unsafe_allow_html=True)
     head,exit_col=st.columns([7,1])
     with head:st.title('完全單一閱讀 · '+root_read['title'])
     with exit_col:
@@ -1577,11 +1606,11 @@ if read_id and read_id in byid:
             else:st.caption('此文件尚無內容')
     walk_read(root_read)
     st.stop()
-# Full-focus editor: suppress the workspace and sidebar until Return/Escape.
+# Full-focus editor: the Streamlit sidebar remains available for navigation.
 full_id=st.session_state.get('full_edit_id')
 if full_id and full_id in byid:
     full_note=byid[full_id]
-    st.markdown('<style>[data-testid="stSidebar"]{display:none!important}.block-container{max-width:900px!important;margin:auto!important;padding-top:1.5rem!important}</style>',unsafe_allow_html=True)
+    st.markdown('<style>.block-container{max-width:900px!important;margin:auto!important;padding-top:1.5rem!important}</style>',unsafe_allow_html=True)
     draft_key='v43_draft_'+full_id
     original=full_note.get('content') or ''
     if draft_key not in st.session_state:st.session_state[draft_key]=original
@@ -1615,7 +1644,10 @@ if full_id and full_id in byid:
     with st.popover('⋯ 更多操作'):
         st.caption('文件類型：'+full_note['kind'])
         if st.button('完全單一閱讀',key='v43_read_from_edit'):
-            st.session_state.full_read_id=full_id;st.session_state.pop('full_edit_id',None);st.rerun()
+            try:
+                v431_commit_focus_before_navigation()
+                st.session_state.full_read_id=full_id;st.rerun()
+            except Exception as exc:st.error('跳轉前儲存失敗：'+str(exc))
     st.divider()
     if full_note['kind'] in ('COMPOSITE','MARKDOWN','SUBFILE','GROUP'):
         st.text_area('內容',key=draft_key,height=560,label_visibility='collapsed',placeholder='開始輸入內容…')
@@ -1864,7 +1896,7 @@ else:
                 st.rerun()
             except Exception as exc:st.error('新增圖文文件失敗：'+str(exc))
 st.divider()
-st.caption('BV-Text v4.3 · 圖文文件 · 圖片 · 手寫稿 · 完全單一閱讀')
+st.caption('BV-Text v4.3.2 · 圖文文件 · 圖片 · 手寫稿 · 完全單一閱讀')
 
 
 if st.session_state.get('pending_handwrite'):
