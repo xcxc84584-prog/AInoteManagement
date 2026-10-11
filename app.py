@@ -857,6 +857,9 @@ with st.sidebar:
             if op_progress:op_progress(15,'正在處理 '+str(action))
             if action=='select' and nid in byid:
                 st.session_state.selected=nid
+            elif action=='full_edit' and nid in byid:
+                st.session_state.full_edit_id=nid
+                st.session_state.selected=nid
             elif action=='quick_nav' and nid in byid:
                 st.session_state.quick_nav_root=nid
                 st.session_state.selected=nid
@@ -1534,7 +1537,48 @@ if selected:
                     op(100,'關閉完成');st.rerun()
                 except Exception as exc:st.error('關閉失敗：'+str(exc))
         elif close_event.get('action')=='error':st.error('本地備份失敗：'+close_event.get('message','未知錯誤'))
-mode=st.radio('工作模式',['瀏覽模式','編輯模式'],horizontal=True,key='workspace_mode')
+# Full-focus editor: suppress the workspace and sidebar until Return/Escape.
+full_id=st.session_state.get('full_edit_id')
+if full_id and full_id in byid:
+    full_note=byid[full_id]
+    st.markdown("""<style>[data-testid="stSidebar"], [data-testid="stHeader"], [data-testid="stToolbar"]{display:none!important} .block-container{max-width:100%!important;padding:1rem 2rem!important}</style>""",unsafe_allow_html=True)
+    col_title,col_return=st.columns([8,1])
+    with col_title:st.subheader('完全單一編輯 · '+full_note['title'])
+    with col_return:
+        if st.button('↩ Return',key='full_return'):
+            st.session_state.pop('full_edit_id',None);st.rerun()
+    if full_note['kind']=='COMPOSITE':
+        full_event=composite_component(content=full_note.get('content') or '',revision=st.session_state.get('full_revision_'+full_id,0),key='full_composite_'+full_id,default=None)
+        if isinstance(full_event,dict) and full_event.get('action')=='save' and full_event.get('nonce')!=st.session_state.get('full_nonce_'+full_id):
+            st.session_state['full_nonce_'+full_id]=full_event.get('nonce')
+            try:
+                converted=str(full_event.get('markdown',''))
+                for i,item in enumerate(full_event.get('images',[])):
+                    data=item.get('data','')
+                    if not data.startswith('data:image/') or ';base64,' not in data:continue
+                    aid=upload_image(base64.b64decode(data.split(';base64,',1)[1],validate=True),full_id)
+                    converted=converted.replace('clipboard-image://'+str(i),'asset://'+aid)
+                update_note(full_id,content=converted)
+                st.session_state['full_revision_'+full_id]=st.session_state.get('full_revision_'+full_id,0)+1
+                st.success('已增量儲存圖文文件，不觸發 ZIP 下載')
+            except Exception as exc:st.error('儲存失敗：'+str(exc))
+    elif full_note['kind'] in ('MARKDOWN','SUBFILE','GROUP'):
+        full_text=st.text_area('文件內容',value=full_note.get('content') or '',height=650,key='full_text_'+full_id)
+        if st.button('💾 儲存變更',type='primary',key='full_save_'+full_id):
+            try:
+                if full_text!=(full_note.get('content') or ''):update_note(full_id,content=full_text)
+                st.success('已增量儲存，不觸發本地下載')
+            except Exception as exc:st.error('儲存失敗：'+str(exc))
+    elif full_note['kind']=='TABLE':
+        st.info('表格可使用 Markdown 表格語法編輯；儲存後會更新原始表格內容。')
+        full_text=st.text_area('表格 Markdown',value=full_note.get('content') or '',height=600,key='full_table_'+full_id)
+        if st.button('💾 儲存表格',key='full_save_table'):
+            update_note(full_id,content=full_text);st.success('已儲存')
+    else:
+        st.info('圖片與手寫稿請返回原工作臺使用專用編輯器。')
+    st.caption('ESC：離開完全單一編輯（當游標在文字框內時，請使用 Return 按鈕）。')
+    st.stop()
+mode=st.radio('工作模式' ,['瀏覽模式','編輯模式'],horizontal=True,key='workspace_mode')
 report_key='save_report_'+workspace_id
 report=st.session_state.get(report_key)
 if report:
@@ -1593,6 +1637,8 @@ if mode=='瀏覽模式':
             elif (node.get('content') or '').strip():show_markdown(node['content'],assets)
 else:
     st.title(workspace['title'])
+    if st.button('⛶ 完全單一編輯',key='full_from_editor'):
+        st.session_state.full_edit_id=selected['id'];st.rerun()
     # GROUP/SUBFILE are structural folders; content lives in child documents only.
     draft_keys=[]
     for block in workspace_blocks:
@@ -1731,56 +1777,19 @@ else:
                 draft_values[note_id]=keep_table_dimensions(dataframe_markdown(frame),*table_dimensions(byid[note_id].get('content') or ''))
         else:
             draft_values[note_id]=st.session_state.get(field_key,byid[note_id].get('content') or '')
-    st.markdown('#### 儲存')
-    try:
-        local_zip=export_group(group,active_notes,draft_values)
-        local_b64=base64.b64encode(local_zip).decode('ascii')
-        backup_error=None
-    except Exception as exc:
-        local_b64='';backup_error=str(exc)
-    if backup_error:st.error('無法建立本地備份：'+backup_error)
-    save_key='pipeline_'+workspace_id
-    save_event=local_component(mode='pipeline',data=local_b64,
-        filename=download_filename(group['title']),
-        disabled=bool(backup_error),key='local_pipeline_'+workspace_id,default=None)
-    if isinstance(save_event,dict) and save_event.get('token')!=st.session_state.get('pipeline_last_token_'+workspace_id):
-        if save_event.get('token'):
-            st.session_state['pipeline_last_token_'+workspace_id]=save_event['token']
-            if save_event.get('action')=='saved':
-                st.session_state[save_key]={'stage':'local_ok','method':save_event.get('method'),'draft':dict(draft_values)}
-                st.rerun()
-            elif save_event.get('action')=='error':
-                st.session_state[save_key]={'stage':'failed','error':save_event.get('message','本地儲存失敗')}
-                st.rerun()
-    pipeline=st.session_state.get(save_key,{})
-    if pipeline.get('stage')=='local_ok':
-        progress=operation_progress('存儲流程')
-        progress(35,'本地備份已完成；準備上傳資料庫')
-        failures=[];draft=pipeline['draft'];total=len(draft)
-        for index,(note_id,content) in enumerate(draft.items()):
-            try:update_note(note_id,content=content)
-            except Exception as exc:failures.append((byid.get(note_id,{}).get('title',note_id),str(exc)))
-            progress(35+int(45*(index+1)/max(1,total)),f'雲端上傳及驗證 {index+1}/{total}')
+    st.markdown('#### 增量儲存')
+    changed={nid:val for nid,val in draft_values.items() if val!=(byid.get(nid,{}).get('content') or '')}
+    st.caption(f'偵測到 {len(changed)} 個變更文件。僅更新變更內容，不下載 ZIP。完整備份請使用側邊欄「下載當前組別」。')
+    if st.button('💾 儲存變更文件',key='save_delta_'+workspace_id,disabled=not bool(changed)):
+        successes=[];failures=[]
+        for nid,val in changed.items():
+            try:update_note(nid,content=val);successes.append(nid)
+            except Exception as exc:failures.append((nid,str(exc)))
         if failures:
-            st.session_state[save_key]={'stage':'failed','error':str(failures)}
-            progress(80,'部分文件未成功，請檢查錯誤')
-        else:
-            progress(90,'重新讀取資料庫')
-            try:
-                refreshed=fetch_notes()
-                if any(next((n.get('content') for n in refreshed if n['id']==nid),None)!=value for nid,value in draft.items()):
-                    raise RuntimeError('重新讀取後內容不一致')
-                progress(100,'本地、雲端、重新載入完成')
-                st.session_state[save_key]={'stage':'done','count':total,'method':pipeline.get('method')}
-                st.session_state[report_key]={'successes':total,'total':total,'failures':[],'names':[byid.get(nid,{}).get('title',nid) for nid in draft],'saved_at':datetime.now(timezone.utc).isoformat()}
-                st.rerun()
-            except Exception as exc:st.session_state[save_key]={'stage':'failed','error':str(exc)}
-    if pipeline.get('stage')=='done':
-        st.progress(100,text='存儲完成：本地備份 → 雲端寫入 → 重新載入驗證')
-        st.success(f"已完成 {pipeline.get('count',0)} 個文件的儲存。" )
-    elif st.session_state.get(save_key,{}).get('stage')=='failed':
-        st.error('存儲流程未完成：'+str(st.session_state[save_key].get('error')))
-    st.caption('本地資料夾模式確認寫入後才上傳；瀏覽器下載模式只能確認已啟動下載，無法確認磁碟寫入完成。')
+            for nid,msg in failures:st.error(f'{byid[nid]["title"]}：{msg}')
+        if successes:
+            st.success(f'已更新 {len(successes)} 個文件（無本地下載）')
+            st.rerun()
     t1,t2,t3,t4,t5=st.tabs(['🖼️ 圖片','▦ 表格','📄 Markdown','✍️ 手寫稿','📝 圖文文件'])
     with t1:
         photo_title=st.text_input('圖片名稱',value='新圖片',key='graph_title_'+workspace_id)
