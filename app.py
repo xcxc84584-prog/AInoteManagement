@@ -10,7 +10,7 @@ import uuid
 import zipfile
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, time as dt_time, timedelta
 from pathlib import Path
 import streamlit as st
 import pandas as pd
@@ -701,6 +701,8 @@ def quick_navigation_dialog():
     if confirm:
         st.session_state.selected=choice
         st.session_state['nav_target']=choice
+        st.session_state['nav_focus']=choice
+        st.session_state['main_page']='📝 筆記工作區'
         st.session_state.pop('quick_nav_root',None)
         st.rerun()
     if cancel:
@@ -809,7 +811,7 @@ with st.sidebar:
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
         st.success(st.session_state.pop('operation_notice'))
-    page_choice=st.radio('頁面', ['📝 筆記工作區','⚙️ 設定'],key='main_page',horizontal=True)
+    page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','⚙️ 設定'],key='main_page',horizontal=True)
     st.divider()
     if st.button('登出',width='stretch'):
         for k in ['user_id','access_token','refresh_token','selected','remember_enabled']:st.session_state.pop(k,None)
@@ -821,6 +823,85 @@ if st.session_state.get('import_child_target'):
     import_child_dialog()
 elif st.session_state.get('quick_nav_root'):
     quick_navigation_dialog()
+
+if st.session_state.get('main_page')=='📅 行程表':
+    st.title('📅 行程表')
+    st.caption('點選日期可查看或新增行程；滑鼠停留日期按鈕可查看當日行程簡表。')
+    try:
+        cards=c.table('schedule_cards').select('id,title,scheduled_at,details').eq('owner_id',uid).order('scheduled_at').execute().data or []
+    except Exception as exc:
+        st.error('無法載入行程表。請先執行專案內 migrations/20261011_schedule_cards.sql，並確認 RLS 權限。')
+        st.code(str(exc))
+        st.stop()
+    def parse_card_day(card):
+        try:return datetime.fromisoformat(card['scheduled_at'].replace('Z','+00:00')).astimezone(timezone(timedelta(hours=8))).date()
+        except Exception:return None
+    def parse_card_clock(card):
+        try:return datetime.fromisoformat(card['scheduled_at'].replace('Z','+00:00')).astimezone(timezone(timedelta(hours=8))).strftime('%H:%M')
+        except Exception:return '--:--'
+    schedule_by_day=defaultdict(list)
+    for card in cards:
+        d=parse_card_day(card)
+        if d:schedule_by_day[d].append(card)
+    for entries in schedule_by_day.values():entries.sort(key=lambda x:x['scheduled_at'])
+    if 'schedule_target' not in st.session_state:st.session_state.schedule_target=date.today()
+    if 'schedule_selected' not in st.session_state:st.session_state.schedule_selected=date.today()
+    left,right=st.columns([1.7,1],gap='large')
+    with left:
+        target=st.date_input('目標月份（Target）',key='schedule_target')
+        weeks=calendar.monthcalendar(target.year,target.month)
+        st.markdown(f'### {target.year} 年 {target.month} 月')
+        headings=st.columns([0.8]+[1]*len(weeks))
+        headings[0].markdown('**星期 / 週**')
+        for wi,col in enumerate(headings[1:],1):col.markdown(f'**第 {wi} 週**')
+        # Requested orientation: X = weeks, Y = weekdays.
+        for weekday in range(7):
+            cols=st.columns([0.8]+[1]*len(weeks))
+            cols[0].markdown('**'+['週一','週二','週三','週四','週五','週六','週日'][weekday]+'**')
+            for wi,week in enumerate(weeks):
+                daynum=week[weekday]
+                if not daynum:cols[wi+1].write('—');continue
+                d=date(target.year,target.month,daynum)
+                entries=schedule_by_day.get(d,[])
+                tip='\n'.join(f"{x['title']} · {parse_card_clock(x)}" for x in entries) if entries else '當日無行程'
+                caption=f'{daynum}'+(f' ·{len(entries)}' if entries else '')
+                if cols[wi+1].button(caption,key=f'schedule_day_{d.isoformat()}',help=tip,use_container_width=True,type='primary' if d==st.session_state.schedule_selected else 'secondary'):
+                    st.session_state.schedule_selected=d
+                    st.rerun()
+    with right:
+        st.markdown('### 當日行程卡')
+        chosen=st.date_input('查詢日期',key='schedule_selected')
+        top_n=st.number_input('顯示最上方 N 張',min_value=1,max_value=100,value=5,step=1,key='schedule_top_n')
+        today_cards=schedule_by_day.get(chosen,[])
+        st.caption(f'{chosen.isoformat()} · 共 {len(today_cards)} 張，顯示 {min(len(today_cards),int(top_n))} 張')
+        with st.container(height=410,border=True):
+            for item in today_cards[:int(top_n)]:
+                with st.container(border=True):
+                    st.markdown('**'+item['title'].replace('*',r'\*')+'**')
+                    st.caption('排定時間：'+parse_card_clock(item))
+                    if item.get('details'):st.write(item['details'])
+                    if st.button('刪除',key='schedule_delete_'+item['id']):
+                        try:
+                            c.table('schedule_cards').delete().eq('id',item['id']).eq('owner_id',uid).execute()
+                            st.rerun()
+                        except Exception as exc:st.error('刪除失敗：'+str(exc))
+            if not today_cards:st.info('當日沒有行程。')
+        with st.expander('＋ 建立新行程',expanded=False):
+            with st.form('schedule_create',clear_on_submit=True):
+                title=st.text_input('標題',max_chars=200)
+                planned=st.time_input('排定時間',value=dt_time(9,0),step=900)
+                details=st.text_area('詳細內容（可留空）',max_chars=10000)
+                submit=st.form_submit_button('建立行程',type='primary')
+            if submit:
+                if not title.strip():st.warning('請輸入標題')
+                else:
+                    try:
+                        local_dt=datetime.combine(chosen,planned).replace(tzinfo=timezone(timedelta(hours=8)))
+                        c.table('schedule_cards').insert({'owner_id':uid,'title':title.strip(),'scheduled_at':local_dt.isoformat(),'details':details}).execute()
+                        st.success('行程已建立')
+                        st.rerun()
+                    except Exception as exc:st.error('建立失敗：'+str(exc))
+    st.stop()
 
 if st.session_state.get('main_page')=='⚙️ 設定':
     st.title('⚙️ 設定')
@@ -1070,6 +1151,17 @@ if mode=='瀏覽模式':
     nav_target=st.session_state.get('nav_target')
     if nav_target in byid and nav_target!=group['id']:
         st.info('定位：'+byid[nav_target]['title'])
+    focus_id=st.session_state.pop('nav_focus',None)
+    if focus_id in byid and focus_id!=group['id']:
+        focus=byid[focus_id]
+        st.success('已定位至：'+focus['title'])
+        with st.container(border=True):
+            st.markdown('### '+focus['title'])
+            if focus['kind'] in ('MARKDOWN','SUBFILE') and focus.get('content'):
+                show_markdown(focus['content'],assets)
+            elif focus['kind'] in ('GRAPH','TABLE','HANDWRITE'):
+                st.caption('已選取此內容區塊。切換至編輯模式可操作該區塊；下方保留完整文件內容。')
+            else:st.caption('已選取此子文件。')
     # Build one stable table of contents for the whole group, preserving Explorer order.
     def ordered_children(parent_id):
         return sorted(children_index.get(parent_id,[]),
