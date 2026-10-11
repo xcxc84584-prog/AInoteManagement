@@ -216,6 +216,15 @@ def place_after(note_id, target_id):
     apply_priority_order(destination,ordered)
     if old_parent!=destination:apply_priority_order(old_parent,[r['id'] for r in priority_siblings(old_parent)])
 
+def place_new_after(note_id,target_id):
+    """Insert a newly created node after its sibling without relying on stale in-memory byid."""
+    target=c.table('notes').select('*').eq('owner_id',uid).eq('id',target_id).execute().data
+    if not target:raise ValueError('插入目標不存在')
+    parent=target[0]['parent_id']
+    ordered=[r['id'] for r in priority_siblings(parent,exclude=note_id)]
+    ordered.insert(ordered.index(target_id)+1,note_id)
+    apply_priority_order(parent,ordered)
+
 def set_priority(note_id,rank):
     parent=byid[note_id]['parent_id']
     ordered=[r['id'] for r in priority_siblings(parent,exclude=note_id)]
@@ -536,6 +545,7 @@ def handwriting_creation_dialog():
             created=[insert_note('HANDWRITE',title.strip() or '新手寫稿',pending['parent'],content=f'<!-- handwriting-size:{m}x{n} --><!-- handwriting-pages:{count} -->',position=len(children_index.get(pending['parent'],[])))]
             op(100,'建立完成')
             st.session_state.pop('pending_handwrite',None)
+            if pending.get('after'):place_new_after(created[0]['id'],pending['after'])
             st.session_state.selected=created[0]['id'];st.rerun()
         except Exception as exc:st.error('建立失敗：'+str(exc))
 
@@ -712,6 +722,7 @@ def table_creation_dialog():
             created=insert_note('TABLE',title.strip() or '新表格',pending['parent'],content=table_with_dimensions(m,n,w,h),position=len(children_index.get(pending['parent'],[])))
             op(100,'資料庫建立完成')
             st.session_state.pop('pending_table',None)
+            if pending.get('after'):place_new_after(created['id'],pending['after'])
             st.session_state.selected=created['id']
             st.rerun()
         except Exception as exc:st.error('建立表格失敗：'+str(exc))
@@ -849,17 +860,20 @@ with st.sidebar:
             elif action=='create':
                 kind=event.get('kind');title=str(event.get('title','')).strip()
                 parent=target if target in byid and byid[target]['kind'] in CONTAINERS else None
+                after=event.get('after') if event.get('after') in byid else None
+                if after and byid[after]['parent_id']!=parent:raise ValueError('插入位置必須與目標文件位於同一層')
                 if kind=='GROUP':parent=None
                 if kind=='HANDWRITE' and parent and title:
-                    st.session_state.pending_handwrite={'title':title,'parent':parent}
+                    st.session_state.pending_handwrite={'title':title,'parent':parent,'after':after}
                     st.session_state.selected=parent
                     st.rerun()
                 if kind=='TABLE' and parent and title:
-                    st.session_state.pending_table={'title':title,'parent':parent}
+                    st.session_state.pending_table={'title':title,'parent':parent,'after':after}
                     st.session_state.selected=parent
                     st.rerun()
                 if kind in KINDS and title and (kind=='GROUP' or parent):
                     new=insert_note(kind,title,parent,has_page=kind=='SUBFILE',position=len([x for x in active_notes if x['parent_id']==parent])+1)
+                    if after:place_new_after(new['id'],after)
                     st.session_state.selected=new['id']
             elif action=='priority' and nid in byid:
                 set_priority(nid,event.get('priority',1))
