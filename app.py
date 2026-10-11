@@ -610,6 +610,8 @@ def table_editor(note,uid_key):
 def show_markdown(content,assets):
     # Composite section delimiters are structural metadata, not visible text.
     content=re.sub(r'(?m)^\s*//\[([^\]\n]+)\]//\s*$',lambda m:'\n### '+m.group(1).strip()+'\n',content)
+    # Also normalize inline section markers; browsing must never expose //[...]//.
+    content=re.sub(r'//\[([^\]\n]+)\]//',lambda m:m.group(1).strip(),content)
     # Resolve private asset identifiers without embedding unsafe HTML.
     parts=re.split(r'(!\[[^\]]*\]\(asset://[0-9a-fA-F-]{36}\))',content)
     for part in parts:
@@ -893,10 +895,8 @@ with st.sidebar:
         st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
     st.divider()
     st.subheader('EXPLORER')
-    st.caption('右鍵操作 · 拖曳移動 · F2 · Delete')
+    st.caption('右鍵操作 · 拖曳移動 · F2 · Delete · Ctrl+D/C/V/X')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
-    hidden_roots=set(st.session_state.get('v46_hidden_roots',[]))
-    active_notes=[n for n in active_notes if not any(a in hidden_roots for a in get_ancestors(n['id'],byid))]
     payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',st.session_state.get('block_content_'+n['id'],n.get('content') or '')) if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
     if event and event.get('event_id')!=st.session_state.get('last_explorer_event'):
@@ -956,6 +956,12 @@ with st.sidebar:
                     new=insert_note(kind,title,parent,has_page=kind=='SUBFILE',position=len([x for x in active_notes if x['parent_id']==parent])+1)
                     if after:place_new_after(new['id'],after)
                     st.session_state.selected=new['id']
+            elif action=='duplicate' and nid in byid:
+                source=byid[nid]
+                if source['kind']=='GROUP' and source['parent_id'] is None:
+                    raise ValueError('ROOT 不支援 Ctrl+D 複製；請使用 ROOT 匯出與匯入')
+                new_id=clone_note(nid,source['parent_id'])
+                st.session_state.selected=new_id
             elif action=='priority' and nid in byid:
                 set_priority(nid,event.get('priority',1))
             elif action=='move_after' and nid in byid and target in byid:
@@ -1066,14 +1072,18 @@ def v46_close_root_dialog(root_id):
             else:st.warning('已啟動下載，請先在裝置確認檔案存在且可開啟。')
             verified=st.checkbox('我已確認本地備份完整，可從 Explorer 關閉此 ROOT',key='v46_verified_'+root_id)
             if st.button('確認關閉 ROOT',type='primary',disabled=not verified,key='v46_finish_'+root_id):
-                # Close in this Explorer session, without deleting stored data.
-                hidden=set(st.session_state.get('v46_hidden_roots',[]))
-                hidden.add(root_id)
-                st.session_state['v46_hidden_roots']=list(hidden)
-                for k in ('workspace_close_requested','full_edit_id','full_read_id'):
+                # Close persistently: remove the ROOT subtree from active workspace.
+                # Soft deletion keeps a recoverable copy in the recycle bin.
+                closed_ids=subtree(root_id,notes)
+                set_deleted(root_id,True)
+                for closed_id in closed_ids:
+                    for prefix in ('v43_draft_','edit_','text_','block_content_','_composite_toc_target_','_composite_browse_target_'):
+                        st.session_state.pop(prefix+closed_id,None)
+                for k in ('workspace_close_requested','full_edit_id','full_read_id','v46_hidden_roots'):
                     st.session_state.pop(k,None)
                 st.session_state.selected=None
                 st.session_state.pop('v46_close_saved_'+root_id,None)
+                st.session_state.pop('v46_verified_'+root_id,None)
                 st.rerun()
     except Exception as exc:st.error('建立 ROOT 備份失敗：'+str(exc))
     if st.button('取消',key='v46_cancel_close'):

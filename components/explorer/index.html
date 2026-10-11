@@ -10,6 +10,7 @@ function destination(n){return folder(n)?n?.id:n?.parent_id}
 function rememberClipboard(){try{sessionStorage.setItem('bv_clip',JSON.stringify({id:clip,cut}))}catch(e){}}
 function act(action,id){const n=get(id);if(!n)return;
  if(action==='rename')return startEdit('rename',id,null);
+ if(action==='duplicate')return send('duplicate',{id});
  if(action==='priority'){const siblings=kids(n.parent_id);const rank=siblings.findIndex(x=>x.id===id)+1;const answer=prompt('設定節點優先權（1～'+siblings.length+'，數字越小越靠前）',String(rank));if(answer===null)return;const value=Number(answer);if(!Number.isInteger(value)||value<1){alert('請輸入正整數');return}return send('priority',{id,priority:value})}
 
  if(action==='full_edit')return send('full_edit',{id});
@@ -33,7 +34,7 @@ function showMenu(e,n,group=null){
  const m=document.getElementById('menu');m.replaceChildren();
  let actions;
  if(group==='new')actions=[['圖文文件','COMPOSITE'],['圖片','GRAPH'],['手寫稿','HANDWRITE']];
- else if(group==='ops')actions=[['節點優先權','priority'],['複製','copy'],['剪下','cut'],['移動','move'],['貼上','paste'],['永久刪除','delete_forever'],['移動回收桶','delete']];
+ else if(group==='ops')actions=[['節點優先權','priority'],['複製','copy'],['建立副本 (Ctrl+D)','duplicate'],['剪下','cut'],['移動','move'],['貼上','paste'],['永久刪除','delete_forever'],['移動回收桶','delete']];
  else actions=[['開啟','select'],['完全單一編輯','full_edit'],['完全單一閱讀','full_read'],['新增文件 ▸','new_file_dialog'],['文件操作 ▸','ops_menu'],['重新命名','rename'],['快速定位','quick_nav'],['儲存增量更新','workspace_save'],['關閉','workspace_close']];
  for(const [label,action] of actions){
   const d=document.createElement('div');d.className='option';d.textContent=label;
@@ -56,5 +57,5 @@ addEventListener('message',e=>{if(e.data?.type==='streamlit:render'){nodes=e.dat
 document.addEventListener('pointerdown',e=>{const menu=document.getElementById('menu');if(menu.style.display!=='none'&&!e.target.closest('#menu'))dismissMenu()},true);
 window.addEventListener('blur',dismissMenu);
 document.addEventListener('visibilitychange',()=>{if(document.hidden)dismissMenu()});
-document.addEventListener('click',e=>{if(!e.target.closest('#menu'))dismissMenu()});document.addEventListener('keydown',e=>{if(editing||['INPUT','TEXTAREA'].includes(document.activeElement.tagName))return;if(e.key==='F2')act('rename',selected);if(e.key==='Delete')act('delete',selected);if((e.ctrlKey||e.metaKey)&&['c','x','v'].includes(e.key.toLowerCase())){if(!get(selected))return;e.preventDefault();act({c:'copy',x:'cut',v:'paste'}[e.key.toLowerCase()],selected)}});parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:385},'*');
+document.addEventListener('click',e=>{if(!e.target.closest('#menu'))dismissMenu()});document.addEventListener('keydown',e=>{if(editing||['INPUT','TEXTAREA'].includes(document.activeElement.tagName))return;if(e.key==='F2')act('rename',selected);if(e.key==='Delete')act('delete',selected);if((e.ctrlKey||e.metaKey)&&['c','x','v','d'].includes(e.key.toLowerCase())){if(!get(selected))return;e.preventDefault();act({c:'copy',x:'cut',v:'paste',d:'duplicate'}[e.key.toLowerCase()],selected)}});parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:385},'*');
 </script></body></html>
