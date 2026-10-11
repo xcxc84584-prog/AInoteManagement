@@ -18,6 +18,8 @@ import pandas as pd
 from PIL import Image, ImageOps
 from supabase import create_client
 from matrix_engine import calculate
+from local_backend import LocalDB
+from manual_sync import pull_from_cloud,push_to_cloud
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title='BV-Text',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
@@ -83,7 +85,7 @@ def current_user():return st.session_state.get('user_id')
 
 def login_screen():
     st.title('📚 BV-Text')
-    st.caption('個人 Markdown 筆記、樹狀文件與圖片管理')
+    st.caption('個人 Markdown 筆記、樹狀文件與圖片管理 · 本地優先')
     tab1,tab2=st.tabs(['登入','註冊'])
     with tab1:
         with st.form('login'):
@@ -126,8 +128,51 @@ except Exception as exc:
     # Keep the token and allow normal requests to determine whether login expired.
     st.session_state.auth_refresh_after=time.time()+60
 
-c=api()
+cloud_client=api()
 uid=current_user()
+# Explicit storage mode: browser on hosted websites, sqlite on local installations.
+STORAGE_MODE=(config('BV_TEXT_STORAGE_MODE') or ('browser' if os.getenv('STREAMLIT_SHARING_MODE') else 'sqlite')).lower()
+if STORAGE_MODE not in ('browser','sqlite'):
+    st.error('BV_TEXT_STORAGE_MODE 必須為 browser 或 sqlite');st.stop()
+if STORAGE_MODE=='sqlite':
+    # This directory is on the machine RUNNING Streamlit, not necessarily the viewer's computer.
+    db_root=Path(config('BV_TEXT_DATA_DIR') or (Path.home()/ 'BV-Text-Data')).expanduser().resolve()
+    local_db=st.session_state.get('_local_db')
+    if local_db is None or local_db.path!=str(db_root/'bvtext.sqlite3'):
+        local_db=LocalDB(db_root/'bvtext.sqlite3')
+        st.session_state['_local_db']=local_db
+else:
+    local_db=st.session_state.get('_local_db_browser')
+    if local_db is None:
+        local_db=LocalDB()
+        st.session_state['_local_db_browser']=local_db
+    browser_component=components.declare_component('bvtext_browser_db',path=str(Path(__file__).parent/'components'/'browser_db'))
+    # Read IndexedDB before allowing edits. Never overwrite an existing browser workspace on first render.
+    if st.session_state.get('_browser_loaded_uid')!=uid:
+        result=browser_component(user_id=uid,mode='load',revision='init',key='browser_database_v1',default=None)
+        if not isinstance(result,dict):
+            st.info('正在載入瀏覽器 IndexedDB 工作區…');st.stop()
+        if not result.get('ok'):
+            st.error('無法讀取 IndexedDB：'+str(result.get('error')));st.stop()
+        if result.get('snapshot'):
+            try:local_db.import_snapshot(uid,result['snapshot'])
+            except Exception as exc:st.error('本地資料還原失敗：'+str(exc));st.stop()
+        st.session_state['_browser_loaded_uid']=uid
+        st.rerun()
+    # Changes are flushed through the browser component on subsequent reruns.
+    revision=st.session_state.get('_browser_revision',0)
+    if revision:
+        result=browser_component(user_id=uid,mode='save',revision=revision,snapshot=local_db.export_snapshot(uid),key='browser_database_v1',default=None)
+        if not isinstance(result,dict) or result.get('revision')!=revision:
+            st.warning('本地資料正在寫入 IndexedDB；請等待完成再關閉分頁。')
+        elif not result.get('ok'):
+            st.error('IndexedDB 寫入失敗：'+str(result.get('error')))
+c=local_db
+
+def mark_local_change():
+    if STORAGE_MODE=='browser':st.session_state['_browser_revision']=st.session_state.get('_browser_revision',0)+1
+local_db.on_change=mark_local_change
+
 
 def fetch_notes():
     return c.table('notes').select('*').eq('owner_id',uid).order('position').execute().data
@@ -266,6 +311,7 @@ def asset_url(asset_id,assets):
     a=assets.get(asset_id)
     if not a:return None
     try:
+        if STORAGE_MODE in ('sqlite','browser'):return None
         signed=c.storage.from_('note-images').create_signed_url(a['storage_path'],3600)
         path=signed.get('signedURL') or signed.get('signedUrl') or signed.get('signed_url')
         if not path:return None
@@ -513,7 +559,7 @@ def show_markdown(content,assets):
     for part in parts:
         match=re.fullmatch(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',part)
         if match:
-            raw=asset_url(match.group(2),assets)
+            raw=asset_image(match.group(2),assets)
             if raw:st.image(raw,caption=match.group(1) or None,width='content')
             else:st.warning('圖片不存在或無法存取')
         elif part:st.markdown(part)
@@ -815,6 +861,26 @@ with st.sidebar:
         st.success(st.session_state.pop('operation_notice'))
     page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','⚙️ 設定'],key='main_page',horizontal=True)
     st.divider()
+    st.divider()
+    st.caption('本地優先 · '+('SQLite：'+str(db_root) if STORAGE_MODE=='sqlite' else 'IndexedDB：目前瀏覽器'))
+    with st.expander('☁️ 手動雲端同步（不自動上傳）'):
+        st.warning('雲端同步可能產生 Supabase 流量。下載雲端資料會取代目前本地資料，請先備份。')
+        confirm_upload=st.checkbox('我確認要將本地資料上傳到 Supabase',key='sync_upload_confirm')
+        if st.button('↑ 手動上傳雲端',disabled=not confirm_upload,key='sync_upload_button'):
+            try:
+                result=push_to_cloud(cloud_client,local_db,uid)
+                st.success('已上傳：'+str(result))
+            except Exception as exc:st.error('雲端上傳失敗：'+str(exc))
+        confirm_download=st.checkbox('我確認要以雲端資料覆蓋本地資料',key='sync_download_confirm')
+        if st.button('↓ 手動下載雲端',disabled=not confirm_download,key='sync_download_button'):
+            try:
+                result=pull_from_cloud(cloud_client,local_db,uid)
+                mark_local_change()
+                st.success('已下載：'+str(result))
+                st.rerun()
+            except Exception as exc:st.error('雲端下載失敗：'+str(exc))
+        if STORAGE_MODE=='browser':
+            st.download_button('下載本地快照 JSON',data=json.dumps(local_db.export_snapshot(uid),ensure_ascii=False),file_name='BV-Text-local-backup.json',mime='application/json')
     if st.button('登出',width='stretch'):
         for k in ['user_id','access_token','refresh_token','selected','remember_enabled']:st.session_state.pop(k,None)
         st.session_state.skip_auto_login=True
