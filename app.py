@@ -27,6 +27,7 @@ MAX_IMAGE=10*1024*1024
 local_component=components.declare_component('ainote_local_save',path=str(Path(__file__).parent/'components'/'local_save'))
 matrix_component=components.declare_component('ainote_matrix_table',path=str(Path(__file__).parent/'components'/'matrix_table'))
 paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
+schedule_calendar_component=components.declare_component('bv_schedule_calendar',path=str(Path(__file__).parent/'components'/'schedule_calendar'))
 
 def config(key):
     try:return st.secrets.get(key) or os.getenv(key)
@@ -825,26 +826,58 @@ if st.session_state.get('import_child_target'):
 elif st.session_state.get('quick_nav_root'):
     quick_navigation_dialog()
 
+@st.dialog('快捷建立行程',width='large')
+def schedule_quick_create_dialog():
+    day=st.session_state.get('schedule_quick_day')
+    if not day:return
+    st.caption(f'排定日期：{day.isoformat()}（臺灣時間）')
+    with st.form('schedule_quick_create_form'):
+        title=st.text_input('標題',max_chars=200)
+        no_time=st.checkbox('無指定時間',key='quick_no_time')
+        planned=st.time_input('排定時間',value=st.session_state.get('schedule_quick_time',datetime.now().time().replace(second=0,microsecond=0)),step=900,disabled=no_time)
+        details=st.text_area('詳細內容（可留空）',max_chars=10000)
+        a,b=st.columns(2)
+        submit=a.form_submit_button('建立行程',type='primary',use_container_width=True)
+        cancel=b.form_submit_button('取消',use_container_width=True)
+    if cancel:
+        st.session_state.pop('schedule_quick_day',None)
+        st.rerun()
+    if submit:
+        if not title.strip():st.warning('請輸入標題');return
+        try:
+            local_dt=datetime.combine(day,planned).replace(tzinfo=timezone(timedelta(hours=8)))
+            c.table('schedule_cards').insert({'owner_id':uid,'title':title.strip(),'schedule_date':day.isoformat(),'scheduled_at':None if no_time else local_dt.isoformat(),'details':details}).execute()
+            st.session_state.schedule_selected=day
+            st.session_state.pop('schedule_quick_day',None)
+            st.rerun()
+        except Exception as exc:st.error('建立失敗：'+str(exc))
+
 if st.session_state.get('main_page')=='📅 行程表':
     st.title('📅 行程表')
     st.caption('點選日期可查看或新增行程；滑鼠停留日期按鈕可查看當日行程簡表。')
     try:
-        cards=c.table('schedule_cards').select('id,title,scheduled_at,details').eq('owner_id',uid).order('scheduled_at').execute().data or []
+        cards=c.table('schedule_cards').select('id,title,schedule_date,scheduled_at,details,created_at,is_completed').eq('owner_id',uid).execute().data or []
     except Exception as exc:
         st.error('無法載入行程表。請先執行專案內 migrations/20261011_schedule_cards.sql，並確認 RLS 權限。')
         st.code(str(exc))
         st.stop()
     def parse_card_day(card):
-        try:return datetime.fromisoformat(card['scheduled_at'].replace('Z','+00:00')).astimezone(timezone(timedelta(hours=8))).date()
+        try:return date.fromisoformat(card['schedule_date']) if card.get('schedule_date') else datetime.fromisoformat(card['scheduled_at'].replace('Z','+00:00')).astimezone(timezone(timedelta(hours=8))).date()
         except Exception:return None
     def parse_card_clock(card):
+        if not card.get('scheduled_at'):return '無指定時間'
         try:return datetime.fromisoformat(card['scheduled_at'].replace('Z','+00:00')).astimezone(timezone(timedelta(hours=8))).strftime('%H:%M')
         except Exception:return '--:--'
     schedule_by_day=defaultdict(list)
     for card in cards:
         d=parse_card_day(card)
         if d:schedule_by_day[d].append(card)
-    for entries in schedule_by_day.values():entries.sort(key=lambda x:x['scheduled_at'])
+    # 指定時間者依時間排序；無指定時間者依建立順序排序。
+    def schedule_sort_key(item):
+        if item.get('scheduled_at'):
+            return (0,item['scheduled_at'],item.get('created_at') or '',item['id'])
+        return (1,item.get('created_at') or '',item['id'])
+    for entries in schedule_by_day.values():entries.sort(key=schedule_sort_key)
     if 'schedule_target' not in st.session_state:st.session_state.schedule_target=date.today()
     if 'schedule_selected' not in st.session_state:st.session_state.schedule_selected=date.today()
     left,right=st.columns([1.7,1],gap='large')
@@ -852,23 +885,26 @@ if st.session_state.get('main_page')=='📅 行程表':
         target=st.date_input('目標月份（Target）',key='schedule_target')
         weeks=calendar.monthcalendar(target.year,target.month)
         st.markdown(f'### {target.year} 年 {target.month} 月')
-        headings=st.columns([0.8]+[1]*len(weeks))
-        headings[0].markdown('**星期 / 週**')
-        for wi,col in enumerate(headings[1:],1):col.markdown(f'**第 {wi} 週**')
-        # Requested orientation: X = weeks, Y = weekdays.
-        for weekday in range(7):
-            cols=st.columns([0.8]+[1]*len(weeks))
-            cols[0].markdown('**'+['週一','週二','週三','週四','週五','週六','週日'][weekday]+'**')
-            for wi,week in enumerate(weeks):
-                daynum=week[weekday]
-                if not daynum:cols[wi+1].write('—');continue
-                d=date(target.year,target.month,daynum)
-                entries=schedule_by_day.get(d,[])
-                tip='\n'.join(f"{x['title']} · {parse_card_clock(x)}" for x in entries) if entries else '當日無行程'
-                caption=f'{daynum}'+(f' ·{len(entries)}' if entries else '')
-                if cols[wi+1].button(caption,key=f'schedule_day_{d.isoformat()}',help=tip,use_container_width=True,type='primary' if d==st.session_state.schedule_selected else 'secondary'):
-                    st.session_state.schedule_selected=d
-                    st.rerun()
+        st.caption('橫軸：星期一至星期日；縱軸：週次。左鍵查看，右鍵快捷建立行程。')
+        display_mode=st.radio('月曆格子顯示', ['顯示日期','顯示待處理項目數'],horizontal=True,key='schedule_display_mode')
+        days=[]
+        for wi,week in enumerate(weeks):
+            days.append([{'day':date(target.year,target.month,num).isoformat(),
+                          'number':num,
+                          'count':len(schedule_by_day.get(date(target.year,target.month,num),[])),
+                          'pending':sum(not item.get('is_completed',False) for item in schedule_by_day.get(date(target.year,target.month,num),[])),
+                          'tip':'\n'.join(f"{x['title']} · {parse_card_clock(x)}" for x in schedule_by_day.get(date(target.year,target.month,num),[])) or '當日無行程'} if num else None for num in week])
+        event=schedule_calendar_component(weeks=days,display_mode='pending' if display_mode=='顯示待處理項目數' else 'date',selected=st.session_state.schedule_selected.isoformat(),key=f'schedule_calendar_{target.year}_{target.month}',default=None)
+        if isinstance(event,dict) and event.get('id')!=st.session_state.get('schedule_calendar_event_id'):
+            st.session_state.schedule_calendar_event_id=event.get('id')
+            try:
+                clicked=date.fromisoformat(event['day'])
+                st.session_state.schedule_selected=clicked
+                if event.get('action')=='create':
+                    st.session_state.schedule_quick_day=clicked
+                    st.session_state.schedule_quick_time=datetime.now(timezone(timedelta(hours=8))).time().replace(second=0,microsecond=0)
+                st.rerun()
+            except (ValueError,KeyError,TypeError):pass
     with right:
         st.markdown('### 當日行程卡')
         chosen=st.date_input('查詢日期',key='schedule_selected')
@@ -880,6 +916,12 @@ if st.session_state.get('main_page')=='📅 行程表':
                 with st.container(border=True):
                     st.markdown('**'+item['title'].replace('*',r'\*')+'**')
                     st.caption('排定時間：'+parse_card_clock(item))
+                    completed=st.checkbox('已完成',value=bool(item.get('is_completed')),key='schedule_completed_'+item['id'])
+                    if completed!=bool(item.get('is_completed')):
+                        try:
+                            c.table('schedule_cards').update({'is_completed':completed}).eq('id',item['id']).eq('owner_id',uid).execute()
+                            st.rerun()
+                        except Exception as exc:st.error('更新狀態失敗：'+str(exc))
                     if item.get('details'):st.write(item['details'])
                     if st.button('刪除',key='schedule_delete_'+item['id']):
                         try:
@@ -890,7 +932,8 @@ if st.session_state.get('main_page')=='📅 行程表':
         with st.expander('＋ 建立新行程',expanded=False):
             with st.form('schedule_create',clear_on_submit=True):
                 title=st.text_input('標題',max_chars=200)
-                planned=st.time_input('排定時間',value=dt_time(9,0),step=900)
+                no_time=st.checkbox('無指定時間',key='schedule_create_no_time')
+                planned=st.time_input('排定時間',value=dt_time(9,0),step=900,disabled=no_time)
                 details=st.text_area('詳細內容（可留空）',max_chars=10000)
                 submit=st.form_submit_button('建立行程',type='primary')
             if submit:
@@ -898,10 +941,12 @@ if st.session_state.get('main_page')=='📅 行程表':
                 else:
                     try:
                         local_dt=datetime.combine(chosen,planned).replace(tzinfo=timezone(timedelta(hours=8)))
-                        c.table('schedule_cards').insert({'owner_id':uid,'title':title.strip(),'scheduled_at':local_dt.isoformat(),'details':details}).execute()
+                        c.table('schedule_cards').insert({'owner_id':uid,'title':title.strip(),'schedule_date':chosen.isoformat(),'scheduled_at':None if no_time else local_dt.isoformat(),'details':details}).execute()
                         st.success('行程已建立')
                         st.rerun()
                     except Exception as exc:st.error('建立失敗：'+str(exc))
+    if st.session_state.get('schedule_quick_day'):
+        schedule_quick_create_dialog()
     st.stop()
 
 if st.session_state.get('main_page')=='⚙️ 設定':
