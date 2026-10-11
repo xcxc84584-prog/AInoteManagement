@@ -38,6 +38,7 @@ CREATE INDEX IF NOT EXISTS idx_schedule_owner ON schedule_cards(owner_id,schedul
  def table(self,name):
   if name not in FIELDS:raise ValueError('Unknown table')
   return Query(self,name)
+ @property
  def storage(self):return LocalStorage(self)
  def export_snapshot(self,owner):
   with self.lock:

@@ -12,12 +12,16 @@ def test_sqlite_roundtrip():
   assert db.table('notes').select('content').eq('id',root['id']).execute().data[0]['content']=='已更新'
   db.table('schedule_cards').insert({'owner_id':uid,'title':'無時間','schedule_date':'2026-10-11','scheduled_at':None}).execute()
   path=uid+'/image.webp'
-  db.storage().from_('note-images').upload(path,b'hello')
+  assert not callable(db.storage), 'storage must be an object, not a method'
+  db.storage.from_('note-images').upload(path,b'hello')
   db.table('assets').insert({'owner_id':uid,'note_id':root['id'],'storage_path':path,'mime_type':'image/webp'}).execute()
   snap=db.export_snapshot(uid)
   restored=LocalDB()
   restored.import_snapshot(uid,snap)
-  assert restored.storage().from_('note-images').download(path)==b'hello'
+  assert restored.storage.from_('note-images').download(path)==b'hello'
+  restored.storage.from_('note-images').remove([path])
+  try:restored.storage.from_('note-images').download(path);assert False
+  except FileNotFoundError:pass
   assert len(restored.table('schedule_cards').select('*').eq('owner_id',uid).execute().data)==1
   restored.table('notes').delete().eq('id',root['id']).execute()
   assert not restored.table('notes').select('*').eq('owner_id',uid).execute().data

@@ -168,6 +168,10 @@ else:
         elif not result.get('ok'):
             st.error('IndexedDB 寫入失敗：'+str(result.get('error')))
 c=local_db
+# Fail fast if a stale local backend was deployed.
+if not hasattr(c.storage, 'from_'):
+    st.error('本地儲存模組版本不一致：請重新部署 v3.9.2 並重新啟動應用程式。')
+    st.stop()
 
 def mark_local_change():
     if STORAGE_MODE=='browser':st.session_state['_browser_revision']=st.session_state.get('_browser_revision',0)+1
