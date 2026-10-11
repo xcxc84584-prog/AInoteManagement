@@ -923,7 +923,7 @@ with st.sidebar:
             elif action=='workspace_save' and nid in byid:
                 st.session_state.workspace_save_requested=True
             elif action=='workspace_close' and nid in byid:
-                st.session_state.workspace_close_requested=True
+                st.session_state.workspace_close_requested=nid
             elif action=='new_file_dialog' and nid in byid:
                 st.session_state.new_file_parent=nid if byid[nid]['kind'] in CONTAINERS else byid[nid]['parent_id']
             elif action=='quick_nav' and nid in byid:
@@ -1030,6 +1030,44 @@ with st.sidebar:
         st.session_state.skip_auto_login=True
         remember_action('clear')
         st.rerun()
+
+# Explorer ROOT close: full-group local backup, then close after browser confirms save initiation.
+close_target=st.session_state.get('workspace_close_requested')
+if close_target:
+    close_node=byid.get(close_target)
+    if close_node:
+        root_id=get_ancestors(close_node['id'],byid)[-1]
+        root=byid.get(root_id)
+        if root and root.get('kind')=='GROUP':
+            try:
+                overrides={}
+                for node in notes:
+                    nid=node['id']
+                    for key in ('v43_draft_'+nid,'edit_'+nid,'text_'+nid):
+                        if key in st.session_state and isinstance(st.session_state[key],str):
+                            overrides[nid]=st.session_state[key]
+                            break
+                payload=export_group(root,notes,overrides)
+                with st.sidebar:
+                    st.markdown('#### 📦 ROOT 本地保存')
+                    st.caption('保存整個 ROOT：'+root['title'])
+                    result=local_component(mode='close',data=base64.b64encode(payload).decode('ascii'),filename=download_filename(root['title']),key='root_close_'+root_id,default=None)
+                    if isinstance(result,dict) and result.get('action')=='saved':
+                        st.session_state.pop('workspace_close_requested',None)
+                        st.session_state.pop('full_edit_id',None)
+                        st.session_state.pop('full_read_id',None)
+                        st.session_state.selected=None
+                        st.success('已啟動保存；請確認裝置中的檔案。')
+                        st.rerun()
+                    if isinstance(result,dict) and result.get('action')=='error':
+                        st.error('保存失敗，尚未關閉：'+str(result.get('message','')))
+                    if st.button('取消關閉',key='cancel_root_close'):
+                        st.session_state.pop('workspace_close_requested',None)
+                        st.rerun()
+            except Exception as exc:
+                st.error('建立 ROOT 備份失敗：'+str(exc))
+    else:
+        st.session_state.pop('workspace_close_requested',None)
 
 if st.session_state.get('import_child_target'):
     import_child_dialog()
