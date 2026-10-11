@@ -674,6 +674,43 @@ def import_child_dialog():
                         st.session_state.pop('import_child_target',None)
                         st.rerun()
 
+@st.dialog('快速定位',width='large')
+def quick_navigation_dialog():
+    nav_root=st.session_state.get('quick_nav_root')
+    if nav_root not in byid:
+        st.session_state.pop('quick_nav_root',None)
+        return
+    root=byid[nav_root]
+    if root['kind'] not in CONTAINERS:root=byid.get(root.get('parent_id'),root)
+    def nav_children(node,depth=0,visited=None):
+        visited=set() if visited is None else visited
+        if node['id'] in visited:return []
+        visited.add(node['id'])
+        result=[(node,depth)]
+        for child in sorted(children_index.get(node['id'],[]),key=lambda n:(n.get('position',0),n.get('title',''))):
+            if child['kind'] in CONTAINERS:result+=nav_children(child,depth+1,visited)
+            else:result.append((child,depth+1))
+        return result
+    targets=nav_children(root)
+    options={node['id']:('　'*min(depth,7))+node['title'] for node,depth in targets}
+    with st.form('quick_navigation_form'):
+        choice=st.selectbox('選擇要定位的文件',list(options),format_func=lambda x:options[x])
+        left,right=st.columns(2)
+        confirm=left.form_submit_button('定位',type='primary',width='stretch')
+        cancel=right.form_submit_button('取消',width='stretch')
+    if confirm:
+        st.session_state.selected=choice
+        st.session_state['nav_target']=choice
+        st.session_state.pop('quick_nav_root',None)
+        st.rerun()
+    if cancel:
+        st.session_state.pop('quick_nav_root',None)
+        st.rerun()
+
+def download_filename(title):
+    name=re.sub(r'[\\\\/:*?"<>|\\x00-\\x1f]+','_',str(title or '')).strip(' .')
+    return (name[:150] or '未命名')+'.'+st.session_state.get('download_format','ainote')
+
 with st.sidebar:
     st.title('📚 BV-Text')
     with st.popover('☰ 功能選單',width='stretch'):
@@ -696,7 +733,7 @@ with st.sidebar:
             rootid=get_ancestors(selected['id'],byid)[-1]
             root=byid[rootid]
             if root['kind']=='GROUP':
-                try:st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name='AInote_'+root['id']+'.ainote',mime='application/zip',width='stretch')
+                try:st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name=download_filename(root['title']),mime='application/zip',width='stretch')
                 except Exception:st.warning('暫時無法匯出')
         st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
     st.divider()
@@ -772,33 +809,6 @@ with st.sidebar:
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
         st.success(st.session_state.pop('operation_notice'))
-    nav_root=st.session_state.get('quick_nav_root')
-    if nav_root in byid:
-        with st.expander('☰ 快速定位',expanded=True):
-            root=byid[nav_root]
-            if root['kind'] not in CONTAINERS:root=byid.get(root.get('parent_id'),root)
-            def nav_children(node,depth=0,visited=None):
-                visited=set() if visited is None else visited
-                if node['id'] in visited:return []
-                visited.add(node['id'])
-                result=[(node,depth)]
-                for child in sorted(children_index.get(node['id'],[]),key=lambda n:(n.get('position',0),n.get('title',''))):
-                    if child['kind'] in CONTAINERS:result+=nav_children(child,depth+1,visited)
-                    else:result.append((child,depth+1))
-                return result
-            targets=nav_children(root)
-            for node,depth in targets:
-                label=('　'*min(depth,7))+node['title']
-                if st.session_state.get('workspace_mode')=='瀏覽模式':
-                    anchor='ainote-'+re.sub(r'[^a-zA-Z0-9-]','',str(node['id']))
-                    st.markdown(f'<a href="#{anchor}">{html.escape(label)}</a>',unsafe_allow_html=True)
-                    continue
-                if st.button(label,key='nav_'+root['id']+'_'+node['id'],width='stretch'):
-                    st.session_state.selected=node['id']
-                    st.session_state['nav_target']=node['id']
-                    st.rerun()
-            if st.button('關閉快速定位',key='close_quick_nav'):
-                st.session_state.pop('quick_nav_root',None);st.rerun()
     page_choice=st.radio('頁面', ['📝 筆記工作區','⚙️ 設定'],key='main_page',horizontal=True)
     st.divider()
     if st.button('登出',width='stretch'):
@@ -809,10 +819,13 @@ with st.sidebar:
 
 if st.session_state.get('import_child_target'):
     import_child_dialog()
+elif st.session_state.get('quick_nav_root'):
+    quick_navigation_dialog()
 
 if st.session_state.get('main_page')=='⚙️ 設定':
     st.title('⚙️ 設定')
     st.caption("帳號管理 · 資源回收區 · 本地備份")
+    st.selectbox('下載檔案格式',options=['ainote','zip'],key='download_format',help='兩種副檔名使用相同的 AINOTE ZIP 封裝結構。')
     st.info("瀏覽器不能自行建立 D 槽資料夾。建議先建立 D:\\AInoteManagement，再授權此資料夾；不支援時改用下載。")
     with st.container():
         st.markdown('#### 資源回收區')
@@ -1018,7 +1031,7 @@ if selected:
     except Exception as exc:
         close_b64='';close_err=str(exc)
     close_event=local_component(mode='close',data=close_b64,
-        filename='AInote_Close_'+re.sub(r'[^\w\-]+','_',group['title'])+'_'+datetime.now().strftime('%Y%m%d_%H%M%S')+'.ainote',
+        filename=download_filename(group['title']),
         disabled=bool(close_err),key='close_local_'+workspace_id,default=None)
     if close_err:st.error('無法準備關閉備份：'+close_err)
     if isinstance(close_event,dict) and close_event.get('token')!=st.session_state.get('close_last_token_'+workspace_id):
@@ -1187,7 +1200,7 @@ else:
     if backup_error:st.error('無法建立本地備份：'+backup_error)
     save_key='pipeline_'+workspace_id
     save_event=local_component(mode='pipeline',data=local_b64,
-        filename='AInote_'+re.sub(r'[^\w\-]+','_',group['title'])+'_'+datetime.now().strftime('%Y%m%d_%H%M%S')+'.ainote',
+        filename=download_filename(group['title']),
         disabled=bool(backup_error),key='local_pipeline_'+workspace_id,default=None)
     if isinstance(save_event,dict) and save_event.get('token')!=st.session_state.get('pipeline_last_token_'+workspace_id):
         if save_event.get('token'):
