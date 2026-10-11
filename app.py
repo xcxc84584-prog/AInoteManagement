@@ -922,8 +922,43 @@ def schedule_quick_create_dialog():
             st.rerun()
         except Exception as exc:st.error('建立失敗：'+str(exc))
 
+@st.dialog('編輯行程卡',width='large')
+def schedule_edit_dialog(card):
+    original_date=date.fromisoformat(card['schedule_date']) if card.get('schedule_date') else date.today()
+    old_clock=dt_time(9,0)
+    if card.get('scheduled_at'):
+        try:old_clock=datetime.fromisoformat(card['scheduled_at'].replace('Z','+00:00')).astimezone(timezone(timedelta(hours=8))).time().replace(second=0,microsecond=0)
+        except (ValueError,TypeError):pass
+    with st.form('schedule_edit_form'):
+        new_title=st.text_input('標題',value=card.get('title') or '',max_chars=200)
+        new_date=st.date_input('日期',value=original_date)
+        no_time=st.checkbox('無指定時間',value=not bool(card.get('scheduled_at')))
+        new_clock=st.time_input('排定時間',value=old_clock,step=900,disabled=no_time)
+        new_details=st.text_area('詳細內容',value=card.get('details') or '',max_chars=10000)
+        new_completed=st.checkbox('已完成',value=bool(card.get('is_completed')))
+        submitted=st.form_submit_button('儲存修改',type='primary')
+    if submitted:
+        if not new_title.strip():
+            st.error('請輸入標題');return
+        when=None if no_time else datetime.combine(new_date,new_clock).replace(tzinfo=timezone(timedelta(hours=8))).isoformat()
+        try:
+            c.table('schedule_cards').update({'title':new_title.strip(),'schedule_date':new_date.isoformat(),'scheduled_at':when,'details':new_details,'is_completed':new_completed}).eq('id',card['id']).eq('owner_id',uid).execute()
+            st.session_state.schedule_selected=new_date
+            st.session_state.pop('schedule_edit_id',None)
+            st.rerun()
+        except Exception as exc:st.error('修改失敗：'+str(exc))
+
 if st.session_state.get('main_page')=='📅 行程表':
     st.title('📅 行程表')
+    save_col,help_col=st.columns([1,3])
+    if save_col.button('💾 手動保存行程表',key='schedule_manual_save',type='primary'):
+        if STORAGE_MODE=='browser':
+            st.session_state['_browser_revision']=st.session_state.get('_browser_revision',0)+1
+            st.toast('已要求寫入瀏覽器 IndexedDB，請等待儲存完成提示。')
+        else:
+            st.toast('SQLite 已保存至固定本地路徑。')
+        st.rerun()
+    help_col.caption('編輯會先保存至本地；手動保存可再次觸發瀏覽器持久化。不會上傳 Supabase。')
     st.caption('點選日期可查看或新增行程；滑鼠停留日期按鈕可查看當日行程簡表。')
     try:
         cards=c.table('schedule_cards').select('id,title,schedule_date,scheduled_at,details,created_at,is_completed').eq('owner_id',uid).execute().data or []
@@ -964,7 +999,7 @@ if st.session_state.get('main_page')=='📅 行程表':
                           'count':len(schedule_by_day.get(date(target.year,target.month,num),[])),
                           'pending':sum(not item.get('is_completed',False) for item in schedule_by_day.get(date(target.year,target.month,num),[])),
                           'tip':'\n'.join(f"{x['title']} · {parse_card_clock(x)}" for x in schedule_by_day.get(date(target.year,target.month,num),[])) or '當日無行程'} if num else None for num in week])
-        event=schedule_calendar_component(weeks=days,display_mode='pending' if display_mode=='顯示待處理項目數' else 'date',selected=st.session_state.schedule_selected.isoformat(),key=f'schedule_calendar_{target.year}_{target.month}',default=None)
+        event=schedule_calendar_component(today=date.today().isoformat(),weeks=days,display_mode='pending' if display_mode=='顯示待處理項目數' else 'date',selected=st.session_state.schedule_selected.isoformat(),key=f'schedule_calendar_{target.year}_{target.month}',default=None)
         if isinstance(event,dict) and event.get('id')!=st.session_state.get('schedule_calendar_event_id'):
             st.session_state.schedule_calendar_event_id=event.get('id')
             try:
@@ -993,6 +1028,9 @@ if st.session_state.get('main_page')=='📅 行程表':
                             st.rerun()
                         except Exception as exc:st.error('更新狀態失敗：'+str(exc))
                     if item.get('details'):st.write(item['details'])
+                    if st.button('✏️ 編輯',key='schedule_edit_'+item['id']):
+                        st.session_state.schedule_edit_id=item['id']
+                        st.rerun()
                     if st.button('刪除',key='schedule_delete_'+item['id']):
                         try:
                             c.table('schedule_cards').delete().eq('id',item['id']).eq('owner_id',uid).execute()
@@ -1015,6 +1053,10 @@ if st.session_state.get('main_page')=='📅 行程表':
                         st.success('行程已建立')
                         st.rerun()
                     except Exception as exc:st.error('建立失敗：'+str(exc))
+    if st.session_state.get('schedule_edit_id'):
+        editing=next((x for x in cards if x['id']==st.session_state['schedule_edit_id']),None)
+        if editing:schedule_edit_dialog(editing)
+        else:st.session_state.pop('schedule_edit_id',None)
     if st.session_state.get('schedule_quick_day'):
         schedule_quick_create_dialog()
     st.stop()
@@ -1040,6 +1082,20 @@ if st.session_state.get('main_page')=='⚙️ 設定':
     with st.container():
         st.markdown('#### 預設儲存路徑')
         st.caption('在支援的瀏覽器選擇本機資料夾，之後優先寫入該資料夾。瀏覽器可能要求重新授權；手機或不支援的瀏覽器改用下載。')
+        if STORAGE_MODE=='sqlite':
+            path_col,open_col=st.columns([4,1])
+            path_col.code(str(db_root))
+            if open_col.button('📂 開啟資料夾',key='open_sqlite_folder'):
+                try:
+                    import subprocess,sys
+                    db_root.mkdir(parents=True,exist_ok=True)
+                    if sys.platform=='win32':os.startfile(str(db_root))
+                    elif sys.platform=='darwin':subprocess.Popen(['open',str(db_root)])
+                    else:subprocess.Popen(['xdg-open',str(db_root)])
+                    st.success('已要求本機開啟資料夾')
+                except Exception as exc:st.error('無法開啟資料夾：'+str(exc))
+        else:
+            st.caption('IndexedDB 位於瀏覽器內，沒有可由網站直接開啟的 Windows 固定路徑。下方按鈕可開啟瀏覽器資料夾選擇器。')
         local_component(mode='settings',key='local_save_settings_v1',default=None)
     with st.container():
         st.markdown('#### 帳號註銷')
