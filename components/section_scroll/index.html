@@ -1,0 +1,20 @@
+<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><script>
+(function(){
+ const sendHeight=()=>window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:0},'*');
+ window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');sendHeight();
+ window.addEventListener('message',event=>{
+  if(event.data?.type!=='streamlit:render')return;
+  const anchor=event.data.args?.anchor;
+  if(!anchor)return;
+  let tries=0;
+  const seek=()=>{
+   try{
+    const element=window.parent.document.getElementById(anchor);
+    if(element){element.scrollIntoView({behavior:'smooth',block:'start'});return;}
+   }catch(e){/* iframe cross-origin policy may disallow access; fallback anchor link shown in page */return;}
+   if(++tries<20)setTimeout(seek,180);
+  };
+  seek();
+ });
+})();
+</script></body></html>

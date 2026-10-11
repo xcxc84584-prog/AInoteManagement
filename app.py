@@ -1,4 +1,5 @@
 import ast
+import operator
 import calendar
 import base64
 import html
@@ -30,6 +31,7 @@ local_component=components.declare_component('ainote_local_save',path=str(Path(_
 matrix_component=components.declare_component('ainote_matrix_table',path=str(Path(__file__).parent/'components'/'matrix_table'))
 paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
 schedule_calendar_component=components.declare_component('bv_schedule_calendar',path=str(Path(__file__).parent/'components'/'schedule_calendar'))
+section_scroll_component=components.declare_component('bv_section_scroll',path=str(Path(__file__).parent/'components'/'section_scroll'))
 
 def config(key):
     try:return st.secrets.get(key) or os.getenv(key)
@@ -954,6 +956,55 @@ if st.session_state.get('import_child_target'):
 elif st.session_state.get('quick_nav_root'):
     quick_navigation_dialog()
 
+_SCHEDULE_OPERATORS={ast.Add:operator.add,ast.Sub:operator.sub,ast.Mult:operator.mul,ast.Div:operator.truediv,ast.FloorDiv:operator.floordiv,ast.Mod:operator.mod}
+def schedule_expression(expr,d):
+    """Evaluate only bounded numeric expressions involving d, no Python execution."""
+    if len(expr)>90:raise ValueError('運算式過長（最多 90 字元）')
+    tree=ast.parse(expr,mode='eval')
+    def visit(node,depth=0):
+        if depth>12:raise ValueError('運算式過於複雜')
+        if isinstance(node,ast.Expression):return visit(node.body,depth+1)
+        if isinstance(node,ast.Constant) and type(node.value) in (int,float):return node.value
+        if isinstance(node,ast.Name) and node.id=='d':return d
+        if isinstance(node,ast.UnaryOp) and isinstance(node.op,(ast.UAdd,ast.USub)):
+            value=visit(node.operand,depth+1)
+            return value if isinstance(node.op,ast.UAdd) else -value
+        if isinstance(node,ast.BinOp) and type(node.op) in _SCHEDULE_OPERATORS:
+            a,b=visit(node.left,depth+1),visit(node.right,depth+1)
+            if abs(a)>100000000 or abs(b)>100000000:raise ValueError('數值過大')
+            result=_SCHEDULE_OPERATORS[type(node.op)](a,b)
+            if not isinstance(result,(int,float)) or not -100000000<=result<=100000000:raise ValueError('結果超出範圍')
+            return result
+        raise ValueError('只允許數字、d、+、-、*、/、//、% 與括號')
+    result=visit(tree)
+    return str(int(result)) if float(result).is_integer() else f'{result:.8g}'
+
+def schedule_title_for_day(template,d):
+    return re.sub(r'\(([^()]*)\)',lambda m:schedule_expression(m.group(1),d),template)
+
+def create_schedule_series(start_day,title,days,no_time,planned,details):
+    if not 1<=days<=365:raise ValueError('連續天數必須介於 1～365')
+    # Prevalidate the complete batch before inserting any row.
+    payload=[]
+    for d in range(days):
+        current=start_day+timedelta(days=d)
+        resolved=schedule_title_for_day(title.strip(),d)
+        if not resolved.strip() or len(resolved)>200:raise ValueError(f'第 {d+1} 天標題為空或超過 200 字元')
+        timestamp=None if no_time else datetime.combine(current,planned).replace(tzinfo=timezone(timedelta(hours=8))).isoformat()
+        payload.append({'owner_id':uid,'title':resolved,'schedule_date':current.isoformat(),'scheduled_at':timestamp,'details':details})
+    created=[]
+    try:
+        for row in payload:
+            result=c.table('schedule_cards').insert(row).execute().data
+            if not result:raise RuntimeError('資料庫未確認新增成功')
+            created.append(result[0]['id'])
+    except Exception:
+        for item_id in created:
+            try:c.table('schedule_cards').delete().eq('id',item_id).eq('owner_id',uid).execute()
+            except Exception:logging.getLogger(__name__).exception('Rollback schedule card failed')
+        raise
+    return len(created)
+
 @st.dialog('快捷建立行程',width='large')
 def schedule_quick_create_dialog():
     day=st.session_state.get('schedule_quick_day')
@@ -964,6 +1015,8 @@ def schedule_quick_create_dialog():
         no_time=st.checkbox('無指定時間',key='quick_no_time')
         planned=st.time_input('排定時間',value=st.session_state.get('schedule_quick_time',datetime.now().time().replace(second=0,microsecond=0)),step=900,disabled=no_time)
         details=st.text_area('詳細內容（可留空）',max_chars=10000)
+        days=st.number_input('連續建立天數',min_value=1,max_value=365,value=1,step=1,key='quick_schedule_days')
+        st.caption('標題可使用 (10+d)、(501+20*d) 等算式；第一天 d=0。')
         a,b=st.columns(2)
         submit=a.form_submit_button('建立行程',type='primary',use_container_width=True)
         cancel=b.form_submit_button('取消',use_container_width=True)
@@ -973,8 +1026,7 @@ def schedule_quick_create_dialog():
     if submit:
         if not title.strip():st.warning('請輸入標題');return
         try:
-            local_dt=datetime.combine(day,planned).replace(tzinfo=timezone(timedelta(hours=8)))
-            c.table('schedule_cards').insert({'owner_id':uid,'title':title.strip(),'schedule_date':day.isoformat(),'scheduled_at':None if no_time else local_dt.isoformat(),'details':details}).execute()
+            create_schedule_series(day,title,int(days),no_time,planned,details)
             st.session_state.schedule_selected=day
             st.session_state.pop('schedule_quick_day',None)
             st.rerun()
@@ -1101,14 +1153,15 @@ if st.session_state.get('main_page')=='📅 行程表':
                 no_time=st.checkbox('無指定時間',key='schedule_create_no_time')
                 planned=st.time_input('排定時間',value=dt_time(9,0),step=900,disabled=no_time)
                 details=st.text_area('詳細內容（可留空）',max_chars=10000)
+                days=st.number_input('連續建立天數',min_value=1,max_value=365,value=1,step=1,key='schedule_create_days')
+                st.caption('支援 (10+d)、(501+20*d)；第一天 d=0。')
                 submit=st.form_submit_button('建立行程',type='primary')
             if submit:
                 if not title.strip():st.warning('請輸入標題')
                 else:
                     try:
-                        local_dt=datetime.combine(chosen,planned).replace(tzinfo=timezone(timedelta(hours=8)))
-                        c.table('schedule_cards').insert({'owner_id':uid,'title':title.strip(),'schedule_date':chosen.isoformat(),'scheduled_at':None if no_time else local_dt.isoformat(),'details':details}).execute()
-                        st.success('行程已建立')
+                        total=create_schedule_series(chosen,title,int(days),no_time,planned,details)
+                        st.success(f'已建立 {total} 張行程卡')
                         st.rerun()
                     except Exception as exc:st.error('建立失敗：'+str(exc))
     if st.session_state.get('schedule_edit_id'):
@@ -1401,16 +1454,12 @@ if mode=='瀏覽模式':
     if nav_target in byid and nav_target!=group['id']:
         st.info('定位：'+byid[nav_target]['title'])
     focus_id=st.session_state.pop('nav_focus',None)
-    if focus_id in byid and focus_id!=group['id']:
+    if focus_id in byid:
         focus=byid[focus_id]
-        st.success('已定位至：'+focus['title'])
-        with st.container(border=True):
-            st.markdown('### '+focus['title'])
-            if focus['kind'] in ('MARKDOWN','SUBFILE') and focus.get('content'):
-                show_markdown(focus['content'],assets)
-            elif focus['kind'] in ('GRAPH','TABLE','HANDWRITE'):
-                st.caption('已選取此內容區塊。切換至編輯模式可操作該區塊；下方保留完整文件內容。')
-            else:st.caption('已選取此子文件。')
+        anchor_id='ainote-'+re.sub(r'[^a-zA-Z0-9-]','',str(focus['id']))
+        st.info('快速定位目標：'+focus['title']+'。點擊下方連結跳至該段落。')
+        st.markdown(f'[↳ 跳至「{html.escape(focus["title"])}」所在位置](#{anchor_id})')
+        section_scroll_component(anchor=anchor_id,key='section_scroll_'+focus['id'],default=None)
     # Build one stable table of contents for the whole group, preserving Explorer order.
     def ordered_children(parent_id):
         return sorted(children_index.get(parent_id,[]),
