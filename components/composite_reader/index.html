@@ -24,47 +24,27 @@ function mathMarkup(expr,display){return '<span class="math-render'+(display?' m
 
 // 5.0.7: recover mobile clipboard TeX that arrives without math delimiters.
 function recoverMobileMath507(input){
- const fenced=String(input||'').split(/(```[\s\S]*?```)/g);
- return fenced.map((chunk,index)=>{
+ return String(input||'').split(/(```[\s\S]*?```)/g).map((chunk,index)=>{
   if(index%2)return chunk;
-  const lines=chunk.split('\n');
-  return lines.map(line=>{
-   if(/\$\$|\\\[|\\\]|\\\(|\\\)/.test(line))return line;
-   // Only recover clearly TeX-like complete formula lines; do not modify prose.
-   const m=line.match(/((?:[A-Za-z][A-Za-z0-9]*_\{[^{}]+\}|[A-Za-z][A-Za-z0-9]*)\s*=\s*[^\n]{2,240})/);
-   if(!m)return line;
-   const tail=m[1].trim();
-   if(!/(?:\\(?:times|frac|cdot|sqrt|text|left|right|sum|int)|_\{|\^\{)/.test(tail))return line;
-   // Mobile accessibility copy may prepend a rendered equation before the TeX source.
-   const prefix=line.slice(0,m.index).trim();
-   if(prefix&&prefix.length>160)return line;
-   if(prefix&&!/[=×÷+−-]/.test(prefix))return line;
-   return (prefix?'':'')+'$$'+tail+'$$';
+  return chunk.split('\n').map(line=>{
+   const t=line.trim();
+   if(!t||t.startsWith('![')||/\$|\\\[|\\\]|\\\(|\\\)/.test(t))return line;
+   // Conservative: only a complete, standalone TeX assignment is recoverable.
+   if(t.length>240||! /^[A-Za-z][A-Za-z0-9]*(?:_\{[^{}]+\})?\s*=\s*.+$/.test(t))return line;
+   if(!/\\(?:frac|times|cdot|sqrt|text|sum|int)|_\{|\^\{/.test(t))return line;
+   return '$$'+t+'$$';
   }).join('\n');
  }).join('');
 }
-
 function normalizeMobileMath503(input){
- let s=String(input||'').replace(/\r\n?/g,'\n');
- const parts=s.split(/(```[\s\S]*?```)/g);
- return parts.map((part,index)=>{
-  if(index%2)return part;
-  // Preserve the TeX expression and discard a duplicated visual/plain-text prefix only when the same line has a full TeX source.
-  part=part.replace(/([^\n]{1,240}?)(\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$)/g,(whole,prefix,formula)=>{
-   const candidate=prefix.trim();
-   if(!candidate||/[：:]\s*$/.test(candidate)||!/[=+×÷]/.test(candidate)||!/[A-Za-z]/.test(candidate))return whole;
-   if(!/\\(?:times|frac|text|cdot|sqrt|left|right)|_\{|\^\{/.test(formula))return whole;
-   return formula;
-  });
-  // Support inline escaped LaTeX delimiters (without modifying display math).
-  part=part.replace(/\\\(([^\n]*?)\\\)/g,(_,tex)=>'$'+tex+'$');
-  return part;
- }).join('');
+ // Never discard clipboard text by heuristic: a visual duplicate cannot be
+ // reliably distinguished from meaningful prose without comparing source nodes.
+ return String(input||'').replace(/\r\n?/g,'\n');
 }
 function hrcNormalizeSource(md){
  let s=recoverMobileMath507(normalizeMobileMath503(md));
  // Recover line-broken SVG data URLs (legacy saved notes), without changing ordinary paragraphs.
- s=s.replace(/(!\[[^\]\n]*\]\(data:image\/svg\+xml[^\n]*\n(?:[^\n]*\n)*?[^\n]*\))(?=\n|$)/gi,m=>m.replace(/\n/g,''));
+ s=s.replace(/(!\[[^\]\n]*\]\(data\\?:image\/svg\+xml[\s\S]{0,2000000}?%3C%2Fsvg%3E[\s\\]*\)?)/gi,m=>m.replace(/[\r\n]+/g,''));
  // Markdown tables pasted with empty lines between header, delimiter and rows.
  let a=s.split('\n'),out=[];
  const pipe=x=>/^\s*\|.+\|\s*$/.test(x||'');
@@ -103,11 +83,31 @@ function hrcImageTokens(text){
     else if(text[j]===')'&&text[j-1]!=='\\'){if(depth===0){end=j;break}depth--}
    }
   }
+  if(end<0&&isData){
+   const tail=text.slice(start,start+2000000);
+   const match=/%3C%2Fsvg%3E/i.exec(tail);
+   if(match){
+    const after=start+match.index+match[0].length;
+    const rest=text.slice(after).match(/^[\s\\]*\)/);
+    if(rest)end=after+rest[0].length-1;
+    else{
+     // Missing Markdown closing ')' but SVG XML itself is complete.
+     const src=text.slice(start,after).replace(/\\([:()])/g,'$1').replace(/[\r\n]+/g,'').replace(/\s+/g,'');
+     if(/^data:image\/svg\+xml/i.test(src)){
+      const id=tokens.length;
+      tokens.push('<img loading="lazy" alt="SVG" src="'+escapeHtml(src)+'">');
+      output+='\uE000'+id+'\uE001';i=after;
+      if(typeof bvLog==='function')bvLog('HRC-SVG-010','Recovered complete encoded SVG without Markdown closing delimiter');
+      continue;
+     }
+    }
+   }
+  }
   if(end<0){if(isData&&typeof bvLog==='function')bvLog('HRC-SVG-009','SVG image closing delimiter missing');output+=text[i++];continue}
   let src=text.slice(start,end).trim();
   if(isData){
    if(/data\\:image/i.test(src)&&typeof bvLog==='function')bvLog('HRC-SVG-008','Recovered escaped data URI colon');
-   src=src.replace(/\\([:()])/g,'$1').replace(/\n/g,'');
+   src=src.replace(/\\([:()])/g,'$1').replace(/[\r\n]+/g,'').replace(/\s+/g,'');
   }
   if(!/^(?:data:image\/(?:svg\+xml|png|jpeg|webp|gif)|asset:\/\/|https?:\/\/|clipboard-image:\/\/)/i.test(src)){
    output+=text[i++];continue;
