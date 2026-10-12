@@ -116,7 +116,8 @@ function hrcImageTokens(text){
      if(j+1===text.length||/^\s*(?:\n|$)/.test(remainder)||/^[.,;!?，。；！]/.test(remainder)){end=j;break}
     }
    }
-  }else{
+  }
+  if(!isData && end<0){
    let depth=0;for(let j=start;j<text.length&&j<start+200000;j++){
     if(text[j]==='\n')break;
     if(text[j]==='('&&text[j-1]!=='\\')depth++;
