@@ -1834,11 +1834,13 @@ def reader_operation(note,event):
         original=lines[index]
         if selected not in original:
             st.error('選取內容與編輯文本不一致');return
-        if re.search(r'//\\[[^\\]\\n]+\\]//',original):
+        if re.search(r'//\[[^\]\n]+\]//',original):
             st.error('該行已包含目錄標記，請先取消');return
         # Preserve surrounding text and mark ONLY the selected substring.
         pos=original.index(selected)
         lines[index]=original[:pos]+'//['+selected+']//'+original[pos+len(selected):]
+        if re.match(r'^\s*#{1,6}\s+',lines[index]):
+            lines[index]=re.sub(r'^\s*#{1,6}\s+','',lines[index],count=1)
         updated=''.join(lines)
         update_note(note['id'],content=updated)
         st.session_state['block_content_'+note['id']]=updated
@@ -1847,7 +1849,7 @@ def reader_operation(note,event):
         st.rerun()
     elif event['action']=='untoc':
         original=lines[index]
-        matches=list(re.finditer(r'//\\[([^\\]\\n]+)\\]//',original))
+        matches=list(re.finditer(r'//\[([^\]\n]+)\]//',original))
         selected=str(event.get('selection') or '').strip()
         matching=[m for m in matches if selected in m.group(1) or m.group(1) in selected]
         if len(matching)!=1:
