@@ -22,7 +22,7 @@
 const editor=document.getElementById('editor'),raw=document.getElementById('raw'),status=document.getElementById('status');let images=[],revision=-1,source=false,lastFocus=-1,assetUrls={};
 function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')};function resize(){send('streamlit:setFrameHeight',{height:Math.min(document.body.scrollHeight+20,1000)})};function safe(s){return (s||'').replace(/\r/g,'').replace(/\u00a0/g,' ')};
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function inline(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase(),v=Array.from(n.childNodes).map(inline).join('');if(n.hasAttribute&&n.hasAttribute('data-math'))return n.getAttribute('data-display')==='block'?'\n\n$$'+n.getAttribute('data-math')+'$$\n\n':'$'+n.getAttribute('data-math')+'$';if(t==='br')return '\n';if(t==='img'){let src=n.getAttribute('data-ref')||n.getAttribute('src')||'';return '!['+(n.getAttribute('alt')||'圖片').replace(/[\[\]]/g,'')+']('+src+')'}if(t==='b'||t==='strong')return '**'+v+'**';if(t==='em'||t==='i')return '*'+v+'*';if(t==='code')return '`'+v.replace(/`/g,'\\`')+'`';if(t==='a'){let href=n.getAttribute('href')||'';return /^https?:/i.test(href)?'['+v+']('+href+')':v}if(t==='s'||t==='del')return '~~'+v+'~~';return v}
+function inline(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase(),v=Array.from(n.childNodes).map(inline).join('');if(n.hasAttribute&&n.hasAttribute('data-math'))return n.getAttribute('data-display')==='block'?'\n\n$$'+n.getAttribute('data-math')+'$$\n\n':'$'+n.getAttribute('data-math')+'$';if(t==='br')return '\n';if(n.classList&&n.classList.contains('missing-media'))return '\n\n❗ '+v+'\n\n';if(t==='img'){let src=n.getAttribute('data-ref')||n.getAttribute('src')||'';return '!['+(n.getAttribute('alt')||'圖片').replace(/[\[\]]/g,'')+']('+src+')'}if(t==='b'||t==='strong')return '**'+v+'**';if(t==='em'||t==='i')return '*'+v+'*';if(t==='code')return '`'+v.replace(/`/g,'\\`')+'`';if(t==='a'){let href=n.getAttribute('href')||'';return /^https?:/i.test(href)?'['+v+']('+href+')':v}if(t==='s'||t==='del')return '~~'+v+'~~';return v}
 function table(n){let rows=Array.from(n.querySelectorAll('tr')).map(r=>Array.from(r.children).filter(c=>/^(TD|TH)$/.test(c.tagName)).map(c=>inline(c).replace(/\|/g,'\\|').replace(/\n/g,' ')));let w=Math.max(0,...rows.map(r=>r.length));if(!w)return '';let fill=r=>Array.from({length:w},(_,i)=>r[i]||'');return '\n'+[fill(rows[0]),Array(w).fill('---'),...rows.slice(1).map(fill)].map(r=>'| '+r.join(' | ')+' |').join('\n')+'\n\n'}
 function block(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase();if(t==='table')return table(n);if(t==='img')return inline(n)+'\n\n';if(t==='pre')return '\n```\n'+safe(n.textContent).trimEnd()+'\n```\n\n';if(/^h[1-6]$/.test(t))return '\n'+'#'.repeat(Number(t[1]))+' '+inline(n).trim()+'\n\n';if(t==='ul'||t==='ol')return '\n'+Array.from(n.children).filter(c=>c.tagName==='LI').map((c,i)=>(t==='ul'?'- ':`${i+1}. `)+inline(c).trim()).join('\n')+'\n\n';if(t==='blockquote')return '\n'+inline(n).trim().split('\n').map(x=>'> '+x).join('\n')+'\n\n';if(t==='hr')return '\n---\n';if(['div','p','section','article'].includes(t))return '\n'+Array.from(n.childNodes).map(c=>c.nodeType===1&&/^(TABLE|PRE|UL|OL|DIV|P|SECTION|ARTICLE|H[1-6]|BLOCKQUOTE|IMG)$/.test(c.tagName)?block(c):inline(c)).join('')+'\n\n';return Array.from(n.childNodes).map(block).join('')}
 function markdown(){return block(editor).replace(/\n{3,}/g,'\n\n').trim()}
@@ -76,12 +76,58 @@ function updateToc(){let entries=tocEntries(),target=document.getElementById('to
 function focusHeading(index){let e=tocEntries()[index];if(!e)return;if(source){raw.focus();raw.setSelectionRange(e.offset,e.offset+e.title.length+6);let line=raw.value.slice(0,e.offset).split('\n').length-1;raw.scrollTop=Math.max(0,line*parseFloat(getComputedStyle(raw).lineHeight||'20')-raw.clientHeight/3)}else{let walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT),node;while((node=walker.nextNode())){if(node.textContent.includes(e.title)){node.parentElement.scrollIntoView({block:'center'});editor.focus();break}}}}
 function insertAtCaret(node){let s=window.getSelection();if(s&&s.rangeCount&&editor.contains(s.anchorNode)){let r=s.getRangeAt(0);r.deleteContents();r.insertNode(node);r.setStartAfter(node);r.collapse(true);s.removeAllRanges();s.addRange(r)}else editor.append(node)}
 function fileData(f){return new Promise((res,rej)=>{let reader=new FileReader();reader.onload=()=>res(reader.result);reader.onerror=rej;reader.readAsDataURL(f)})}
-function cleanPaste(html){let doc=new DOMParser().parseFromString(html,'text/html');doc.querySelectorAll('script,style,iframe,object,embed,form,link,meta').forEach(n=>n.remove());doc.querySelectorAll('*').forEach(n=>{for(let a of [...n.attributes]){if(a.name.startsWith('on')||['srcdoc','contenteditable'].includes(a.name))n.removeAttribute(a.name);if(['href','src'].includes(a.name)&&/^javascript:/i.test(a.value))n.removeAttribute(a.name)} });return doc.body.innerHTML}
+function cleanPaste(html){let doc=new DOMParser().parseFromString(html,'text/html');doc.querySelectorAll('script,iframe,object,embed,form,link,meta').forEach(n=>n.remove());doc.querySelectorAll('style').forEach(n=>{if(!n.closest('svg'))n.remove()});doc.querySelectorAll('*').forEach(n=>{for(let a of [...n.attributes]){if(a.name.startsWith('on')||['srcdoc','contenteditable'].includes(a.name))n.removeAttribute(a.name);if(['href','src'].includes(a.name)&&/^javascript:/i.test(a.value))n.removeAttribute(a.name)} });return doc.body.innerHTML}
 async function svgToPng(svg){try{const copy=svg.cloneNode(true);copy.setAttribute('xmlns','http://www.w3.org/2000/svg');let rect=svg.getBoundingClientRect();let vb=(svg.getAttribute('viewBox')||'').trim().split(/[ ,]+/).map(Number);let w=Math.max(1,Math.min(2400,Math.round(parseFloat(svg.getAttribute('width'))||rect.width||vb[2]||800)));let h=Math.max(1,Math.min(2400,Math.round(parseFloat(svg.getAttribute('height'))||rect.height||vb[3]||450)));copy.setAttribute('width',w);copy.setAttribute('height',h);const xml=new XMLSerializer().serializeToString(copy);const url=URL.createObjectURL(new Blob([xml],{type:'image/svg+xml'}));try{let im=new Image();await new Promise((ok,fail)=>{im.onload=ok;im.onerror=fail;im.src=url});let canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;canvas.getContext('2d').drawImage(im,0,0,w,h);return canvas.toDataURL('image/png')}finally{URL.revokeObjectURL(url)}}catch(e){return null}}
 function svgData(svg){let cp=svg.cloneNode(true);cp.setAttribute('xmlns','http://www.w3.org/2000/svg');return 'data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(new XMLSerializer().serializeToString(cp))))}
 function normalizeSvg(src){if(!/^data:image\/svg\+xml/i.test(src)||/;base64,/i.test(src))return src;let at=src.indexOf(',');if(at<0)return src;try{return 'data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(decodeURIComponent(src.slice(at+1)))))}catch(e){return src}}
 function registerImage(src,alt){let i=images.length;images.push({data:src});let im=document.createElement('img');im.src=src;im.alt=alt||'圖片';im.dataset.ref='clipboard-image://'+i;return im}
-editor.addEventListener('paste',async e=>{e.preventDefault();let cb=e.clipboardData,html=cb.getData('text/html'),txt=cb.getData('text/plain'),frag=document.createDocumentFragment();if(html){let wrapper=document.createElement('div');wrapper.innerHTML=cleanPaste(html);for(const svg of [...wrapper.querySelectorAll('svg')])svg.replaceWith(registerImage(svgData(svg),'SVG 圖表'));for(const im of [...wrapper.querySelectorAll('img')]){if(im.dataset.ref)continue;let src=normalizeSvg(im.getAttribute('src')||'');if(src.startsWith('data:image/'))im.replaceWith(registerImage(src,im.alt));else if(/^https:\/\//i.test(src)){im.addEventListener('error',()=>{im.replaceWith(Object.assign(document.createElement('span'),{className:'missing-media',textContent:'❗ 外部圖片載入失敗：'+src}))},{once:true})}else {let warning=document.createElement('span');warning.className='missing-media';warning.textContent='❗ 圖片來源缺失（原始參照：'+src.slice(0,180)+'）';im.replaceWith(warning)}}frag.append(wrapper)}else if(txt){let bits=txt.split(/(!\[[^\]\n]*\]\(data:image\/(?:svg\+xml|png|jpeg|webp|gif)[^\s]*?\))/gi);for(let bit of bits){let m=bit.match(/^!\[([^\]\n]*)\]\((data:image\/[\s\S]+)\)$/i);if(m){frag.append(registerImage(normalizeSvg(m[2]),m[1]||'GPT 圖片'))}else frag.append(document.createTextNode(bit))}}if(!html){for(const item of [...cb.items].filter(x=>x.kind==='file'&&x.type.startsWith('image/'))){let f=item.getAsFile();if(f&&f.size<=10*1024*1024)frag.append(registerImage(await fileData(f),f.name))}}insertAtCaret(frag);updateToc();status.textContent='已貼上 '+images.length+' 張待保存圖片；請先儲存，避免切換頁面造成資料遺失'});
+function warningNode(message){let el=document.createElement('span');el.className='missing-media';el.textContent='❗ '+message;return el}
+function cleanMathNodes(root){
+ for(const n of [...root.querySelectorAll('annotation[encoding="application/x-tex"]')]){
+  let host=n.closest('math');if(host){let display=host.getAttribute('display')==='block';let span=document.createElement('span');span.dataset.math=n.textContent;span.dataset.display=display?'block':'inline';span.className='math-render'+(display?' math-block':'');span.textContent=n.textContent;host.replaceWith(span)}
+ }
+ for(const n of [...root.querySelectorAll('[data-math],[data-tex],[data-latex]')]){
+  if(n.classList.contains('math-render'))continue;
+  let tex=n.getAttribute('data-math')||n.getAttribute('data-tex')||n.getAttribute('data-latex');
+  if(!tex)continue;let span=document.createElement('span');span.dataset.math=tex;span.dataset.display='inline';span.className='math-render';span.textContent=tex;n.replaceWith(span)
+ }
+}
+function parsePlainWithImages(txt){
+ let frag=document.createDocumentFragment(),rx=/!\[([^\]\n]*)\]\((data:image\/(?:svg\+xml|png|jpeg|webp|gif)[^\n]*?)\)(?=\s|$)/gi,last=0,m;
+ while((m=rx.exec(txt))){if(m.index>last)frag.append(document.createTextNode(txt.slice(last,m.index)));frag.append(registerImage(normalizeSvg(m[2]),m[1]||'GPT 圖表'));last=rx.lastIndex}
+ if(last<txt.length)frag.append(document.createTextNode(txt.slice(last)));return frag
+}
+editor.addEventListener('paste',async e=>{
+ e.preventDefault();const cb=e.clipboardData,html=cb.getData('text/html'),plain=cb.getData('text/plain'),frag=document.createDocumentFragment();
+ let before=images.length,missing=0;
+ try{
+  if(html){
+   let wrapper=document.createElement('div');wrapper.innerHTML=cleanPaste(html);cleanMathNodes(wrapper);
+   for(const svg of [...wrapper.querySelectorAll('svg')])svg.replaceWith(registerImage(svgData(svg),'SVG 圖表'));
+   for(const im of [...wrapper.querySelectorAll('img')]){
+    if(im.dataset.ref)continue;
+    const src=normalizeSvg(im.getAttribute('src')||'');
+    if(/^data:image\/(?:svg\+xml|png|jpeg|webp|gif)/i.test(src))im.replaceWith(registerImage(src,im.alt||'GPT 圖片'));
+    else if(/^https:\/\//i.test(src)){im.setAttribute('src',src);im.addEventListener('error',()=>im.replaceWith(warningNode('外部圖片無法載入：'+src)),{once:true})}
+    else{missing++;im.replaceWith(warningNode('剪貼簿未提供圖片資料：'+(im.alt||src||'未知圖片')))}
+   }
+   // HTML can contain no actual image, while plain text still carries a Markdown data URI.
+   if(images.length===before&&/!\[[^\]]*\]\(data:image\//i.test(plain)){
+    let plainFragment=parsePlainWithImages(plain);frag.append(plainFragment)
+   }else frag.append(...wrapper.childNodes);
+  }else if(plain){frag.append(parsePlainWithImages(plain))}
+  for(const item of [...cb.items].filter(x=>x.kind==='file'&&x.type.startsWith('image/'))){
+   if(images.length>before)break;
+   let f=item.getAsFile();if(f&&f.size<=10*1024*1024)frag.append(registerImage(await fileData(f),f.name||'圖片'))
+  }
+  if(source){
+   // Serialize the pasted HTML structure as Markdown, preserving tables and math.
+   const host=document.createElement('div');host.append(frag);raw.setRangeText(block(host),raw.selectionStart,raw.selectionEnd,'end');
+  }else insertAtCaret(frag);
+  updateToc();renderMath();
+  status.textContent='貼上完成：'+(images.length-before)+' 張圖片待儲存'+(missing?'，❗ '+missing+' 個圖片來源缺失':'')+'。請儲存後重新開啟確認。';
+ }catch(err){status.textContent='❗ 貼上處理失敗：'+String(err);if(plain){if(source)raw.setRangeText(plain,raw.selectionStart,raw.selectionEnd,'end');else insertAtCaret(document.createTextNode(plain))}}
+});
 document.getElementById('uploadImage').onclick=()=>document.getElementById('imageFile').click();
 document.getElementById('imageFile').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;if(f.size>10*1024*1024){status.textContent='圖片不得超過 10 MB';return}const data=await fileData(f),i=images.length;images.push({data});const img=document.createElement('img');img.src=data;img.alt=f.name||'圖片';img.dataset.ref='clipboard-image://'+i;if(source){raw.value+='\n\n!['+(f.name||'圖片').replace(/[\[\]]/g,'')+'](clipboard-image://'+i+')\n';}else insertAtCaret(img);e.target.value='';updateToc();status.textContent='圖片已插入，請儲存圖文文件'};
 function resolveAssetImages(){editor.querySelectorAll('img').forEach(im=>{let ref=im.dataset.ref||im.getAttribute('src')||'';let m=ref.match(/^asset:\/\/([0-9a-f-]{36})$/i);if(m){im.dataset.ref=ref;im.src=assetUrls[m[1]]||'';}})}
