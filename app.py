@@ -1660,6 +1660,12 @@ if needs_assets:
     except Exception:
         logging.getLogger(__name__).exception('Asset list failed')
 
+# Map persisted asset references to browser-readable signed URLs for the rich editor.
+# The Markdown source retains asset:// identifiers, never expiring URLs.
+def composite_asset_urls(content):
+    ids=set(re.findall(r'asset://([0-9a-fA-F-]{36})',str(content or '')))
+    return {aid:url for aid in ids if (url:=asset_url(aid,assets))}
+
 # 本地備份與關閉操作保留在 Explorer 右鍵選單；不在編輯頁面頂部顯示。
 
 read_id=st.session_state.get('full_read_id')
@@ -1743,7 +1749,7 @@ if full_id and full_id in byid:
     if full_note['kind']=='COMPOSITE':
         text_key='block_content_'+full_id
         current=str(st.session_state.get(text_key,original) or '')
-        event=composite_component(content=current,revision=st.session_state.get('_composite_rev_'+full_id,0),focusHeading=st.session_state.get('_composite_toc_target_'+full_id,-1),key='focus_composite_'+full_id,default=None)
+        event=composite_component(content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+full_id,0),focusHeading=st.session_state.get('_composite_toc_target_'+full_id,-1),key='focus_composite_'+full_id,default=None)
         if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_focus_composite_nonce_'+full_id):
             st.session_state['_focus_composite_nonce_'+full_id]=event.get('nonce')
             if event.get('action')=='headings':
@@ -1845,7 +1851,7 @@ else:
         if block['kind']=='COMPOSITE':
             text_key='block_content_'+block['id']
             current=st.session_state.get(text_key,block.get('content') or '')
-            event=composite_component(content=current,revision=st.session_state.get('_composite_rev_'+block['id'],0),key='composite_'+block['id'],default=None)
+            event=composite_component(content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+block['id'],0),key='composite_'+block['id'],default=None)
             if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_composite_nonce_'+block['id']):
                 st.session_state['_composite_nonce_'+block['id']]=event.get('nonce')
                 if event.get('action')=='save':
