@@ -374,7 +374,7 @@ def image_bytes(raw):
             if not math.isfinite(width) or not math.isfinite(height) or width<=0 or height<=0 or width*height>25_000_000:raise ValueError('SVG 尺寸無效或過大')
             return ET.tostring(root,encoding='utf-8'),'image/svg+xml','svg'
         except ValueError:raise
-        except Exception as exc:raise ValueError('SVG 圖表格式無效，請改用 PNG 截圖後貼上') from exc
+        except Exception as exc:raise ValueError('HRC-SVG-002: SVG 圖表格式無效，請檢查原始碼或改用 PNG') from exc
     im=Image.open(io.BytesIO(raw))
     if im.width*im.height>25_000_000:raise ValueError('圖片像素過大')
     im=ImageOps.exif_transpose(im)
@@ -1768,13 +1768,27 @@ def with_editor_mode(content,mode):
     return content
 def save_composite_event(note_id,event):
     converted=str(event.get('markdown',''))
-    for i,item in enumerate(event.get('images',[])):
-        data=item.get('data','')
-        if not data.startswith('data:image/') or ';base64,' not in data:raise ValueError('圖片資料不完整，已中止儲存')
-        raw=base64.b64decode(data.split(';base64,',1)[1],validate=True)
-        aid=upload_image(raw,note_id)
+    image_items=event.get('images',[])
+    if not isinstance(image_items,list):raise ValueError('HRC-SAVE-001: 圖片資料清單格式無效')
+    references={int(i) for i in re.findall(r'clipboard-image://(\d+)(?!\d)',converted)}
+    if any(i>=len(image_items) for i in references):
+        raise ValueError('HRC-SAVE-002: 文件引用的圖片未包含於提交資料')
+    uploaded_by_digest={}
+    for i in sorted(references):
+        item=image_items[i]
+        data=item.get('data','') if isinstance(item,dict) else ''
+        if not data.startswith('data:image/') or ';base64,' not in data:
+            raise ValueError(f'HRC-SAVE-003: 圖片 {i} 資料不完整')
+        try:raw=base64.b64decode(data.split(';base64,',1)[1],validate=True)
+        except Exception as exc:raise ValueError(f'HRC-SAVE-004: 圖片 {i} Base64 解碼失敗') from exc
+        import hashlib
+        digest=hashlib.sha256(raw).hexdigest()
+        if digest not in uploaded_by_digest:
+            try:uploaded_by_digest[digest]=upload_image(raw,note_id)
+            except Exception as exc:raise ValueError(f'HRC-SAVE-005: 圖片 {i} 上傳失敗：{exc}') from exc
+        aid=uploaded_by_digest[digest]
         converted=re.sub(r'clipboard-image://'+str(i)+r'(?![0-9])','asset://'+aid,converted)
-    if re.search(r'clipboard-image://\d+',converted):raise ValueError('有圖片尚未上傳，已中止儲存')
+    if re.search(r'clipboard-image://\d+',converted):raise ValueError('HRC-SAVE-006: 存在尚未處理的圖片引用')
     converted=with_editor_mode(converted,'HRC')
     update_note(note_id,content=converted)
     return converted
@@ -1964,7 +1978,7 @@ if full_id and full_id in byid:
                         st.session_state.pop(draft_key,None)
                     st.success('圖文文件已儲存')
                     st.rerun()
-                except Exception as exc:st.error('圖文文件儲存失敗，仍保留編輯畫面：'+str(exc))
+                except Exception as exc:st.error('HRC-SAVE-007 圖文文件儲存失敗，仍保留編輯畫面：'+str(exc))
     elif full_note['kind'] in ('MARKDOWN','SUBFILE','GROUP'):
         st.text_area('內容',key=draft_key,height=560,label_visibility='collapsed',placeholder='開始輸入內容…')
     elif full_note['kind']=='GRAPH':image_editor(full_note,assets,full_id)
