@@ -995,7 +995,7 @@ with st.sidebar:
 
     st.caption('右鍵操作 · 拖曳移動 · F2 · Delete / Ctrl+D 刪除 · Ctrl+C/V/X')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
-    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',st.session_state.get('block_content_'+n['id'],n.get('content') or '')) if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
+    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',(n.get('content') or '')) if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
     if event and event.get('event_id')!=st.session_state.get('last_explorer_event'):
         st.session_state.last_explorer_event=event.get('event_id')
@@ -1786,13 +1786,13 @@ def reader_operation(note,event):
         # Replace the actual source line with a marker instead of inserting a duplicate heading.
         original=lines[index].rstrip('\r\n')
         lines[index]='//['+original.strip().removeprefix('#').strip().replace(']','')+']//'+('\n' if lines[index].endswith('\n') else '')
-        update_note(note['id'],content=''.join(lines));st.session_state['block_content_'+note['id']]=''.join(lines);st.success('目錄已寫入編輯文本');st.rerun()
+        update_note(note['id'],content=''.join(lines));st.session_state['block_content_'+note['id']]=''.join(lines);st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{});st.rerun()
     elif event['action']=='untoc':
         match=re.match(r'^(\s*)//\[([^\]\n]+)\]//(\s*)$',lines[index].rstrip('\r\n'))
         if not match:
             st.error('選取的文字不是目錄標記');return
         lines[index]=match.group(1)+match.group(2)+('\n' if lines[index].endswith('\n') else '')
-        update_note(note['id'],content=''.join(lines));st.session_state['block_content_'+note['id']]=''.join(lines);st.success('已取消目錄');st.rerun()
+        update_note(note['id'],content=''.join(lines));st.session_state['block_content_'+note['id']]=''.join(lines);st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{});st.rerun()
     else:
         if split_meta(content):st.error('此文件已有未還原的分割紀錄，請先還原');return
         upper=''.join(lines[:index+1]);lower=''.join(lines[index+1:])
@@ -1852,7 +1852,7 @@ def show_reader_image_upload(note):
 
 def show_composite_reader(note):
     content=note.get('content') or ''
-    event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),key='reader_'+note['id'],default=None)
+    event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
     reader_operation(note,event)
     show_reader_image_upload(note)
 
