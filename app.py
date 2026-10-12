@@ -667,6 +667,7 @@ def show_markdown(content,assets):
     # Also normalize inline section markers; browsing must never expose //[...]//.
     content=re.sub(r'//\[([^\]\n]+)\]//',lambda m:m.group(1).strip(),content)
     # Streamlit Markdown renders standard LaTeX $...$ and $$...$$.
+    content=content.replace('\\$', '$')
     content=re.sub(r'\\\[([\s\S]*?)\\\]',lambda m:'\n\n$$'+m.group(1)+'$$\n\n',content)
     content=re.sub(r'\\\((.*?)\\\)',lambda m:'$'+m.group(1)+'$',content)
     # Resolve private asset identifiers without embedding unsafe HTML.

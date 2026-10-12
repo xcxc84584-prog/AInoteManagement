@@ -141,12 +141,18 @@ function hrcImageTokens(text){
  }
  return {prepared:output,tokens};
 }
+function bvInlineMathTokens(str){
+ const tokens=[];
+ const prepared=String(str).replace(/(?<!\\)\$\$([^\n]+?)\$\$/g,(_,tex)=>{let id=tokens.length;tokens.push(mathMarkup(tex.trim(),true));return '\uE100'+id+'\uE101'});
+ return {prepared,tokens};
+}
 function hrcInline(str){
+ const mathTokens=bvInlineMathTokens(str);str=mathTokens.prepared;
  const x=hrcImageTokens(String(str));
  return x.prepared.split(/(\\\([\s\S]*?\\\)|(?<!\\)\$(?!\$)[^\n$]+?(?<!\\)\$)/g).map(part=>{
   if(part.startsWith('\\(')&&part.endsWith('\\)'))return mathMarkup(part.slice(2,-2),false);
   if(part.startsWith('$')&&part.endsWith('$')&&part.length>2)return mathMarkup(part.slice(1,-1),false);
-  return escapeHtml(part).replace(/\uE000(\d+)\uE001/g,(_,id)=>x.tokens[Number(id)]||'')
+  return escapeHtml(part).replace(/\uE100(\d+)\uE101/g,(_,id)=>mathTokens.tokens[Number(id)]||'').replace(/\uE000(\d+)\uE001/g,(_,id)=>x.tokens[Number(id)]||'')
    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g,'<em>$1</em>')
    .replace(/`([^`]+)`/g,'<code>$1</code>');
