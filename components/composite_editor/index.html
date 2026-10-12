@@ -218,19 +218,23 @@ function renderMarkdown(md){
   let line=lines[i];
   if(line.startsWith('```')){if(inCode){out.push('<pre><code>'+escapeHtml(code.join('\n'))+'</code></pre>');code=[]}inCode=!inCode;continue}
   if(inCode){code.push(line);continue}
-  // BV 6.2.1: safely render HTML img with SVG data URI, including loading=lazy.
+  // v6.2.6: HTML image nodes, including asset://, HTTPS and SVG.
+  // Preserve only validated src and alt attributes; never execute pasted HTML.
   if(/<img\b/i.test(line)){
-   const htmlImages=line.match(/<img\b[^>]*>/gi)||[];
-   let safe=line;
-   for(const tag of htmlImages){
-    const dom=new DOMParser().parseFromString(tag,'text/html');const img=dom.querySelector('img');
-    let uri=(img?.getAttribute('src')||'').replace(/^data\\:/i,'data:').replace(/&amp;/g,'&');
-    if(/^data:image\/svg\+xml(?:;[^,]*)?,/i.test(uri)){
-     const loading=img?.getAttribute('loading')==='lazy'?'lazy':'eager';
-     safe=safe.replace(tag,'<img loading="'+loading+'" decoding="async" alt="'+escapeHtml(img?.getAttribute('alt')||'SVG')+'" src="'+escapeHtml(uri)+'">');
-    }else safe=safe.replace(tag,escapeHtml(tag));
+   const tags=line.match(/<img\b[^>]*>/gi)||[];
+   if(tags.length){
+    const safe=line.replace(/<img\b[^>]*>/gi,tag=>{
+     const im=new DOMParser().parseFromString(tag,'text/html').querySelector('img');
+     const url=(im?.getAttribute('src')||'').replace(/^data\:/i,'data:');
+     if(!/^(?:asset:\/\/[0-9a-f-]{36}|data:image\/(?:svg\+xml|png|jpeg|gif|webp)(?:;[^,]*)?,|https?:\/\/)/i.test(url))return escapeHtml(tag);
+     const alt=im?.getAttribute('alt')||'圖片';
+     return '<img loading="eager" decoding="async" alt="'+escapeHtml(alt)+'" src="'+escapeHtml(url)+'">';
+    });
+    if(tags.length===1&&line.trim()===tags[0]){out.push('<div class="bv-html-image">'+safe+'</div>');continue}
+    // Mixed text and HTML images: preserve image tags and escape all other text.
+    const bits=safe.split(/(<img\b[^>]*>)/gi);
+    out.push('<div>'+bits.map(b=>/^<img\b/i.test(b)?b:hrcInline(b)).join('')+'</div>');continue;
    }
-   if(htmlImages.length===1 && line.trim()===htmlImages[0] && /^<img\b/i.test(safe.trim())){out.push('<div class="bv-svg-html">'+safe+'</div>');continue}
   }
 
   // A complete $$...$$ display block is recognized before generic Markdown.
@@ -483,9 +487,9 @@ raw.addEventListener('paste',async e=>{
 });
 document.getElementById('uploadImage').onclick=()=>document.getElementById('imageFile').click();
 document.getElementById('imageFile').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;if(f.size>10*1024*1024){status.textContent='圖片不得超過 10 MB';return}const data=await fileData(f),i=images.length;images.push({data});const img=document.createElement('img');img.src=data;img.alt=f.name||'圖片';img.dataset.ref='clipboard-image://'+i;if(source){raw.value+='\n\n!['+(f.name||'圖片').replace(/[\[\]]/g,'')+'](clipboard-image://'+i+')\n';}else insertAtCaret(img);e.target.value='';updateToc();status.textContent='圖片已插入，請儲存圖文文件'};
-function resolveAssetImages(){editor.querySelectorAll('img').forEach(im=>{let ref=im.dataset.ref||im.getAttribute('src')||'';let m=ref.match(/^asset:\/\/([0-9a-f-]{36})$/i);if(m){im.dataset.ref=ref;im.src=assetUrls[m[1]]||'';}})}
+function resolveAssetImages(){editor.querySelectorAll('img').forEach(im=>{let ref=im.dataset.ref||im.getAttribute('src')||'';let m=ref.match(/^asset:\/\/([0-9a-f-]{36})$/i);if(m){im.dataset.ref=ref;if(assetUrls[m[1]])im.src=assetUrls[m[1]];}})}
 function restore(md){images=[];md=String(md||'').replace(/^<!-- bv-editor-mode:(?:HRC|COM|MD) -->\n?/,'');editor.innerHTML=renderMarkdown(md);
- editor.querySelectorAll('img').forEach(im=>{const src=im.getAttribute('src')||'';const match=src.match(/^asset:\/\/([0-9a-f-]{36})$/i);if(match){im.dataset.ref=src;im.src=assetUrls[match[1]]||'';if(!assetUrls[match[1]]){im.alt='❗ 圖片資源缺失：'+match[1];im.classList.add('missing-image')}}});
+ editor.querySelectorAll('img').forEach(im=>{const src=im.getAttribute('src')||'';const match=src.match(/^asset:\/\/([0-9a-f-]{36})$/i);if(match){im.dataset.ref=src;if(assetUrls[match[1]])im.src=assetUrls[match[1]];if(!assetUrls[match[1]]){im.alt='❗ 圖片資源缺失：'+match[1];im.classList.add('missing-image')}}});
  renderMath();raw.value=md;lastHeadings=JSON.stringify([...md.matchAll(/\/\/\[([^\]\n]+)\]\/\//g)].map(m=>m[1].trim()));updateToc()}
 function syncMarkdown(){
  let clone=editor.cloneNode(true);
@@ -638,92 +642,75 @@ const BV62=(()=>{
 })();
 BV62.init();
 
-</script><script>
-
-/* BV-Text v6.2.5 media persistence: per-browser IndexedDB, optional local directory. */
-(function(){
+</script>
+<script>
+/* BV-Text 6.2.6 persistent media recovery */
+(()=>{
 'use strict';
-const DB='bv-text-media-v625', STORE='media';
-let folder=null, busy=new Set();
-function db(){return new Promise((ok,fail)=>{const q=indexedDB.open(DB,1);q.onupgradeneeded=()=>q.result.createObjectStore(STORE,{keyPath:'url'});q.onsuccess=()=>ok(q.result);q.onerror=()=>fail(q.error)})}
-async function record(url){const d=await db();return new Promise((ok,fail)=>{const t=d.transaction(STORE,'readonly');const q=t.objectStore(STORE).get(url);q.onsuccess=()=>ok(q.result);q.onerror=()=>fail(q.error);t.oncomplete=()=>d.close()})}
-async function put(item){const d=await db();return new Promise((ok,fail)=>{const t=d.transaction(STORE,'readwrite');t.objectStore(STORE).put(item);t.oncomplete=()=>{d.close();ok()};t.onerror=()=>fail(t.error)})}
-async function digest(url){const bytes=new TextEncoder().encode(url);const hash=await crypto.subtle.digest('SHA-256',bytes);return [...new Uint8Array(hash)].map(x=>x.toString(16).padStart(2,'0')).join('')}
-function mimeExt(type){return /svg/i.test(type)?'.svg':/png/i.test(type)?'.png':/webp/i.test(type)?'.webp':/gif/i.test(type)?'.gif':/jpeg|jpg/i.test(type)?'.jpg':'.bin'}
-async function writeFolder(item){if(!folder)return;const name=(await digest(item.url))+mimeExt(item.blob.type);const f=await folder.getFileHandle(name,{create:true});const w=await f.createWritable();await w.write(item.blob);await w.close()}
-async function load(url){
- if(!url||/^blob:|^asset:|^clipboard-image:/i.test(url))return null;
- const saved=await record(url).catch(()=>null);if(saved?.blob)return saved;
- if(!/^data:image\//i.test(url)&&!/^https?:\/\//i.test(url))return null;
- let blob;
- try{
-  if(/^data:/i.test(url)){
-   const response=await fetch(url);blob=await response.blob();
-  }else{
-   // Cross-origin images are cacheable only when the origin permits CORS.
-   const response=await fetch(url,{mode:'cors',credentials:'omit',redirect:'follow'});
-   if(!response.ok)throw Error('HTTP '+response.status);
-   blob=await response.blob();
-  }
-  if(!blob.type.startsWith('image/')||blob.size>15*1024*1024||!blob.size)throw Error('invalid image or over 15MB');
-  if(/svg/i.test(blob.type)){
-   const xml=await blob.text();const doc=new DOMParser().parseFromString(xml,'image/svg+xml');
-   if(doc.querySelector('parsererror')||doc.documentElement.localName!=='svg')throw Error('invalid SVG');
-   doc.querySelectorAll('script,foreignObject,iframe,object,embed,link').forEach(x=>x.remove());
-   doc.querySelectorAll('*').forEach(el=>[...el.attributes].forEach(a=>{
-    if(/^on/i.test(a.name)||(/^(href|xlink:href)$/i.test(a.name)&&!a.value.startsWith('#'))||(/url\s*\(/i.test(a.value)&&!/url\s*\(\s*#/.test(a.value)))el.removeAttribute(a.name);
-   }));
-   blob=new Blob([new XMLSerializer().serializeToString(doc.documentElement)],{type:'image/svg+xml'});
-  }
-  const item={url,blob,time:Date.now()};await put(item);await writeFolder(item).catch(()=>{});
-  return item;
- }catch(e){return null}
+const DB='bv-text-media-v626',STORE='images';
+let folder=null;
+const pending=new Map(),shown=new WeakMap();
+function openDB(){return new Promise((ok,no)=>{const r=indexedDB.open(DB,1);r.onupgradeneeded=()=>r.result.createObjectStore(STORE,{keyPath:'key'});r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)})}
+async function get(key){const d=await openDB();return new Promise((ok,no)=>{const r=d.transaction(STORE).objectStore(STORE).get(key);r.onsuccess=()=>{ok(r.result);d.close()};r.onerror=()=>{no(r.error);d.close()}})}
+async function put(key,blob){const d=await openDB();return new Promise((ok,no)=>{const t=d.transaction(STORE,'readwrite');t.objectStore(STORE).put({key,blob,time:Date.now()});t.oncomplete=()=>{d.close();ok()};t.onerror=()=>{d.close();no(t.error)}})}
+function valid(blob){return blob&&blob.size>0&&blob.size<=15*1024*1024&&/^image\/(?:png|jpeg|gif|webp|svg\+xml)$/.test(blob.type)}
+async function fetchBlob(url){
+ if(!/^(?:data:image\/|https?:\/\/)/i.test(url))return null;
+ try{const r=await fetch(url,{mode:'cors',credentials:'omit'});if(!r.ok)return null;const b=await r.blob();return valid(b)?b:null}catch{return null}
 }
-const active=new WeakMap();
-async function persistImage(im){
+async function acquire(key,url){
+ if(pending.has(key))return pending.get(key);
+ const promise=(async()=>{
+  const cached=await get(key).catch(()=>null);
+  if(cached?.blob)return cached.blob;
+  const blob=await fetchBlob(url);
+  if(blob)await put(key,blob).catch(()=>{});
+  return blob;
+ })();
+ pending.set(key,promise);try{return await promise}finally{pending.delete(key)}
+}
+async function digest(s){const a=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return Array.from(new Uint8Array(a),x=>x.toString(16).padStart(2,'0')).join('')}
+async function write(key,blob){if(!folder)return;const ext=blob.type==='image/svg+xml'?'svg':blob.type==='image/jpeg'?'jpg':blob.type.split('/')[1]||'bin';const name=(await digest(key))+'.'+ext;const file=await folder.getFileHandle(name,{create:true});const w=await file.createWritable();await w.write(blob);await w.close()}
+async function recover(im,urls={}){
  if(!im.isConnected)return;
- const url=im.dataset.bvOriginalSrc||im.getAttribute('src')||'';
- if(!url||busy.has(url)||/^asset:|^clipboard-image:|^blob:/i.test(url))return;
- busy.add(url);
+ const original=im.dataset.ref||im.dataset.bvOriginalSrc||im.getAttribute('src')||'';
+ if(!original||/^blob:/i.test(original))return;
+ const id=original.match(/^asset:\/\/([0-9a-f-]{36})$/i);
+ const key=id?'asset:'+id[1].toLowerCase():'url:'+original;
+ const resolved=id?(urls[id[1]]||urls[id[1].toLowerCase()]||''):original;
+ if(!resolved&&!id)return;
+ if(im.dataset.bvCacheKey===key&&shown.has(im))return;
+ const blob=await acquire(key,resolved);
+ if(!blob||!im.isConnected)return;
+ const old=shown.get(im);if(old)URL.revokeObjectURL(old);
+ const objectUrl=URL.createObjectURL(blob);
+ shown.set(im,objectUrl);im.dataset.bvCacheKey=key;
+ im.dataset.bvOriginalSrc=original;im.src=objectUrl;im.loading='eager';
+ if(folder)write(key,blob).catch(()=>{});
+}
+function scan(root=document,urls={}){
+ if(root.matches?.('img'))recover(root,urls).catch(()=>{});
+ root.querySelectorAll?.('img').forEach(im=>recover(im,urls).catch(()=>{}));
+}
+async function choose(){
+ if(!window.showDirectoryPicker){alert('此瀏覽器／嵌入框架無法授權資料夾；IndexedDB 快取仍可使用。');return}
  try{
-  const item=await load(url);
-  if(item&&im.isConnected){
-   const previous=active.get(im);if(previous)URL.revokeObjectURL(previous);
-   const local=URL.createObjectURL(item.blob);active.set(im,local);
-   im.dataset.bvOriginalSrc=url;im.src=local;
-   im.loading='eager';
-  }
- }finally{busy.delete(url)}
+  folder=await window.showDirectoryPicker({mode:'readwrite',id:'bv-text-media'});
+  const d=await openDB();const items=await new Promise((ok,no)=>{const q=d.transaction(STORE).objectStore(STORE).getAll();q.onsuccess=()=>{ok(q.result);d.close()};q.onerror=()=>{no(q.error);d.close()}});
+  let n=0;for(const it of items){try{await write(it.key,it.blob);n++}catch{}}
+  alert('已將 '+n+' 張快取圖片寫入本地資料夾。');
+ }catch(e){if(e.name!=='AbortError')alert('資料夾操作失敗：'+e.message)}
 }
-function scan(root=document){
- root.querySelectorAll('img').forEach(im=>persistImage(im).catch(()=>{}));
-}
-const observer=new MutationObserver(changes=>{
- for(const change of changes)for(const node of change.addedNodes){
-  if(node.nodeType!==1)continue;
-  if(node.matches?.('img'))persistImage(node).catch(()=>{});
-  else scan(node);
- }
-});
 function init(){
- scan();observer.observe(document.body,{childList:true,subtree:true});
- const btn=document.createElement('button');
- btn.type='button';btn.id='bv-media-folder-button';btn.textContent='圖片本地資料夾';
- btn.title='授權資料夾後，將已成功擷取的圖片與 SVG 寫入該資料夾；瀏覽器仍保留 IndexedDB 快取';
- btn.style.cssText='position:fixed;bottom:8px;right:8px;z-index:2147483000;background:#25364c;color:#fff;border:1px solid #57718c;border-radius:6px;padding:5px 8px;font-size:12px;opacity:.85;cursor:pointer';
- btn.onclick=async()=>{
-  if(!window.showDirectoryPicker){alert('目前瀏覽器或嵌入元件不支援直接選取資料夾。圖片仍會儲存在此瀏覽器的 IndexedDB。');return}
-  try{
-   folder=await showDirectoryPicker({mode:'readwrite',id:'bv-text-media'});
-   const d=await db();const items=await new Promise((ok,fail)=>{const t=d.transaction(STORE,'readonly');const q=t.objectStore(STORE).getAll();q.onsuccess=()=>ok(q.result);q.onerror=()=>fail(q.error);t.oncomplete=()=>d.close()});
-   let count=0;for(const item of items){try{await writeFolder(item);count++}catch(e){}}
-   btn.textContent='資料夾已授權';alert('已寫入 '+count+' 張已快取圖片。之後載入的圖片將同步存入資料夾。');
-  }catch(e){if(e.name!=='AbortError')alert('資料夾授權失敗：'+e.message+'。仍可使用 IndexedDB 快取。')}
- };
- document.body.appendChild(btn);
+ scan();
+ const observer=new MutationObserver(records=>{for(const r of records)for(const n of r.addedNodes){if(n.nodeType===1)scan(n)}});
+ observer.observe(document.body,{childList:true,subtree:true});
+ const btn=document.createElement('button');btn.type='button';btn.textContent='圖片本地資料夾';
+ btn.style.cssText='position:fixed;right:8px;bottom:8px;z-index:99999;padding:6px 9px;border:1px solid #567;background:#243448;color:white;border-radius:6px;cursor:pointer';
+ btn.onclick=choose;document.body.append(btn);
 }
+window.BVMedia626={scan,recover};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
-window.BVMedia625={scan,load};
 })();
 
 </script>
