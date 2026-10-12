@@ -54,10 +54,19 @@ function table(n){let rows=Array.from(n.querySelectorAll('tr')).map(r=>Array.fro
 function block(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase();if(n.hasAttribute&&n.hasAttribute('data-math'))return inline(n);if(t==='table')return table(n);if(t==='svg')return inline(n)+'\n\n';if(t==='img')return inline(n)+'\n\n';if(t==='pre')return '\n```\n'+safe(n.textContent).trimEnd()+'\n```\n\n';if(/^h[1-6]$/.test(t))return '\n'+'#'.repeat(Number(t[1]))+' '+inline(n).trim()+'\n\n';if(t==='ul'||t==='ol')return '\n'+Array.from(n.children).filter(c=>c.tagName==='LI').map((c,i)=>(t==='ul'?'- ':`${i+1}. `)+inline(c).trim()).join('\n')+'\n\n';if(t==='blockquote')return '\n'+inline(n).trim().split('\n').map(x=>'> '+x).join('\n')+'\n\n';if(t==='hr')return '\n---\n';if(['div','p','section','article'].includes(t))return '\n'+Array.from(n.childNodes).map(c=>c.nodeType===1&&/^(TABLE|PRE|UL|OL|DIV|P|SECTION|ARTICLE|H[1-6]|BLOCKQUOTE|IMG)$/.test(c.tagName)?block(c):inline(c)).join('')+'\n\n';return Array.from(n.childNodes).map(block).join('')}
 function markdown(){return block(editor).replace(/\n{3,}/g,'\n\n').trim()}
 let katexReady=false;
-function renderMath(){if(!window.katex)return;document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{try{window.katex.render(el.dataset.math,el,{throwOnError:false,displayMode:el.dataset.display==='block',strict:'ignore',trust:false})}catch(e){bvLog('HRC-MATH-002',e);el.textContent=el.dataset.math}})}
+function renderMath(){if(!window.katex)return;document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{try{window.katex.render(el.dataset.math,el,{throwOnError:true,displayMode:el.dataset.display==='block',strict:'ignore',trust:false})}catch(e){bvLog('HRC-MATH-002',e);el.textContent=el.dataset.math}})}
 function loadKatex(){if(window.katex){katexReady=true;renderMath();return}const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js';sc.onload=()=>{katexReady=true;renderMath()};sc.onerror=()=>{bvLog('HRC-MATH-001','KaTeX CDN failed');status.hidden=false;status.textContent='❗ 數學渲染器未載入；已保留 LaTeX 原始碼'};document.head.appendChild(sc)}
 function mathFallback(){document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{if(el.dataset.rendered==='yes')return;el.title='LaTeX 原始碼：'+el.dataset.math;el.style.whiteSpace='pre-wrap';el.style.overflowWrap='anywhere';});}
-function mathMarkup(expr,display){return '<span class="math-render'+(display?' math-block':'')+'" contenteditable="false" data-math="'+escapeHtml(expr)+'" data-display="'+(display?'block':'inline')+'">'+escapeHtml(expr)+'</span>'}
+function bvMathNormalizeNested(source){
+ // Render-only normalization: the saved Markdown and clipboard remain untouched.
+ // Only unwrap complete paired display delimiters, outside fenced code blocks.
+ return String(source||'').split(/(```[\s\S]*?```|~~~[\s\S]*?~~~)/g).map((part,index)=>{
+  if(index%2)return part;
+  return part.replace(/\\\[\s*\$\$([\s\S]*?)\$\$\s*\\\]/g,(_whole,tex)=>'$$'+tex+'$$')
+   .replace(/\$\$\s*\\\[([\s\S]*?)\\\]\s*\$\$/g,(_whole,tex)=>'$$'+tex+'$$');
+ }).join('');
+}
+function mathMarkup(expr,display){expr=String(expr).replace(/^\s*\$\$([\s\S]*?)\$\$\s*$/, '$1').trim();return '<span class="math-render'+(display?' math-block':'')+'" contenteditable="false" data-math="'+escapeHtml(expr)+'" data-display="'+(display?'block':'inline')+'">'+escapeHtml(expr)+'</span>'}
 // Shared HRC 5.0.1 renderer: same implementation in editor and reader.
 // Mobile ChatGPT clipboard math normalization. Do not alter fenced code.
 
@@ -158,26 +167,52 @@ function hrcImageTokens(text){
  return {prepared:output,tokens};
 }
 function bvInlineMathTokens(str){return {prepared:String(str),tokens:[]}}
+function bvMathSegments(str){
+ const pattern=/(\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]|\\\(([\s\S]*?)\\\))/g;
+ let out=[],last=0,m;
+ while((m=pattern.exec(str))){
+  if(m.index>last)out.push({text:str.slice(last,m.index)});
+  out.push({math:m[2]??m[3]??m[4],display:m[2]!==undefined||m[3]!==undefined});last=pattern.lastIndex;
+ }
+ if(last<str.length)out.push({text:str.slice(last)});
+ return out;
+}
+
 function hrcInline(str){
- const mathTokens=bvInlineMathTokens(str);str=mathTokens.prepared;
- const x=hrcImageTokens(String(str));
- return x.prepared.split(/(\\\([\s\S]*?\\\))/g).map(part=>{
-  if(part.startsWith('\\(')&&part.endsWith('\\)'))return mathMarkup(part.slice(2,-2),false);
-  
-  return escapeHtml(part).replace(/\uE100(\d+)\uE101/g,(_,id)=>mathTokens.tokens[Number(id)]||'').replace(/\uE000(\d+)\uE001/g,(_,id)=>x.tokens[Number(id)]||'')
-   .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
-   .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g,'<em>$1</em>')
-   .replace(/`([^`]+)`/g,'<code>$1</code>');
+ return bvMathSegments(String(str)).map(seg=>{
+  if(seg.math!==undefined)return mathMarkup(seg.math.trim(),seg.display);
+  const x=hrcImageTokens(seg.text);
+  return x.prepared.split(/(`[^`]*`)/g).map(part=>{
+   if(part.startsWith('`')&&part.endsWith('`'))return '<code>'+escapeHtml(part.slice(1,-1))+'</code>';
+   return escapeHtml(part).replace(/\uE000(\d+)\uE001/g,(_,id)=>x.tokens[Number(id)]||'')
+    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
+    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g,'<em>$1</em>');
+  }).join('');
  }).join('');
 }
 function renderMarkdown(md){
- let out=[],lines=hrcNormalizeSource(md).split('\n'),inCode=false,code=[];
+ let out=[],lines=bvMathNormalizeNested(hrcNormalizeSource(md)).split('\n'),inCode=false,code=[];
  const cells=line=>line.trim().replace(/^\|/,'').replace(/\|$/,'').split(/(?<!\\)\|/).map(x=>x.trim().replace(/\\\|/g,'|'));
  const separator=line=>/^\s*\|?[\s:|\-]+\|?\s*$/.test(line)&&line.includes('-')&&cells(line).every(x=>/^:?-{2,}:?$/.test(x));
  for(let i=0;i<lines.length;i++){
   let line=lines[i];
   if(line.startsWith('```')){if(inCode){out.push('<pre><code>'+escapeHtml(code.join('\n'))+'</code></pre>');code=[]}inCode=!inCode;continue}
   if(inCode){code.push(line);continue}
+  // A display formula may start after prose and span multiple source lines.
+  const mixedOpen=line.search(/\$\$|\\\[/);
+  if(mixedOpen>0){
+   const opening=line.slice(mixedOpen,mixedOpen+2),closing=opening==='$$'?'$$':'\\]';
+   let collected=line.slice(mixedOpen+2),lastLine=i;
+   while(!collected.includes(closing)&&lastLine+1<lines.length)collected+='\n'+lines[++lastLine];
+   const closeAt=collected.indexOf(closing);
+   if(closeAt>=0){
+    const prefix=line.slice(0,mixedOpen),suffix=collected.slice(closeAt+2);
+    out.push('<p>'+hrcInline(prefix)+'</p>');
+    out.push(mathMarkup(collected.slice(0,closeAt).trim(),true));
+    if(suffix.trim())out.push('<p>'+hrcInline(suffix)+'</p>');
+    i=lastLine;continue;
+   }
+  }
   if(/^\s*\$\$/.test(line)){
    let expr=line.replace(/^\s*\$\$/,'');
    while(!expr.includes('$$')&&i+1<lines.length)expr+='\n'+lines[++i];
