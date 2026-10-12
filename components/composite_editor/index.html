@@ -58,12 +58,14 @@ function renderMath(){if(!window.katex)return;document.querySelectorAll('#editor
 function loadKatex(){if(window.katex){katexReady=true;renderMath();return}const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js';sc.onload=()=>{katexReady=true;renderMath()};sc.onerror=()=>{if(!window.__bvKatexFallback){window.__bvKatexFallback=true;const alt=document.createElement('script');alt.src='https://unpkg.com/katex@0.16.22/dist/katex.min.js';alt.onload=()=>{katexReady=true;renderMath()};alt.onerror=()=>{bvLog('HRC-MATH-001','Both KaTeX CDNs failed');mathFallback()};document.head.appendChild(alt);return;}bvLog('HRC-MATH-001','KaTeX CDN failed');status.hidden=false;status.textContent='❗ 數學渲染器未載入；已保留 LaTeX 原始碼'};document.head.appendChild(sc)}
 function mathFallback(){document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{if(el.dataset.rendered==='yes')return;el.title='LaTeX 原始碼：'+el.dataset.math;el.style.whiteSpace='pre-wrap';el.style.overflowWrap='anywhere';});}
 function bvMathNormalizeNested(source){
- // Render-only normalization: the saved Markdown and clipboard remain untouched.
- // Only unwrap complete paired display delimiters, outside fenced code blocks.
+ // Normalize only in the rendering copy; protect fenced code and image data URIs.
  return String(source||'').split(/(```[\s\S]*?```|~~~[\s\S]*?~~~)/g).map((part,index)=>{
   if(index%2)return part;
-  return part.replace(/\\\[\s*\$\$([\s\S]*?)\$\$\s*\\\]/g,(_whole,tex)=>'$$'+tex+'$$')
-   .replace(/\$\$\s*\\\[([\s\S]*?)\\\]\s*\$\$/g,(_whole,tex)=>'$$'+tex+'$$');
+  const images=hrcImageTokens(part);
+  const normalized=images.prepared
+   .replace(/\\\[\s*\$\$([\s\S]*?)\$\$\s*\\\]/g,(_all,tex)=>'\\['+tex+'\\]')
+   .replace(/\$\$\s*\\\[([\s\S]*?)\\\]\s*\$\$/g,(_all,tex)=>'\\['+tex+'\\]');
+  return normalized.replace(/\uE000(\d+)\uE001/g,(_all,id)=>images.tokens[Number(id)]||_all);
  }).join('');
 }
 function mathMarkup(expr,display){expr=String(expr).replace(/^\s*\$\$([\s\S]*?)\$\$\s*$/, '$1').trim();return '<span class="math-render'+(display?' math-block':'')+'" contenteditable="false" data-math="'+escapeHtml(expr)+'" data-display="'+(display?'block':'inline')+'">'+escapeHtml(expr)+'</span>'}
@@ -214,6 +216,11 @@ function renderMarkdown(md){
   let line=lines[i];
   if(line.startsWith('```')){if(inCode){out.push('<pre><code>'+escapeHtml(code.join('\n'))+'</code></pre>');code=[]}inCode=!inCode;continue}
   if(inCode){code.push(line);continue}
+  // A complete $$...$$ display block is recognized before generic Markdown.
+  const wholeDollar=line.match(/^\s*\$\$([\s\S]*?)\$\$\s*$/);
+  if(wholeDollar){out.push(mathMarkup(wholeDollar[1],true));continue;}
+  const wholeBracket=line.match(/^\s*\\\[([\s\S]*?)\\\]\s*$/);
+  if(wholeBracket){out.push(mathMarkup(wholeBracket[1],true));continue;}
   // A display formula may start after prose and span multiple source lines.
   const mixedOpen=line.search(/\$\$|\\\[/);
   if(mixedOpen>0){
