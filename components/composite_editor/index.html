@@ -1,29 +1,258 @@
 <!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:12px;background:#0e1117;color:#f1f5f9;font:15px/1.65 system-ui,'Noto Sans TC',sans-serif}.toolbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:12px}button{border:1px solid #4b5871;border-radius:7px;padding:7px 12px;background:#202c42;color:#f8fafc;cursor:pointer}button.primary{background:#2368ba;border-color:#2368ba}#editor{min-height:280px;max-height:550px;overflow:auto;outline:none;border:1px solid #536176;border-radius:9px;padding:18px;background:#151b27;color:#f8fafc;overflow-wrap:anywhere}#editor:focus{border-color:#81b5ff}#editor img{max-width:100%;height:auto}#editor table{border-collapse:collapse;max-width:100%;display:block;overflow-x:auto}#editor th,#editor td{border:1px solid #64748b;padding:7px 11px}#editor pre{white-space:pre-wrap;background:#0b1220;padding:12px;border-radius:7px}#editor blockquote{border-left:3px solid #7199d0;padding-left:14px;margin-left:0}#editor h1,#editor h2,#editor h3{line-height:1.35}#editor a{color:#93c5fd}.hint{font-size:12px;color:#aab7cb;margin:7px 0 12px}#toc{border:1px solid #42516a;border-radius:8px;padding:8px;min-width:165px;max-height:180px;overflow:auto}#toc button{display:block;text-align:left;border:0;background:none;padding:3px 6px;width:100%;font-size:12px}#toc strong{font-size:12px}#status{font-size:12px;color:#aab7cb}textarea{width:100%;min-height:260px;background:#101827;color:#e2e8f0;border:1px solid #536176;border-radius:8px;padding:12px;resize:vertical;font:13px/1.6 monospace}#raw{display:none}.split{display:flex;gap:10px;align-items:flex-start}#main{flex:1;min-width:0}@media(max-width:600px){.split{display:block}#toc{margin-bottom:10px}}
-</style></head><body>
-<div class="toolbar"><button id="rich">圖文編輯</button><button id="source">Markdown 原始碼</button><button id="insert">插入目錄分段</button><button id="save" class="primary">💾 儲存圖文文件</button><span id="status">可直接貼上 ChatGPT 文字、表格及圖片</span></div>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;padding:12px;background:#0e1117;color:#f1f5f9;font:15px/1.65 system-ui,'Noto Sans TC',sans-serif}.toolbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:12px}button{border:1px solid #4b5871;border-radius:7px;padding:7px 12px;background:#202c42;color:#f8fafc;cursor:pointer}button.primary{background:#2368ba;border-color:#2368ba}#editor{min-height:280px;max-height:680px;overflow:auto;outline:none;border:1px solid #536176;border-radius:9px;padding:18px;background:#151b27;color:#f8fafc;overflow-wrap:anywhere}#editor:focus{border-color:#81b5ff}#editor img,#editor svg{max-width:100%;height:auto;object-fit:contain}#editor table{max-width:100%;border-collapse:collapse;max-width:100%;display:block;overflow-x:auto}#editor th,#editor td{border:1px solid #64748b;padding:7px 11px}#editor pre{white-space:pre-wrap;background:#0b1220;padding:12px;border-radius:7px}#editor blockquote{border-left:3px solid #7199d0;padding-left:14px;margin-left:0}#editor h1,#editor h2,#editor h3{line-height:1.35}#editor a{color:#93c5fd}.hint{font-size:12px;color:#aab7cb;margin:7px 0 12px}#toc{border:1px solid #42516a;border-radius:8px;padding:8px;min-width:165px;max-height:180px;overflow:auto}#toc button{display:block;text-align:left;border:0;background:none;padding:3px 6px;width:100%;font-size:12px}#toc strong{font-size:12px}#status{font-size:12px;color:#aab7cb}select{background:#202c42;color:#fff;border:1px solid #4b5871;border-radius:6px;padding:7px}textarea{width:100%;min-height:260px;background:#101827;color:#e2e8f0;border:1px solid #536176;border-radius:8px;padding:12px;resize:vertical;font:13px/1.6 monospace}#raw{display:none}.split{display:block}#main{flex:1;min-width:0}@media(max-width:600px){.split{display:block}#toc{margin-bottom:10px}}
+
+/* Unified dark table theme, including pasted ChatGPT tables. */
+#editor table{max-width:100%;display:block;width:max-content;max-width:100%;overflow-x:auto;border-collapse:collapse;background:#151b27!important;color:#f8fafc!important;border:1px solid #394557!important;border-radius:4px}
+#editor table tr,#editor table thead,#editor table tbody{background:#151b27!important;color:#f8fafc!important}
+#editor table th,#editor table td{border:1px solid #394557!important;background:#151b27!important;color:#f8fafc!important;min-width:58px;padding:9px 12px;vertical-align:middle;white-space:normal}
+#editor table th{font-weight:650;background:#1d2635!important}
+#editor table [style*="background"]{background-color:transparent!important}
+#editor table [style*="color"]{color:inherit!important}
+#editor .math-render{display:inline-block;max-width:100%;overflow-x:auto;vertical-align:middle;white-space:nowrap}
+#editor .math-block{display:block;text-align:center;padding:12px 2px;white-space:normal}
+#editor .math-render[data-math]{cursor:text}
+@media(max-width:600px){#editor{padding:10px}#editor table{max-width:100%;max-width:100%}#editor table th,#editor table td{padding:6px 8px;min-width:52px}}
+
+#editor table{display:table;border-collapse:collapse}#editor td,#editor th{border:1px solid #64748b;padding:6px 10px;white-space:normal}#editor img,#editor svg{max-width:100%;height:auto;object-fit:contain}#editor{overflow-wrap:anywhere;word-break:normal}
+#editToc{border:1px solid #40516a;padding:10px;border-radius:8px;max-height:220px;overflow:auto;margin-bottom:12px}#tocEntries{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}#tocEntries button{font-size:12px}  .missing-media{color:#ff7474;background:#3b1720;padding:4px 7px;border:1px solid #e35a69;border-radius:5px;display:inline-block;overflow-wrap:anywhere}.missing-image{border:2px dashed #e35a69;min-width:160px;min-height:45px} @media(max-width:650px){#editor{min-width:0;width:100%;overflow-wrap:anywhere}#editor table{display:table;max-width:none;width:max-content}#editor .math-render{max-width:100%;overflow-x:auto}#editor img{display:block;max-width:100%;height:auto}} .table-scroll{display:block;width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;margin:12px 0}.table-scroll table{display:table!important;width:max-content;min-width:100%;max-width:none!important;overflow:visible!important;border-collapse:collapse}.table-scroll th,.table-scroll td{white-space:normal;overflow-wrap:normal;word-break:normal}.math-render{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch} </style><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css"></head><body>
+<div class="toolbar"><button id="rich">圖文編輯</button><button id="source">Markdown 原始碼</button><button id="insert">插入目錄分段</button><button id="uploadImage">插入圖片／圖表</button><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none"><button id="save" class="primary">💾 儲存圖文文件</button><span id="status">可直接貼上 ChatGPT 文字、表格及圖片</span></div>
 <div class="hint">輸入 <b>//[章節名稱]//</b> 可建立左側目錄；可在編輯區按 Ctrl+V 貼上 ChatGPT 富文本或圖片。</div>
-<div class="split"><nav id="toc"><strong>文件目錄</strong><div id="links"></div></nav><div id="main"><div id="editor" contenteditable="true" spellcheck="false"></div><textarea id="raw" aria-label="Markdown 原始碼"></textarea></div></div>
+<div id="editToc"><b>目錄基準 · 快速定位</b><div id="tocEntries"></div></div><div class="split"><div id="main"><div id="editor" contenteditable="true" spellcheck="false"></div><textarea id="raw" aria-label="Markdown 原始碼"></textarea></div></div>
 <script>
-const editor=document.getElementById('editor'),raw=document.getElementById('raw'),status=document.getElementById('status'),links=document.getElementById('links');let images=[],revision=-1,source=false;
-function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')};function resize(){send('streamlit:setFrameHeight',{height:Math.min(document.body.scrollHeight+15,790)})};function safe(s){return (s||'').replace(/\r/g,'').replace(/\u00a0/g,' ')};
+const editor=document.getElementById('editor'),raw=document.getElementById('raw'),status=document.getElementById('status');let images=[],revision=-1,source=false,lastFocus=-1,assetUrls={},editorMode="HRC",lastSubmitRequest=null;
+function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')};function resize(){send('streamlit:setFrameHeight',{height:Math.min(document.body.scrollHeight+20,1000)})};function safe(s){return (s||'').replace(/\r/g,'').replace(/\u00a0/g,' ')};
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function inline(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase(),v=Array.from(n.childNodes).map(inline).join('');if(t==='br')return '\n';if(t==='img'){let src=n.getAttribute('src')||'';return '!['+(n.getAttribute('alt')||'圖片').replace(/[\[\]]/g,'')+']('+src+')'}if(t==='b'||t==='strong')return '**'+v+'**';if(t==='em'||t==='i')return '*'+v+'*';if(t==='code')return '`'+v.replace(/`/g,'\\`')+'`';if(t==='a'){let href=n.getAttribute('href')||'';return /^https?:/i.test(href)?'['+v+']('+href+')':v}if(t==='s'||t==='del')return '~~'+v+'~~';return v}
+function inline(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase(),v=Array.from(n.childNodes).map(inline).join('');if(n.hasAttribute&&n.hasAttribute('data-math'))return n.getAttribute('data-display')==='block'?'\n\n$$'+n.getAttribute('data-math')+'$$\n\n':'$'+n.getAttribute('data-math')+'$';if(t==='br')return '\n';if(n.classList&&n.classList.contains('missing-media'))return '\n\n❗ '+v+'\n\n';if(t==='svg'){return inline(registerImage(svgData(n),'SVG 圖表'))}if(t==='img'){let src=n.getAttribute('data-ref')||n.getAttribute('src')||'';return '!['+(n.getAttribute('alt')||'圖片').replace(/[\[\]]/g,'')+']('+src+')'}if(t==='b'||t==='strong')return '**'+v+'**';if(t==='em'||t==='i')return '*'+v+'*';if(t==='code')return '`'+v.replace(/`/g,'\\`')+'`';if(t==='a'){let href=n.getAttribute('href')||'';return /^https?:/i.test(href)?'['+v+']('+href+')':v}if(t==='s'||t==='del')return '~~'+v+'~~';return v}
 function table(n){let rows=Array.from(n.querySelectorAll('tr')).map(r=>Array.from(r.children).filter(c=>/^(TD|TH)$/.test(c.tagName)).map(c=>inline(c).replace(/\|/g,'\\|').replace(/\n/g,' ')));let w=Math.max(0,...rows.map(r=>r.length));if(!w)return '';let fill=r=>Array.from({length:w},(_,i)=>r[i]||'');return '\n'+[fill(rows[0]),Array(w).fill('---'),...rows.slice(1).map(fill)].map(r=>'| '+r.join(' | ')+' |').join('\n')+'\n\n'}
-function block(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase();if(t==='table')return table(n);if(t==='img')return inline(n)+'\n\n';if(t==='pre')return '\n```\n'+safe(n.textContent).trimEnd()+'\n```\n\n';if(/^h[1-6]$/.test(t))return '\n'+'#'.repeat(Number(t[1]))+' '+inline(n).trim()+'\n\n';if(t==='ul'||t==='ol')return '\n'+Array.from(n.children).filter(c=>c.tagName==='LI').map((c,i)=>(t==='ul'?'- ':`${i+1}. `)+inline(c).trim()).join('\n')+'\n\n';if(t==='blockquote')return '\n'+inline(n).trim().split('\n').map(x=>'> '+x).join('\n')+'\n\n';if(t==='hr')return '\n---\n';if(['div','p','section','article'].includes(t))return '\n'+Array.from(n.childNodes).map(c=>c.nodeType===1&&/^(TABLE|PRE|UL|OL|DIV|P|SECTION|ARTICLE|H[1-6]|BLOCKQUOTE|IMG)$/.test(c.tagName)?block(c):inline(c)).join('')+'\n\n';return Array.from(n.childNodes).map(block).join('')}
+function block(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase();if(n.hasAttribute&&n.hasAttribute('data-math'))return inline(n);if(t==='table')return table(n);if(t==='svg')return inline(n)+'\n\n';if(t==='img')return inline(n)+'\n\n';if(t==='pre')return '\n```\n'+safe(n.textContent).trimEnd()+'\n```\n\n';if(/^h[1-6]$/.test(t))return '\n'+'#'.repeat(Number(t[1]))+' '+inline(n).trim()+'\n\n';if(t==='ul'||t==='ol')return '\n'+Array.from(n.children).filter(c=>c.tagName==='LI').map((c,i)=>(t==='ul'?'- ':`${i+1}. `)+inline(c).trim()).join('\n')+'\n\n';if(t==='blockquote')return '\n'+inline(n).trim().split('\n').map(x=>'> '+x).join('\n')+'\n\n';if(t==='hr')return '\n---\n';if(['div','p','section','article'].includes(t))return '\n'+Array.from(n.childNodes).map(c=>c.nodeType===1&&/^(TABLE|PRE|UL|OL|DIV|P|SECTION|ARTICLE|H[1-6]|BLOCKQUOTE|IMG)$/.test(c.tagName)?block(c):inline(c)).join('')+'\n\n';return Array.from(n.childNodes).map(block).join('')}
 function markdown(){return block(editor).replace(/\n{3,}/g,'\n\n').trim()}
-function renderMarkdown(md){let out=[];let inCode=false;for(let line of md.split('\n')){if(line.startsWith('```')){out.push(inCode?'</code></pre>':'<pre><code>');inCode=!inCode;continue}if(inCode){out.push(escapeHtml(line)+'\n');continue}let marker=line.match(/^\s*\/\/\[([^\]\n]+)\]\/\/\s*$/);if(marker){out.push('<p><strong>'+escapeHtml(line)+'</strong></p>');continue}let h=line.match(/^(#{1,6})\s+(.+)$/);if(h){let n=h[1].length;out.push(`<h${n}>${escapeHtml(h[2])}</h${n}>`);continue}if(/^!\[([^\]]*)\]\(([^)]+)\)$/.test(line)){let m=line.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);out.push('<p><img alt="'+escapeHtml(m[1])+'" src="'+escapeHtml(m[2])+'"></p>');continue}if(line.startsWith('|')){out.push('<p>'+escapeHtml(line)+'</p>');continue}out.push('<div>'+escapeHtml(line).replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')+'</div>')}return out.join('')}
-function updateToc(){let content=source?raw.value:editor.innerText;let entries=[...content.matchAll(/\/\/\[([^\]\n]+)\]\/\//g)].map(m=>m[1].trim());links.replaceChildren();entries.forEach((name,i)=>{let b=document.createElement('button');b.textContent=(i+1)+'. '+name;b.onclick=()=>{if(source){let idx=raw.value.indexOf('//['+name+']//');raw.focus();raw.setSelectionRange(idx,idx)}else{let walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT),node;while(node=walker.nextNode()){if(node.textContent.includes('//['+name+']//')){node.parentElement.scrollIntoView({block:'center'});break}}}};links.append(b)});resize()}
-function insertAtCaret(node){let s=window.getSelection();if(s&&s.rangeCount&&editor.contains(s.anchorNode)){let r=s.getRangeAt(0);r.deleteContents();r.insertNode(node);r.setStartAfter(node);r.collapse(true);s.removeAllRanges();s.addRange(r)}else editor.append(node)}
+let katexReady=false;
+function renderMath(){if(!window.katex)return;document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{try{window.katex.render(el.dataset.math,el,{throwOnError:false,displayMode:el.dataset.display==='block',strict:'ignore',trust:false})}catch(e){el.textContent=el.dataset.math}})}
+function loadKatex(){if(window.katex){katexReady=true;renderMath();return}const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js';sc.onload=()=>{katexReady=true;renderMath()};sc.onerror=()=>{status.hidden=false;status.textContent='❗ 數學渲染器未載入；已保留 LaTeX 原始碼'};document.head.appendChild(sc)}
+function mathFallback(){document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{if(el.dataset.rendered==='yes')return;el.title='LaTeX 原始碼：'+el.dataset.math;el.style.whiteSpace='pre-wrap';el.style.overflowWrap='anywhere';});}
+function mathMarkup(expr,display){return '<span class="math-render'+(display?' math-block':'')+'" contenteditable="false" data-math="'+escapeHtml(expr)+'" data-display="'+(display?'block':'inline')+'">'+escapeHtml(expr)+'</span>'}
+function extractMarkdownImages(text){
+ const tokens=[];let output='',i=0;
+ while(i<text.length){
+  if(text.slice(i,i+2)!=='!['){output+=text[i++];continue}
+  let altEnd=text.indexOf('](',i+2);if(altEnd<0){output+=text[i++];continue}
+  let start=altEnd+2,src='',end=-1;
+  if(/^data:image\/(?:svg\+xml|png|jpeg|webp|gif)/i.test(text.slice(start))){
+   // Data URI can contain CSS parentheses. Only a closing ')' followed by a newline/end
+   // or the start of ordinary prose terminates the image.
+   let lineEnd=text.indexOf('\n',start);if(lineEnd<0)lineEnd=text.length;
+   for(let j=lineEnd-1;j>=start;j--){if(text[j]===')'){end=j;break}}
+  }else{
+   let depth=0;for(let j=start;j<text.length;j++){
+    if(text[j]==='(')depth++;else if(text[j]===')'){if(depth===0){end=j;break}depth--}
+    if(text[j]==='\n')break;
+   }
+  }
+  if(end<0){output+=text[i++];continue}
+  src=text.slice(start,end).trim();if(!/^(?:data:image\/|asset:\/\/|https?:\/\/)/i.test(src)){output+=text[i++];continue}
+  let alt=text.slice(i+2,altEnd),id=tokens.length;
+  tokens.push('<img loading="lazy" alt="'+escapeHtml(alt)+'" src="'+escapeHtml(src)+'">');
+  output+='\uE000'+id+'\uE001';i=end+1;
+ }
+ return {prepared:output,tokens};
+}
+function mathInline(str){
+ const tokens=[];
+ // Tokenize full Markdown image URLs before HTML escaping, including percent-encoded SVG data URLs.
+ const extracted=extractMarkdownImages(String(str));let prepared=extracted.prepared;tokens.push(...extracted.tokens);
+ const parts=prepared.split(/(\\\([\s\S]*?\\\)|(?<!\\)\$(?!\$)[^\n$]+?(?<!\\)\$)/g);
+ return parts.map(part=>{
+   if(part.startsWith('\\(')&&part.endsWith('\\)'))return mathMarkup(part.slice(2,-2),false);
+   if(part.startsWith('$')&&part.endsWith('$')&&part.length>2)return mathMarkup(part.slice(1,-1),false);
+   return escapeHtml(part).replace(/\uE000(\d+)\uE001/g,(_,id)=>tokens[Number(id)]||'').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>').replace(/`([^`]+)`/g,'<code>$1</code>');
+ }).join('');
+}
+function renderMarkdown(md){
+let out=[],lines=md.replace(/\r/g,'').split('\n'),inCode=false,code=[];
+const inlineFormat=mathInline;
+const cells=line=>line.trim().replace(/^\|/,'').replace(/\|$/,'').split(/(?<!\\)\|/).map(x=>x.trim().replace(/\\\|/g,'|'));
+const separator=line=>/^\s*\|?[\s:|\-]+\|?\s*$/.test(line)&&line.includes('-')&&cells(line).every(x=>/^:?-{3,}:?$/.test(x));
+for(let i=0;i<lines.length;i++){
+ let line=lines[i];
+ if(/^\s*\$\$/.test(line)||/^\s*\\\[/.test(line)){let square=/^\s*\\\[/.test(line),op=square?'\\[':'$$',cl=square?'\\]':'$$',expr=line.trim().slice(op.length);while(!expr.includes(cl)&&i+1<lines.length)expr+='\n'+lines[++i];let pos=expr.lastIndexOf(cl);if(pos>=0){out.push(mathMarkup(expr.slice(0,pos).trim(),true));continue}else{out.push('<div class="missing-media">❗ 未閉合數學式：'+escapeHtml(expr)+'</div>');continue}}
+ if(line.startsWith('```')){if(inCode){out.push('<pre><code>'+escapeHtml(code.join('\n'))+'</code></pre>');code=[]}inCode=!inCode;continue}
+ if(inCode){code.push(line);continue}
+ if(line.includes('|')&&i+1<lines.length&&separator(lines[i+1])){
+  let heads=cells(line),rows=[];i+=2;
+  while(i<lines.length&&lines[i].includes('|')&&lines[i].trim()){rows.push(cells(lines[i]));i++}i--;
+  out.push('<div class="table-scroll"><table><thead><tr>'+heads.map(c=>'<th>'+inlineFormat(c)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+heads.map((_,j)=>'<td>'+inlineFormat(r[j]||'')+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>');continue
+ }
+ let marker=line.match(/^\s*\/\/\[([^\]\n]+)\]\/\/\s*$/);
+ if(marker){out.push('<h3>'+escapeHtml(marker[1])+'</h3>');continue}
+ let h=line.match(/^(#{1,6})\s+(.+)$/);
+ if(h){let n=h[1].length;out.push(`<h${n}>${inlineFormat(h[2])}</h${n}>`);continue}
+ let img=null; // Image URLs are handled by mathInline's balanced scanner.
+ if(/^!\[/.test(line)){out.push('<p>'+inlineFormat(line)+'</p>');continue}
+ if(/^\s*[-*]\s+/.test(line)){out.push('<div>• '+inlineFormat(line.replace(/^\s*[-*]\s+/,''))+'</div>');continue}
+ out.push('<div>'+inlineFormat(line)+'</div>')
+}
+if(inCode)out.push('<pre><code>'+escapeHtml(code.join('\n'))+'</code></pre>');
+return out.join('')
+}
+let lastHeadings='',headingTimer=null;
+function tocEntries(){let md=source?raw.value:syncMarkdown();return [...md.matchAll(/\/\/\[([^\]\n]+)\]\/\//g)].map((m,i)=>({title:m[1].trim(),index:i,offset:m.index}))}
+function updateToc(){let entries=tocEntries(),target=document.getElementById('tocEntries');target.replaceChildren();for(const e of entries){let b=document.createElement('button');b.textContent=(e.index+1)+'. '+e.title;b.onclick=()=>focusHeading(e.index);target.append(b)}if(!entries.length)target.textContent='尚無目錄（使用 //[章節名稱]//）';let key=JSON.stringify(entries.map(x=>x.title));if(key!==lastHeadings){lastHeadings=key;if(images.length)return;clearTimeout(headingTimer);headingTimer=setTimeout(()=>send('streamlit:setComponentValue',{value:{action:'headings',markdown:source?raw.value:syncMarkdown(),nonce:'h'+Date.now()+Math.random()}}),500)}resize()}
+function focusHeading(index){let e=tocEntries()[index];if(!e)return;if(source){raw.focus();raw.setSelectionRange(e.offset,e.offset+e.title.length+6);let line=raw.value.slice(0,e.offset).split('\n').length-1;raw.scrollTop=Math.max(0,line*parseFloat(getComputedStyle(raw).lineHeight||'20')-raw.clientHeight/3)}else{let walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT),node;while((node=walker.nextNode())){if(node.textContent.includes(e.title)){node.parentElement.scrollIntoView({block:'center'});editor.focus();break}}}}
+function insertAtCaret(node){
+ const selection=window.getSelection();
+ const valid=selection&&selection.rangeCount&&editor.contains(selection.anchorNode);
+ if(!valid){editor.append(node);return}
+ const range=selection.getRangeAt(0);
+ range.deleteContents();
+ // DocumentFragment is emptied by insertNode; it has no parent afterward.
+ // Remember its last child BEFORE inserting, then place the caret after that child.
+ const last=node.nodeType===Node.DOCUMENT_FRAGMENT_NODE?node.lastChild:node;
+ if(!last)return;
+ range.insertNode(node);
+ if(last.parentNode){range.setStartAfter(last);range.collapse(true);selection.removeAllRanges();selection.addRange(range)}
+}
 function fileData(f){return new Promise((res,rej)=>{let reader=new FileReader();reader.onload=()=>res(reader.result);reader.onerror=rej;reader.readAsDataURL(f)})}
-function cleanPaste(html){let doc=new DOMParser().parseFromString(html,'text/html');doc.querySelectorAll('script,style,iframe,object,embed,form,link,meta').forEach(n=>n.remove());doc.querySelectorAll('*').forEach(n=>{for(let a of [...n.attributes]){if(a.name.startsWith('on')||['srcdoc','contenteditable'].includes(a.name))n.removeAttribute(a.name);if(['href','src'].includes(a.name)&&/^javascript:/i.test(a.value))n.removeAttribute(a.name)} });return doc.body.innerHTML}
-editor.addEventListener('paste',async e=>{e.preventDefault();let cb=e.clipboardData,html=cb.getData('text/html'),txt=cb.getData('text/plain');let files=[...cb.items].filter(x=>x.kind==='file'&&x.type.startsWith('image/'));if(html){let wrapper=document.createElement('div');wrapper.innerHTML=cleanPaste(html);for(let im of [...wrapper.querySelectorAll('img')]){let src=im.getAttribute('src')||'';if(src.startsWith('data:image/')){let i=images.length;images.push({data:src});im.setAttribute('src','clipboard-image://'+i)}else if(!/^https?:/i.test(src))im.replaceWith(document.createTextNode('[無法取得圖片]'))}insertAtCaret(wrapper)}else if(txt){insertAtCaret(document.createTextNode(txt))}if(files.length&&!html){for(let item of files){let f=item.getAsFile();if(!f||f.size>10*1024*1024)continue;let i=images.length,data=await fileData(f);images.push({data});let im=document.createElement('img');im.src=data;im.setAttribute('data-ref','clipboard-image://'+i);insertAtCaret(im)}}updateToc();status.textContent='已貼上，請按「儲存圖文文件」保存'});
-function restore(md){images=[];editor.innerHTML=renderMarkdown(md);raw.value=md;updateToc()}
-function syncMarkdown(){let clone=editor.cloneNode(true);clone.querySelectorAll('img[data-ref]').forEach(im=>im.src=im.dataset.ref);return block(clone).replace(/\n{3,}/g,'\n\n').trim()}
-document.getElementById('save').onclick=()=>{let md=source?raw.value:syncMarkdown();send('streamlit:setComponentValue',{value:{action:'save',markdown:md,images,nonce:String(Date.now())+Math.random()}});status.textContent='正在儲存…'};
+// Clipboard ingestion is independent from Markdown rendering and document navigation.
+function cleanPaste(html){
+ const doc=new DOMParser().parseFromString(html,'text/html');
+ doc.querySelectorAll('script,iframe,form,link,meta').forEach(n=>n.remove());
+ doc.querySelectorAll('style').forEach(n=>{if(!n.closest('svg'))n.remove()});
+ doc.querySelectorAll('*').forEach(n=>{for(const a of [...n.attributes]){
+  if(a.name.startsWith('on')||['srcdoc','contenteditable'].includes(a.name))n.removeAttribute(a.name);
+  if(['href','src'].includes(a.name)&&/^javascript:/i.test(a.value))n.removeAttribute(a.name)
+ }});
+ return doc.body.innerHTML;
+}
+function clipboardDiagnostics(cb){
+ return {types:[...cb.types],html:cb.getData('text/html').length,plain:cb.getData('text/plain').length,files:[...cb.items].filter(x=>x.kind==='file').map(x=>x.type)};
+}
+function placeholderImage(label){const n=warningNode('剪貼簿未包含 '+label+' 的可儲存圖像資料');n.dataset.missing='true';return n}
+function svgFromMarkup(raw){
+ const doc=new DOMParser().parseFromString(raw,'image/svg+xml');
+ if(doc.querySelector('parsererror')||doc.documentElement.localName!=='svg')return null;
+ return svgData(doc.documentElement);
+}
+function extractSvgMarkup(text){
+ const rx=/<svg\b[^>]*>[\s\S]*?<\/svg>/gi;return [...text.matchAll(rx)].map(m=>m[0]);
+}
+async function svgToPng(svg){try{const copy=svg.cloneNode(true);copy.setAttribute('xmlns','http://www.w3.org/2000/svg');let rect=svg.getBoundingClientRect();let vb=(svg.getAttribute('viewBox')||'').trim().split(/[ ,]+/).map(Number);let w=Math.max(1,Math.min(2400,Math.round(parseFloat(svg.getAttribute('width'))||rect.width||vb[2]||800)));let h=Math.max(1,Math.min(2400,Math.round(parseFloat(svg.getAttribute('height'))||rect.height||vb[3]||450)));copy.setAttribute('width',w);copy.setAttribute('height',h);const xml=new XMLSerializer().serializeToString(copy);const url=URL.createObjectURL(new Blob([xml],{type:'image/svg+xml'}));try{let im=new Image();await new Promise((ok,fail)=>{im.onload=ok;im.onerror=fail;im.src=url});let canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;canvas.getContext('2d').drawImage(im,0,0,w,h);return canvas.toDataURL('image/png')}finally{URL.revokeObjectURL(url)}}catch(e){return null}}
+function svgData(svg){let cp=svg.cloneNode(true);cp.setAttribute('xmlns','http://www.w3.org/2000/svg');return 'data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(new XMLSerializer().serializeToString(cp))))}
+function normalizeSvg(src){if(!/^data:image\/svg\+xml/i.test(src)||/;base64,/i.test(src))return src;let at=src.indexOf(',');if(at<0)return src;try{return 'data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(decodeURIComponent(src.slice(at+1)))))}catch(e){return src}}
+function registerImage(src,alt){let i=images.length;images.push({data:src});let im=document.createElement('img');im.src=src;im.alt=alt||'圖片';im.dataset.ref='clipboard-image://'+i;return im}
+function warningNode(message){let el=document.createElement('span');el.className='missing-media';el.textContent='❗ '+message;return el}
+function cleanMathNodes(root){
+ for(const n of [...root.querySelectorAll('annotation[encoding="application/x-tex"]')]){
+  let host=n.closest('math');if(host){let display=host.getAttribute('display')==='block';let span=document.createElement('span');span.dataset.math=n.textContent;span.dataset.display=display?'block':'inline';span.className='math-render'+(display?' math-block':'');span.textContent=n.textContent;host.replaceWith(span)}
+ }
+ for(const n of [...root.querySelectorAll('[data-math],[data-tex],[data-latex]')]){
+  if(n.classList.contains('math-render'))continue;
+  let tex=n.getAttribute('data-math')||n.getAttribute('data-tex')||n.getAttribute('data-latex');
+  if(!tex)continue;let span=document.createElement('span');span.dataset.math=tex;span.dataset.display='inline';span.className='math-render';span.textContent=tex;n.replaceWith(span)
+ }
+}
+function parsePlainWithImages(txt){
+ let frag=document.createDocumentFragment(),rx=/!\[([^\]\n]*)\]\((data:image\/(?:svg\+xml|png|jpeg|webp|gif)[^\n]*)\)(?=\s|$)/gi,last=0,m;
+ while((m=rx.exec(txt))){if(m.index>last)frag.append(document.createTextNode(txt.slice(last,m.index)));frag.append(registerImage(normalizeSvg(m[2]),m[1]||'GPT 圖表'));last=rx.lastIndex}
+ if(last<txt.length)frag.append(document.createTextNode(txt.slice(last)));return frag
+}
+async function pasteChatGPT(cb){
+ const html=cb.getData('text/html'),plain=cb.getData('text/plain');
+ const diagnostics=clipboardDiagnostics(cb),start=images.length;
+ let missing=0,root=document.createElement('div');
+ if(html){
+  root.innerHTML=cleanPaste(html);cleanMathNodes(root);
+  // v3.9.11 compatibility: keep native SVG in the live rich editor.
+  // Converting to an <img> at paste time removed the original drawing from the
+  // editable DOM and could leave only an invalid placeholder. Serialize on save.
+  for(const svg of [...root.querySelectorAll('svg')]){
+   try{
+    if(!svg.getAttribute('xmlns'))svg.setAttribute('xmlns','http://www.w3.org/2000/svg');
+    svg.setAttribute('data-bv-svg','native');
+    svg.style.maxWidth='100%';
+    svg.style.height=svg.style.height||'auto';
+   }catch(err){missing++;svg.replaceWith(placeholderImage('SVG'))}
+  }
+  for(const obj of [...root.querySelectorAll('object,embed')]){
+   const src=obj.getAttribute('data')||obj.getAttribute('src')||'';
+   if(/^data:image\/svg\+xml/i.test(src))obj.replaceWith(registerImage(normalizeSvg(src),'SVG 圖表'));
+   else{missing++;obj.replaceWith(placeholderImage('嵌入圖形'))}
+  }
+  for(const im of [...root.querySelectorAll('img')]){
+   if(im.dataset.ref)continue;
+   let src=im.getAttribute('src')||'';
+   if(/^data:image\/(?:svg\+xml|png|jpeg|webp|gif)/i.test(src)){
+    im.replaceWith(registerImage(normalizeSvg(src),im.alt||'圖片'));continue
+   }
+   if(/^https?:\/\//i.test(src)){im.setAttribute('loading','lazy');im.addEventListener('error',()=>im.replaceWith(warningNode('遠端圖片無法載入：'+src.slice(0,100))),{once:true});continue}
+   missing++;im.replaceWith(placeholderImage(im.alt||'圖片'));
+  }
+  // ChatGPT may copy a canvas as a blank placeholder: the bitmap is not present in HTML.
+  for(const canvas of [...root.querySelectorAll('canvas')]){missing++;canvas.replaceWith(placeholderImage('Canvas 圖表（請改用圖片複製或截圖）'))}
+  // ChatGPT may copy an SVG as a CSS background-image rather than <img>.
+  for(const n of [...root.querySelectorAll('[style]')]){
+   const style=n.getAttribute('style')||'';
+   const match=style.match(/url\(["']?(data:image\/svg\+xml[^"')]+)["']?\)/i);
+   if(match){n.prepend(registerImage(normalizeSvg(match[1]),'SVG 背景圖'));n.style.backgroundImage='none'}
+  }
+  // SVG code blocks copied as plain text should not be mistaken for renderable HTML.
+  if(!root.querySelector('img')&&extractSvgMarkup(plain).length){
+   for(const markup of extractSvgMarkup(plain)){let data=svgFromMarkup(markup);if(data)root.append(registerImage(data,'SVG 原始碼'))}
+  }
+ }else if(plain){
+  root.append(parsePlainWithImages(plain));
+  if(images.length===start){
+   const found=extractSvgMarkup(plain);
+   for(const markup of found){const data=svgFromMarkup(markup);if(data)root.append(registerImage(data,'SVG 原始碼'))}
+  }
+ }
+ // Clipboard image files are a fallback only, not a duplicate of images found in HTML.
+ if(images.length===start){
+  for(const item of [...cb.items].filter(x=>x.kind==='file'&&x.type.startsWith('image/'))){
+   const f=item.getAsFile();if(f&&f.size<=10*1024*1024)root.append(registerImage(await fileData(f),f.name||'圖片'))
+  }
+ }
+ // Prefer the complete HTML text; if HTML is empty, use the plain text representation.
+ if((!root.textContent.trim()&&!root.querySelector('img,table,.math-render'))&&plain)root.append(document.createTextNode(plain));
+ const md=block(root).replace(/\n{3,}/g,'\n\n');
+ if(source){raw.setRangeText(md,raw.selectionStart,raw.selectionEnd,'end')}
+ else{const fragment=document.createDocumentFragment();while(root.firstChild)fragment.append(root.firstChild);insertAtCaret(fragment)}
+ updateToc();renderMath();
+ status.textContent='已解析 '+(images.length-start)+' 張圖片；缺失 '+missing+' 張。剪貼簿：'+diagnostics.types.join(', ')+(missing?'。❗ 請檢查圖片缺失':'');
+}
+editor.addEventListener('paste',async e=>{
+
+ e.preventDefault();
+ try{await pasteChatGPT(e.clipboardData)}catch(err){status.textContent='❗ 貼上失敗：'+String(err)+'；未自動丟棄剪貼簿內容';}
+});
+// Source editor has its own paste event; rich clipboard must work in HRC there too.
+raw.addEventListener('paste',async e=>{
+
+ e.preventDefault();try{await pasteChatGPT(e.clipboardData)}catch(err){status.textContent='❗ 貼上失敗：'+String(err)}
+});
+document.getElementById('uploadImage').onclick=()=>document.getElementById('imageFile').click();
+document.getElementById('imageFile').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;if(f.size>10*1024*1024){status.textContent='圖片不得超過 10 MB';return}const data=await fileData(f),i=images.length;images.push({data});const img=document.createElement('img');img.src=data;img.alt=f.name||'圖片';img.dataset.ref='clipboard-image://'+i;if(source){raw.value+='\n\n!['+(f.name||'圖片').replace(/[\[\]]/g,'')+'](clipboard-image://'+i+')\n';}else insertAtCaret(img);e.target.value='';updateToc();status.textContent='圖片已插入，請儲存圖文文件'};
+function resolveAssetImages(){editor.querySelectorAll('img').forEach(im=>{let ref=im.dataset.ref||im.getAttribute('src')||'';let m=ref.match(/^asset:\/\/([0-9a-f-]{36})$/i);if(m){im.dataset.ref=ref;im.src=assetUrls[m[1]]||'';}})}
+function restore(md){images=[];md=String(md||'').replace(/^<!-- bv-editor-mode:(?:HRC|COM|MD) -->\n?/,'');editor.innerHTML=renderMarkdown(md);
+ editor.querySelectorAll('img').forEach(im=>{const src=im.getAttribute('src')||'';const match=src.match(/^asset:\/\/([0-9a-f-]{36})$/i);if(match){im.dataset.ref=src;im.src=assetUrls[match[1]]||'';if(!assetUrls[match[1]]){im.alt='❗ 圖片資源缺失：'+match[1];im.classList.add('missing-image')}}});
+ renderMath();raw.value=md;lastHeadings=JSON.stringify([...md.matchAll(/\/\/\[([^\]\n]+)\]\/\//g)].map(m=>m[1].trim()));updateToc()}
+function syncMarkdown(){
+ let clone=editor.cloneNode(true);
+ clone.querySelectorAll('img[data-ref]').forEach(im=>im.src=im.dataset.ref);
+ // SVG is kept as SVG in the editor, then serialized into a persisted image asset.
+ // Do not duplicate a resource on repeated saves of the same unchanged SVG.
+ for(const svg of [...clone.querySelectorAll('svg')]){
+  try{const data=svgData(svg),key=data;let index=images.findIndex(item=>item.data===key);
+   if(index<0){index=images.length;images.push({data})}
+   const im=document.createElement('img');im.alt='SVG 圖表';im.setAttribute('src','clipboard-image://'+index);im.dataset.ref='clipboard-image://'+index;svg.replaceWith(im)
+  }catch(err){const warning=document.createElement('span');warning.className='missing-media';warning.textContent='❗ SVG 序列化失敗：'+String(err);svg.replaceWith(warning)}
+ }
+ return block(clone).replace(/\n{3,}/g,'\n\n').trim()
+}
+function saveEditor(close=false){let md=source?raw.value:syncMarkdown();send('streamlit:setComponentValue',{value:{action:close?'save_close':'save',markdown:md,images,mode:"HRC",nonce:String(Date.now())+Math.random()}});status.textContent=close?'正在儲存，成功後才會退出…':'正在儲存…'}
+document.getElementById('save').onclick=()=>saveEditor(false);
 document.getElementById('source').onclick=()=>{if(!source){raw.value=syncMarkdown();editor.style.display='none';raw.style.display='block';source=true;updateToc()}};
-document.getElementById('rich').onclick=()=>{if(source){editor.innerHTML=renderMarkdown(raw.value);raw.style.display='none';editor.style.display='block';source=false;updateToc()}};
+document.getElementById('rich').onclick=()=>{if(source){editor.innerHTML=renderMarkdown(raw.value);resolveAssetImages();renderMath();raw.style.display='none';editor.style.display='block';source=false;updateToc()}};
 document.getElementById('insert').onclick=()=>{let name=prompt('目錄名稱');if(!name||!name.trim())return;let marker='//['+name.replace(/[\]\n]/g,'').trim()+']//';if(source){raw.value+='\n\n'+marker+'\n';}else{let p=document.createElement('p');p.textContent=marker;insertAtCaret(p)}updateToc()};
 editor.addEventListener('input',updateToc);raw.addEventListener('input',updateToc);
-window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.revision!==revision){revision=args.revision;restore(args.content||'')}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
-</script></body></html>
+window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.revision!==revision){assetUrls=args.assetUrls||{};revision=args.revision;restore((args.content||'').replace(/^<!-- bv-editor-mode:(HRC|COM|MD) -->\n?/,''));editorMode='HRC'}if(args.submitRequest!=null&&args.submitRequest!==lastSubmitRequest){lastSubmitRequest=args.submitRequest;if(args.submitRequest>0)saveEditor(true)}if(Number.isInteger(args.focusHeading)&&args.focusHeading>=0&&args.focusHeading!==lastFocus){lastFocus=args.focusHeading;focusHeading(args.focusHeading)}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
+loadKatex();</script></body></html>
