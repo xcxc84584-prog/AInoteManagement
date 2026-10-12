@@ -621,6 +621,9 @@ def show_markdown(content,assets):
     content=re.sub(r'(?m)^\s*//\[([^\]\n]+)\]//\s*$',lambda m:'\n### '+m.group(1).strip()+'\n',content)
     # Also normalize inline section markers; browsing must never expose //[...]//.
     content=re.sub(r'//\[([^\]\n]+)\]//',lambda m:m.group(1).strip(),content)
+    # Streamlit Markdown renders standard LaTeX $...$ and $$...$$.
+    content=re.sub(r'\\\[([\s\S]*?)\\\]',lambda m:'\n\n$$'+m.group(1)+'$$\n\n',content)
+    content=re.sub(r'\\\((.*?)\\\)',lambda m:'$'+m.group(1)+'$',content)
     # Resolve private asset identifiers without embedding unsafe HTML.
     parts=re.split(r'(!\[[^\]]*\]\(asset://[0-9a-fA-F-]{36}\))',content)
     for part in parts:
