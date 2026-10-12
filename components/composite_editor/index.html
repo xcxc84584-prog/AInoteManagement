@@ -14,7 +14,7 @@
 @media(max-width:600px){#editor{padding:10px}#editor table{max-width:100%;max-width:100%}#editor table th,#editor table td{padding:6px 8px;min-width:52px}}
 
 #editor table{display:block;overflow-x:auto;max-width:100%;border-collapse:collapse}#editor td,#editor th{border:1px solid #64748b;padding:6px 10px;white-space:normal}#editor img{max-width:100%;height:auto}#editor{overflow-wrap:anywhere;word-break:normal}
-#editToc{border:1px solid #40516a;padding:10px;border-radius:8px;max-height:220px;overflow:auto;margin-bottom:12px}#tocEntries{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}#tocEntries button{font-size:12px}  .missing-media{color:#ff7474;background:#3b1720;padding:4px 7px;border:1px solid #e35a69;border-radius:5px;display:inline-block;overflow-wrap:anywhere}.missing-image{border:2px dashed #e35a69;min-width:160px;min-height:45px} </style><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css"></head><body>
+#editToc{border:1px solid #40516a;padding:10px;border-radius:8px;max-height:220px;overflow:auto;margin-bottom:12px}#tocEntries{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}#tocEntries button{font-size:12px}  .missing-media{color:#ff7474;background:#3b1720;padding:4px 7px;border:1px solid #e35a69;border-radius:5px;display:inline-block;overflow-wrap:anywhere}.missing-image{border:2px dashed #e35a69;min-width:160px;min-height:45px} @media(max-width:650px){#editor{min-width:0;width:100%;overflow-wrap:anywhere}#editor table{display:block;overflow-x:auto;max-width:100%;width:100%}#editor .math-render{max-width:100%;overflow-x:auto}#editor img{display:block;max-width:100%;height:auto}} </style><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css"></head><body>
 <div class="toolbar"><label for="editorMode">文件模式</label><select id="editorMode" title="HRC 富文本剪貼簿 / COM 現有圖文 / MD 純 Markdown"><option value="HRC">HRC · 富文本剪貼簿</option><option value="COM">COM · 圖文編輯</option><option value="MD">MD · 純 Markdown</option></select><button id="rich">圖文編輯</button><button id="source">Markdown 原始碼</button><button id="insert">插入目錄分段</button><button id="uploadImage">插入圖片／圖表</button><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none"><button id="save" class="primary">💾 儲存圖文文件</button><span id="status">可直接貼上 ChatGPT 文字、表格及圖片</span></div>
 <div class="hint">輸入 <b>//[章節名稱]//</b> 可建立左側目錄；可在編輯區按 Ctrl+V 貼上 ChatGPT 富文本或圖片。</div>
 <div id="editToc"><b>目錄基準 · 快速定位</b><div id="tocEntries"></div></div><div class="split"><div id="main"><div id="editor" contenteditable="true" spellcheck="false"></div><textarea id="raw" aria-label="Markdown 原始碼"></textarea></div></div>
@@ -28,7 +28,7 @@ function block(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)r
 function markdown(){return block(editor).replace(/\n{3,}/g,'\n\n').trim()}
 let katexReady=false;
 function renderMath(){if(!window.katex)return;document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{try{window.katex.render(el.dataset.math,el,{throwOnError:false,displayMode:el.dataset.display==='block',strict:'ignore',trust:false})}catch(e){el.textContent=el.dataset.math}})}
-function loadKatex(){if(window.katex){katexReady=true;renderMath();return}const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js';sc.onload=()=>{katexReady=true;renderMath()};sc.onerror=()=>{status.textContent='數學字型資源載入失敗；仍保留 LaTeX 原始碼'};document.head.appendChild(sc)}
+function loadKatex(){if(window.katex){katexReady=true;renderMath();return}const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js';sc.onload=()=>{katexReady=true;renderMath()};sc.onerror=()=>{status.hidden=false;status.textContent='❗ 數學渲染器未載入；已保留 LaTeX 原始碼'};document.head.appendChild(sc)}
 function mathMarkup(expr,display){return '<span class="math-render'+(display?' math-block':'')+'" contenteditable="false" data-math="'+escapeHtml(expr)+'" data-display="'+(display?'block':'inline')+'">'+escapeHtml(expr)+'</span>'}
 function extractMarkdownImages(text){
  const tokens=[];let output='',i=0;
@@ -76,9 +76,9 @@ for(let i=0;i<lines.length;i++){
  if(/^\s*\$\$/.test(line)||/^\s*\\\[/.test(line)){let square=/^\s*\\\[/.test(line),op=square?'\\[':'$$',cl=square?'\\]':'$$',expr=line.trim().slice(op.length);while(!expr.includes(cl)&&i+1<lines.length)expr+='\n'+lines[++i];out.push(mathMarkup(expr.slice(0,expr.lastIndexOf(cl)).trim(),true));continue}
  if(line.startsWith('```')){if(inCode){out.push('<pre><code>'+escapeHtml(code.join('\n'))+'</code></pre>');code=[]}inCode=!inCode;continue}
  if(inCode){code.push(line);continue}
- if(line.trim().startsWith('|')&&i+1<lines.length&&separator(lines[i+1])){
+ if(line.includes('|')&&i+1<lines.length&&separator(lines[i+1])){
   let heads=cells(line),rows=[];i+=2;
-  while(i<lines.length&&lines[i].trim().startsWith('|')){rows.push(cells(lines[i]));i++}i--;
+  while(i<lines.length&&lines[i].includes('|')&&lines[i].trim()){rows.push(cells(lines[i]));i++}i--;
   out.push('<table><thead><tr>'+heads.map(c=>'<th>'+inlineFormat(c)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+heads.map((_,j)=>'<td>'+inlineFormat(r[j]||'')+'</td>').join('')+'</tr>').join('')+'</tbody></table>');continue
  }
  let marker=line.match(/^\s*\/\/\[([^\]\n]+)\]\/\/\s*$/);
