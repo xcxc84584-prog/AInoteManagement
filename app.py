@@ -996,7 +996,7 @@ with st.sidebar:
 
     st.caption('右鍵操作 · 拖曳移動 · F2 · Delete / Ctrl+D 刪除 · Ctrl+C/V/X')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
-    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',(n.get('content') or '')) if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
+    payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':[]} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
     if event and event.get('event_id')!=st.session_state.get('last_explorer_event'):
         st.session_state.last_explorer_event=event.get('event_id')
@@ -1009,27 +1009,17 @@ with st.sidebar:
                 # when navigating to the same node or changing reading mode.
                 v431_commit_focus_before_navigation()
                 st.session_state.pop('full_read_id',None)
-            if action=='toc_remove' and nid in byid and byid[nid]['kind']=='COMPOSITE':
-                original=byid[nid].get('content') or ''
-                matches=list(re.finditer(r'//\[([^\]\n]+)\]//',original))
-                index=int(event.get('index',-1))
-                if index<0 or index>=len(matches):
-                    raise ValueError('找不到指定的目錄')
-                match=matches[index]
-                updated=original[:match.start()]+match.group(1)+original[match.end():]
-                update_note(nid,content=updated)
-                st.session_state['block_content_'+nid]=updated
-                st.session_state['v43_draft_'+nid]=updated
-                st.session_state['_composite_rev_'+nid]=st.session_state.get('_composite_rev_'+nid,0)+1
-                st.rerun()
+            if action=='toc_remove' and nid in byid:
+                # Browser-local IndexedDB TOC is deleted in the Explorer component.
+                pass
             if action=='toc_nav' and nid in byid:
                 st.session_state.selected=nid
                 st.session_state.full_edit_id=nid
-                st.session_state['_composite_toc_target_'+nid]=int(event.get('index',0))
+                st.session_state['_composite_toc_target_'+nid]=event.get('toc_id')
             elif action=='toc_browse_nav' and nid in byid:
                 st.session_state.selected=nid
                 st.session_state.full_read_id=nid
-                st.session_state['_composite_browse_target_'+nid]=int(event.get('index',0))
+                st.session_state['_composite_browse_target_'+nid]=event.get('toc_id')
             elif action=='select' and nid in byid:
                 st.session_state.selected=nid
             elif action=='full_edit' and nid in byid:
@@ -1889,7 +1879,7 @@ def reader_operation(note,event):
 
 def show_composite_reader(note):
     content=note.get('content') or ''
-    event=composite_reader_component(documentId=note['id'],content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),browseTarget=st.session_state.pop('_composite_browse_target_'+note['id'],None),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
+    event=composite_reader_component(documentId=note['id'],content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),tocTargetId=st.session_state.pop('_composite_browse_target_'+note['id'],None),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
     reader_operation(note,event)
 
 read_id=st.session_state.get('full_read_id')
@@ -1965,7 +1955,7 @@ if full_id and full_id in byid:
     if full_note['kind']=='COMPOSITE':
         text_key='block_content_'+full_id
         current=str(st.session_state.get(text_key,original) or '')
-        event=composite_component(documentId=full_id,content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+full_id,0),focusHeading=st.session_state.get('_composite_toc_target_'+full_id,-1),editorMode=editor_mode(current),submitRequest=st.session_state.get('_submit_request_'+full_id,0),key='focus_composite_'+full_id,default=None)
+        event=composite_component(documentId=full_id,content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+full_id,0),tocTargetId=st.session_state.get('_composite_toc_target_'+full_id),editorMode=editor_mode(current),submitRequest=st.session_state.get('_submit_request_'+full_id,0),key='focus_composite_'+full_id,default=None)
         if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_focus_composite_nonce_'+full_id):
             st.session_state['_focus_composite_nonce_'+full_id]=event.get('nonce')
             if event.get('action')=='headings':

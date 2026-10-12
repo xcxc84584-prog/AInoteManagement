@@ -18,9 +18,9 @@
 /* v5.0.7 mobile layout: diagnostics must stay in normal flow and final line visible */
 html,body{min-width:0;max-width:100%;overflow-x:hidden}#bvDiagnostics{position:relative!important;inset:auto!important;z-index:1!important;max-width:100%;overflow-wrap:anywhere;clear:both}#bvDiagnostics pre{max-width:100%;overflow:auto}#editor{padding-bottom:76px!important;min-height:360px;scroll-padding-bottom:76px}#editor .math-block{overflow-x:auto;overflow-y:hidden;max-width:100%;-webkit-overflow-scrolling:touch}#editor .katex-display{margin:0.75em 0;overflow-x:auto;overflow-y:hidden;max-width:100%}#status{position:relative!important;clear:both;display:block;overflow-wrap:anywhere}body{padding-bottom:64px!important}
 </style><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css"></head><body>
-<div class="toolbar"><button id="rich">圖文編輯</button><button id="source">Markdown 原始碼</button><button id="bv61toc">目錄化 Ctrl+T</button><button id="uploadImage">插入圖片／圖表</button><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none"><button id="save" class="primary">💾 儲存圖文文件</button><span id="status">可直接貼上 ChatGPT 文字、表格及圖片</span></div>
+<div class="toolbar"><button id="rich">圖文編輯</button><button id="source">Markdown 原始碼</button><button id="bv61toc">目錄化（點擊確認）</button><button id="uploadImage">插入圖片／圖表</button><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none"><button id="save" class="primary">💾 儲存圖文文件</button><span id="status">可直接貼上 ChatGPT 文字、表格及圖片</span></div>
 <details id="bvDiagnostics" style="margin:8px 0"><summary>HRC 診斷與錯誤紀錄</summary><button id="bvCopyLog" type="button">複製診斷報告</button><pre id="bvLog" style="white-space:pre-wrap;max-height:180px;overflow:auto"></pre><div id="svgClipboardNotice" role="status" style="display:none;margin:10px 0;padding:10px;border-left:3px solid #eab308;color:#fde68a;white-space:normal">此文本可能缺少SVG訊息，請安裝相關插件修復。</div></details>
-<div class="hint">框選文字按 Ctrl+T 建立獨立本地目錄，不會改寫文件；Ctrl+V 可貼上圖文。</div><div id="bv61toclist" aria-label="本地目錄"></div>
+<div class="hint">框選文字後點擊「目錄化」建立獨立本地目錄，不會改寫文件；Ctrl+V 可貼上圖文。</div><div id="bv61toclist" aria-label="本地目錄"></div>
 <div class="split"><div id="main"><div id="editor" contenteditable="true" spellcheck="false"></div><textarea id="raw" aria-label="Markdown 原始碼"></textarea></div></div>
 <script>
 /* v6.1: browser-local TOC. IndexedDB is scoped to the browser origin. */
@@ -29,12 +29,14 @@ const BV61TOC=(()=>{
  function db(){return dbPromise||(dbPromise=new Promise((resolve,reject)=>{const r=indexedDB.open(dbName,1);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains(store)){const s=d.createObjectStore(store,{keyPath:'id'});s.createIndex('document_id','document_id',{unique:false})}};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)}))}
  async function transaction(mode,work){const d=await db();return new Promise((resolve,reject)=>{const t=d.transaction(store,mode),s=t.objectStore(store);let result;const r=work(s);r.onsuccess=()=>result=r.result;r.onerror=()=>reject(r.error);t.oncomplete=()=>resolve(result);t.onerror=()=>reject(t.error)})}
  const list=async id=>(await transaction('readonly',s=>s.index('document_id').getAll(id))).sort((a,b)=>a.lineStart-b.lineStart||a.columnStart-b.columnStart);
- const put=e=>transaction('readwrite',s=>s.put(e));const remove=id=>transaction('readwrite',s=>s.delete(id));
+ const channel=typeof BroadcastChannel!=='undefined'?new BroadcastChannel('bvtext-toc-updates'):null;function announce(doc){try{channel?.postMessage({document_id:doc,stamp:Date.now()})}catch(_){}}
+ const put=async e=>{const result=await transaction('readwrite',s=>s.put(e));announce(e.document_id);return result};const remove=async id=>{const old=await transaction('readonly',s=>s.get(id));const result=await transaction('readwrite',s=>s.delete(id));if(old)announce(old.document_id);return result};
  function lineColumn(text,offset){const before=text.slice(0,offset),last=before.lastIndexOf('\n');return {line:before.split('\n').length,column:offset-last-1}}
  function create(doc,text,start,end,selected){const a=lineColumn(text,start),b=lineColumn(text,end);return {id:crypto.randomUUID(),document_id:doc,title:selected.trim().slice(0,300),selectedText:selected,lineStart:a.line,lineEnd:b.line,columnStart:a.column,columnEnd:b.column,context:text.slice(Math.max(0,start-40),Math.min(text.length,end+40)),createdAt:new Date().toISOString()}}
  function locate(text,e){const lines=text.split('\n'),line=lines[e.lineStart-1]||'';if(line.slice(e.columnStart).startsWith(e.selectedText.split('\n')[0]))return {line:e.lineStart,column:e.columnStart};let at=text.indexOf(e.selectedText);if(at<0||text.indexOf(e.selectedText,at+1)>=0)return null;return lineColumn(text,at)}
- return {list,put,remove,create,locate};
+ return {list,put,remove,create,locate,channel};
 })();
+;
 
 
 const editor=document.getElementById('editor'),raw=document.getElementById('raw'),status=document.getElementById('status');let images=[],revision=-1,source=false,lastFocus=-1,assetUrls={},editorMode="HRC",lastSubmitRequest=null;
@@ -176,6 +178,14 @@ function renderMarkdown(md){
   let line=lines[i];
   if(line.startsWith('```')){if(inCode){out.push('<pre><code>'+escapeHtml(code.join('\n'))+'</code></pre>');code=[]}inCode=!inCode;continue}
   if(inCode){code.push(line);continue}
+  if(/^\s*\$\$/.test(line)){
+   let expr=line.replace(/^\s*\$\$/,'');
+   while(!expr.includes('$$')&&i+1<lines.length)expr+='\n'+lines[++i];
+   const end=expr.indexOf('$$');
+   if(end>=0)out.push(mathMarkup(expr.slice(0,end).trim(),true));
+   else out.push('<div class="missing-media">❗ 未閉合數學式：'+escapeHtml(expr)+'</div>');
+   continue;
+  }
   if(/^\s*\\\[/.test(line)){
    let op='\\[',cl='\\]',expr=line.trim().slice(op.length);
    while(!expr.includes(cl)&&i+1<lines.length)expr+='\n'+lines[++i];
@@ -421,7 +431,7 @@ document.getElementById('source').onclick=()=>{if(!source){raw.value=syncMarkdow
 document.getElementById('rich').onclick=()=>{if(source){editor.innerHTML=renderMarkdown(raw.value);resolveAssetImages();renderMath();raw.style.display='none';editor.style.display='block';source=false;updateToc()}};
 
 editor.addEventListener('input',updateToc);raw.addEventListener('input',updateToc);
-window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.documentId&&args.documentId!==bv61Doc){bv61Doc=args.documentId;bv61Refresh()}if(args.revision!==revision){assetUrls=args.assetUrls||{};revision=args.revision;restore((args.content||'').replace(/^<!-- bv-editor-mode:(HRC|COM|MD) -->\n?/,''));editorMode='HRC'}if(args.submitRequest!=null&&args.submitRequest!==lastSubmitRequest){lastSubmitRequest=args.submitRequest;if(args.submitRequest>0)saveEditor(true)}if(Number.isInteger(args.focusHeading)&&args.focusHeading>=0&&args.focusHeading!==lastFocus){lastFocus=args.focusHeading;focusHeading(args.focusHeading)}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
+window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.documentId&&args.documentId!==bv61Doc){bv61Doc=args.documentId;bv61Refresh()}if(args.revision!==revision){assetUrls=args.assetUrls||{};revision=args.revision;restore((args.content||'').replace(/^<!-- bv-editor-mode:(HRC|COM|MD) -->\n?/,''));editorMode='HRC'}if(args.submitRequest!=null&&args.submitRequest!==lastSubmitRequest){lastSubmitRequest=args.submitRequest;if(args.submitRequest>0)saveEditor(true)}if(args.tocTargetId&&args.tocTargetId!==lastFocus){lastFocus=args.tocTargetId;BV61TOC.list(bv61Doc).then(entries=>{const item=entries.find(x=>x.id===args.tocTargetId);if(item)bv61Jump(item)})}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
 
 let bv61Doc='';
 async function bv61Refresh(){if(!bv61Doc)return;const box=document.getElementById('bv61toclist');box.replaceChildren();for(const e of await BV61TOC.list(bv61Doc)){const b=document.createElement('button');b.textContent=`${e.lineStart}: ${e.title}`;b.onclick=()=>bv61Jump(e);box.append(b);const del=document.createElement('button');del.textContent='×';del.title='刪除目錄';del.onclick=async()=>{await BV61TOC.remove(e.id);bv61Refresh()};box.append(del)}}
@@ -429,6 +439,6 @@ function bv61Text(){return source?raw.value:syncMarkdown()}
 async function bv61Create(){if(!bv61Doc)return;let text=bv61Text(),selection='',start=-1,end=-1;if(source){start=raw.selectionStart;end=raw.selectionEnd;selection=text.slice(start,end)}else{selection=String(window.getSelection()||'').trim();start=text.indexOf(selection);end=start+selection.length;if(selection&&text.indexOf(selection,start+1)>=0){status.textContent='選取文字重複，請切換 Markdown 原始碼精確框選';return}}if(!selection||start<0||end<=start){status.textContent='請先框選文字';return}await BV61TOC.put(BV61TOC.create(bv61Doc,text,start,end,selection));await bv61Refresh();status.textContent='已本地目錄化（未修改正文）'}
 function bv61Jump(e){const pos=BV61TOC.locate(bv61Text(),e);if(!pos){status.textContent='原始位置已變更，無法唯一定位';return}if(!source){document.getElementById('source').click()}const lines=raw.value.split('\n');let offset=0;for(let i=0;i<pos.line-1;i++)offset+=lines[i].length+1;raw.focus();raw.setSelectionRange(offset+pos.column,offset+pos.column+e.selectedText.length);raw.scrollTop=Math.max(0,(pos.line-1)*20-raw.clientHeight/3)}
 document.getElementById('bv61toc').onclick=bv61Create;
-document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='t'&&(document.activeElement===raw||document.activeElement===editor||editor.contains(document.activeElement))){e.preventDefault();bv61Create()}});
 
-loadKatex();</script></body></html>
+
+BV61TOC.channel?.addEventListener('message',()=>bv61Refresh());loadKatex();</script></body></html>
