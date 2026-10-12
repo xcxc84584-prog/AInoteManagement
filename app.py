@@ -1720,36 +1720,74 @@ def selected_source_line(content, selection):
         if needle in ' '.join(plain.split()) or needle in ' '.join(line.split()):matches.append(i)
     return matches[0] if len(matches)==1 else None
 
+SPLIT_META_RE=re.compile(r'(?m)^<!-- bv-split:(upper|lower):([0-9a-f-]{36}):([0-9a-f-]{36}):([A-Za-z0-9_-]+) -->\n?')
+def split_meta(content):
+    m=SPLIT_META_RE.search(content or '')
+    if not m:return None
+    try:
+        import base64
+        name=base64.urlsafe_b64decode(m.group(4)+'='*(-len(m.group(4))%4)).decode('utf-8')
+        return m.group(1),m.group(2),m.group(3),name
+    except Exception:return None
+
 def reader_operation(note,event):
-    if not isinstance(event,dict) or event.get('action') not in ('toc','split'):return
+    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit'):return
     nonce_key='_reader_nonce_'+note['id']
     if event.get('nonce')==st.session_state.get(nonce_key):return
     st.session_state[nonce_key]=event.get('nonce')
     content=note.get('content') or ''
+    if event['action']=='unsplit':
+        meta=split_meta(content)
+        if not meta:
+            st.error('此文件沒有可還原的分割紀錄');return
+        role,upper_id,lower_id,original_name=meta
+        siblings=priority_siblings(note['parent_id'])
+        lookup={n['id']:n for n in siblings}
+        upper=lookup.get(upper_id);lower=lookup.get(lower_id)
+        if not upper or not lower or split_meta(upper.get('content'))!=meta[:0]+('upper',upper_id,lower_id,original_name) or split_meta(lower.get('content'))!=('lower',upper_id,lower_id,original_name):
+            st.error('分割的兩份文件已移動或關聯資料不一致，無法安全還原');return
+        ids=[n['id'] for n in siblings]
+        if ids.index(lower_id)!=ids.index(upper_id)+1:
+            st.error('兩份文件不再相鄰，請先恢復原順序');return
+        merged=SPLIT_META_RE.sub('',upper['content'])+SPLIT_META_RE.sub('',lower['content'])
+        update_note(upper_id,title=original_name,content=merged)
+        delete_note(lower_id)
+        apply_priority_order(note['parent_id'],[i for i in ids if i!=lower_id])
+        st.success('已還原分割');st.rerun()
+        return
     index=selected_source_line(content,event.get('selection'))
     if index is None:
-        st.error('無法唯一定位選取文字所在的原始行。請選取該行較長且唯一的文字。');return
+        st.error('無法唯一定位選取文字所在的原始行，請選取該行較長且唯一的文字');return
     lines=content.splitlines(keepends=True)
     if event['action']=='toc':
         title=re.sub(r'[\]\r\n]','',str(event.get('selection') or '')).strip()[:120]
         if not title:return
-        marker='//['+title+']//'
-        if marker in lines[index]:return
-        lines.insert(index,marker+'\n')
-        update_note(note['id'],content=''.join(lines));st.success('已建立目錄');st.rerun()
+        if re.search(r'^\s*//\[[^\]\n]+\]//\s*$',lines[index]):return
+        # Replace the actual source line with a marker instead of inserting a duplicate heading.
+        original=lines[index].rstrip('\r\n')
+        lines[index]='//['+original.strip().removeprefix('#').strip().replace(']','')+']//'+('\n' if lines[index].endswith('\n') else '')
+        update_note(note['id'],content=''.join(lines));st.success('目錄已寫入編輯文本');st.rerun()
+    elif event['action']=='untoc':
+        match=re.match(r'^(\s*)//\[([^\]\n]+)\]//(\s*)$',lines[index].rstrip('\r\n'))
+        if not match:
+            st.error('選取的文字不是目錄標記');return
+        lines[index]=match.group(1)+match.group(2)+('\n' if lines[index].endswith('\n') else '')
+        update_note(note['id'],content=''.join(lines));st.success('已取消目錄');st.rerun()
     else:
+        if split_meta(content):st.error('此文件已有未還原的分割紀錄，請先還原');return
         upper=''.join(lines[:index+1]);lower=''.join(lines[index+1:])
         if not upper.strip() or not lower.strip():st.error('分割位置下方沒有內容');return
-        siblings=priority_siblings(note['parent_id'])
-        ids=[x['id'] for x in siblings]
+        import base64
+        siblings=priority_siblings(note['parent_id']);ids=[x['id'] for x in siblings]
         if note['id'] not in ids:raise ValueError('找不到原文件優先權')
-        base=re.sub(r'-(?:1|2)$','',note['title'])
+        base=note['title'];encoded=base64.urlsafe_b64encode(base.encode()).decode().rstrip('=')
         created=None
         try:
             created=insert_note('COMPOSITE',base+'-2',note['parent_id'],content=lower,position=len(ids)+1)
-            update_note(note['id'],title=(base+'-1')[:200],content=upper)
-            ids.insert(ids.index(note['id'])+1,created['id'])
-            apply_priority_order(note['parent_id'],ids)
+            suffix=f':{note["id"]}:{created["id"]}:{encoded} -->\n'
+            update_note(note['id'],title=(base+'-1')[:200],content='<!-- bv-split:upper'+suffix+upper)
+            update_note(created['id'],content='<!-- bv-split:lower'+suffix+lower)
+            ids.insert(ids.index(note['id'])+1,created['id']);apply_priority_order(note['parent_id'],ids)
         except Exception:
             if created:
                 try:c.table('notes').delete().eq('id',created['id']).eq('owner_id',uid).execute()
@@ -1759,7 +1797,7 @@ def reader_operation(note,event):
 
 def show_composite_reader(note):
     content=note.get('content') or ''
-    event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',key='reader_'+note['id'],default=None)
+    event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),key='reader_'+note['id'],default=None)
     reader_operation(note,event)
 
 read_id=st.session_state.get('full_read_id')
