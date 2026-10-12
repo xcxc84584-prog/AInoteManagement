@@ -57,7 +57,7 @@ function recoverMobileMath507(input){
    const t=line.trim();
    if(!t||t.startsWith('![')||/\$|\\\[|\\\]|\\\(|\\\)/.test(t))return line;
    // Conservative: only a complete, standalone TeX assignment is recoverable.
-   if(t.length>240||! /^[A-Za-z][A-Za-z0-9]*(?:_\{[^{}]+\})?\s*=\s*.+$/.test(t))return line;
+   if(t.length>240||! /^(?:[A-Za-z][A-Za-z0-9]*(?:_\{[^{}]+\})?|P\([^\n]*?\))\s*=\s*.+$/.test(t))return line;
    if(!/\\(?:frac|times|cdot|sqrt|text|sum|int)|_\{|\^\{/.test(t))return line;
    return '$$'+t+'$$';
   }).join('\n');
@@ -200,10 +200,10 @@ function renderMarkdown(md){
   if(wholeBracket){out.push(mathMarkup(wholeBracket[1],true));continue;}
   // A display formula may start after prose and span multiple source lines.
   const mixedOpen=line.search(/\$\$|\\\[/);
-  if(mixedOpen>0){
+  if(mixedOpen>0 && !/^\s*#{1,6}\s+/.test(line)){
    const opening=line.slice(mixedOpen,mixedOpen+2),closing=opening==='$$'?'$$':'\\]';
    let collected=line.slice(mixedOpen+2),lastLine=i;
-   while(!collected.includes(closing)&&lastLine+1<lines.length)collected+='\n'+lines[++lastLine];
+   while(!collected.includes(closing)&&lastLine+1<lines.length&&!/^\s*#{1,6}\s+/.test(lines[lastLine+1]))collected+='\n'+lines[++lastLine];
    const closeAt=collected.indexOf(closing);
    if(closeAt>=0){
     const prefix=line.slice(0,mixedOpen),suffix=collected.slice(closeAt+2);
@@ -215,7 +215,7 @@ function renderMarkdown(md){
   }
   if(/^\s*\$\$/.test(line)){
    let expr=line.replace(/^\s*\$\$/,'');
-   while(!expr.includes('$$')&&i+1<lines.length)expr+='\n'+lines[++i];
+   while(!expr.includes('$$')&&i+1<lines.length&&!/^\s*#{1,6}\s+/.test(lines[i+1]))expr+='\n'+lines[++i];
    const end=expr.indexOf('$$');
    if(end>=0)out.push(mathMarkup(expr.slice(0,end).trim(),true));
    else out.push('<div class="missing-media">❗ 未閉合數學式：'+escapeHtml(expr)+'</div>');
@@ -223,7 +223,7 @@ function renderMarkdown(md){
   }
   if(/^\s*\\\[/.test(line)){
    let op='\\[',cl='\\]',expr=line.trim().slice(op.length);
-   while(!expr.includes(cl)&&i+1<lines.length)expr+='\n'+lines[++i];
+   while(!expr.includes(cl)&&i+1<lines.length&&!/^\s*#{1,6}\s+/.test(lines[i+1]))expr+='\n'+lines[++i];
    let pos=expr.lastIndexOf(cl);
    if(pos>=0)out.push(mathMarkup(expr.slice(0,pos).trim(),true));
    else{out.push('<div class="missing-media">❗ 未閉合數學式：'+escapeHtml(expr)+'</div>');if(typeof bvLog==='function')bvLog('HRC-MATH-004','Unclosed display math')}
