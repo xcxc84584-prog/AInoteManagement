@@ -7,7 +7,7 @@ html,body{min-width:0;max-width:100%;overflow-x:hidden}body{padding-bottom:110px
 const bvErrors=[];
 function bvLog(code,detail){const entry={code,time:new Date().toISOString(),detail:String(detail||'').slice(0,350)};bvErrors.push(entry);if(bvErrors.length>60)bvErrors.shift();const out=document.getElementById('bvLog');if(out)out.textContent=bvErrors.map(x=>`[${x.time}] ${x.code} ${x.detail}`).join('\n');}
 document.getElementById('bvDiagnostics').addEventListener('toggle',()=>requestAnimationFrame(resize));
-document.getElementById('bvCopyLog').onclick=()=>{const report=JSON.stringify({version:'5.0.5',platform:navigator.userAgent,document:hrcSourceStats(content),rendered:{tables:editor.querySelectorAll('table').length,images:editor.querySelectorAll('img').length,math:editor.querySelectorAll('.math-render').length},errors:bvErrors},null,2);if(navigator.clipboard?.writeText)navigator.clipboard.writeText(report).catch(()=>bvLog('HRC-LOG-001','Clipboard write failed'));else {const t=document.createElement('textarea');t.value=report;document.body.append(t);t.select();document.execCommand('copy');t.remove()}};
+document.getElementById('bvCopyLog').onclick=()=>{const report=JSON.stringify({version:'5.0.7',platform:navigator.userAgent,document:hrcSourceStats(content),rendered:{tables:editor.querySelectorAll('table').length,images:editor.querySelectorAll('img').length,math:editor.querySelectorAll('.math-render').length},errors:bvErrors},null,2);if(navigator.clipboard?.writeText)navigator.clipboard.writeText(report).catch(()=>bvLog('HRC-LOG-001','Clipboard write failed'));else {const t=document.createElement('textarea');t.value=report;document.body.append(t);t.select();document.execCommand('copy');t.remove()}};
 window.addEventListener('error',e=>bvLog('HRC-JS-001',e.message));window.addEventListener('unhandledrejection',e=>bvLog('HRC-JS-002',e.reason));
 
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -21,6 +21,29 @@ function loadKatex(){if(window.katex){katexReady=true;renderMath();return}const 
 function mathFallback(){document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{if(el.dataset.rendered==='yes')return;el.title='LaTeX 原始碼：'+el.dataset.math;el.style.whiteSpace='pre-wrap';el.style.overflowWrap='anywhere';});}
 function mathMarkup(expr,display){return '<span class="math-render'+(display?' math-block':'')+'" contenteditable="false" data-math="'+escapeHtml(expr)+'" data-display="'+(display?'block':'inline')+'">'+escapeHtml(expr)+'</span>'}
 // Shared HRC 5.0.1 renderer: same implementation in editor and reader.
+
+// 5.0.7: recover mobile clipboard TeX that arrives without math delimiters.
+function recoverMobileMath507(input){
+ const fenced=String(input||'').split(/(```[\s\S]*?```)/g);
+ return fenced.map((chunk,index)=>{
+  if(index%2)return chunk;
+  const lines=chunk.split('\n');
+  return lines.map(line=>{
+   if(/\$\$|\\\[|\\\]|\\\(|\\\)/.test(line))return line;
+   // Only recover clearly TeX-like complete formula lines; do not modify prose.
+   const m=line.match(/((?:[A-Za-z][A-Za-z0-9]*_\{[^{}]+\}|[A-Za-z][A-Za-z0-9]*)\s*=\s*[^\n]{2,240})/);
+   if(!m)return line;
+   const tail=m[1].trim();
+   if(!/(?:\\(?:times|frac|cdot|sqrt|text|left|right|sum|int)|_\{|\^\{)/.test(tail))return line;
+   // Mobile accessibility copy may prepend a rendered equation before the TeX source.
+   const prefix=line.slice(0,m.index).trim();
+   if(prefix&&prefix.length>160)return line;
+   if(prefix&&!/[=×÷+−-]/.test(prefix))return line;
+   return (prefix?'':'')+'$$'+tail+'$$';
+  }).join('\n');
+ }).join('');
+}
+
 function normalizeMobileMath503(input){
  let s=String(input||'').replace(/\r\n?/g,'\n');
  const parts=s.split(/(```[\s\S]*?```)/g);
@@ -39,7 +62,7 @@ function normalizeMobileMath503(input){
  }).join('');
 }
 function hrcNormalizeSource(md){
- let s=normalizeMobileMath503(md);
+ let s=recoverMobileMath507(normalizeMobileMath503(md));
  // Recover line-broken SVG data URLs (legacy saved notes), without changing ordinary paragraphs.
  s=s.replace(/(!\[[^\]\n]*\]\(data:image\/svg\+xml[^\n]*\n(?:[^\n]*\n)*?[^\n]*\))(?=\n|$)/gi,m=>m.replace(/\n/g,''));
  // Markdown tables pasted with empty lines between header, delimiter and rows.
