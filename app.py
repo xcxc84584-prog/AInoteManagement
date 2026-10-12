@@ -35,6 +35,7 @@ matrix_component=components.declare_component('ainote_matrix_table',path=str(Pat
 paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
 composite_component=components.declare_component('bv_composite_editor',path=str(Path(__file__).parent/'components'/'composite_editor'))
 composite_reader_component=components.declare_component('bv_composite_reader',path=str(Path(__file__).parent/'components'/'composite_reader'))
+reader_paste_component=components.declare_component('bv_reader_paste',path=str(Path(__file__).parent/'components'/'reader_paste'))
 rich_paste_component=components.declare_component('bv_rich_paste',path=str(Path(__file__).parent/'components'/'rich_paste'))
 schedule_calendar_component=components.declare_component('bv_schedule_calendar',path=str(Path(__file__).parent/'components'/'schedule_calendar'))
 section_scroll_component=components.declare_component('bv_section_scroll',path=str(Path(__file__).parent/'components'/'section_scroll'))
@@ -992,7 +993,7 @@ with st.sidebar:
                 st.query_params['area']=area
     except Exception:pass
 
-    st.caption('右鍵操作 · 拖曳移動 · F2 · Delete · Ctrl+D/C/V/X')
+    st.caption('右鍵操作 · 拖曳移動 · F2 · Delete / Ctrl+D 刪除 · Ctrl+C/V/X')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
     payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':re.findall(r'//\[([^\]\n]+)\]//',st.session_state.get('block_content_'+n['id'],n.get('content') or '')) if n['kind']=='COMPOSITE' else []} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
@@ -1744,11 +1745,17 @@ def split_meta(content):
     except Exception:return None
 
 def reader_operation(note,event):
-    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit'):return
+    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit','image'):return
     nonce_key='_reader_nonce_'+note['id']
     if event.get('nonce')==st.session_state.get(nonce_key):return
     st.session_state[nonce_key]=event.get('nonce')
     content=note.get('content') or ''
+    if event['action']=='image':
+        idx=selected_source_line(content,event.get('selection'))
+        if idx is None:
+            st.error('無法唯一定位插入位置，請選取該行較長且唯一的文字');return
+        st.session_state['_reader_image_pending']={'note_id':note['id'],'line':idx,'selection':event.get('selection','')}
+        st.rerun();return
     if event['action']=='unsplit':
         meta=split_meta(content)
         if not meta:
@@ -1779,13 +1786,13 @@ def reader_operation(note,event):
         # Replace the actual source line with a marker instead of inserting a duplicate heading.
         original=lines[index].rstrip('\r\n')
         lines[index]='//['+original.strip().removeprefix('#').strip().replace(']','')+']//'+('\n' if lines[index].endswith('\n') else '')
-        update_note(note['id'],content=''.join(lines));st.success('目錄已寫入編輯文本');st.rerun()
+        update_note(note['id'],content=''.join(lines));st.session_state['block_content_'+note['id']]=''.join(lines);st.success('目錄已寫入編輯文本');st.rerun()
     elif event['action']=='untoc':
         match=re.match(r'^(\s*)//\[([^\]\n]+)\]//(\s*)$',lines[index].rstrip('\r\n'))
         if not match:
             st.error('選取的文字不是目錄標記');return
         lines[index]=match.group(1)+match.group(2)+('\n' if lines[index].endswith('\n') else '')
-        update_note(note['id'],content=''.join(lines));st.success('已取消目錄');st.rerun()
+        update_note(note['id'],content=''.join(lines));st.session_state['block_content_'+note['id']]=''.join(lines);st.success('已取消目錄');st.rerun()
     else:
         if split_meta(content):st.error('此文件已有未還原的分割紀錄，請先還原');return
         upper=''.join(lines[:index+1]);lower=''.join(lines[index+1:])
@@ -1808,10 +1815,46 @@ def reader_operation(note,event):
             raise
         st.success('分割完成：'+base+'-1、'+base+'-2');st.rerun()
 
+def commit_reader_image(note_id,raw):
+    pending=st.session_state.get('_reader_image_pending')
+    if not pending or pending['note_id']!=note_id:return
+    latest=c.table('notes').select('*').eq('id',note_id).eq('owner_id',uid).single().execute().data
+    content=latest.get('content') or ''
+    index=selected_source_line(content,pending['selection'])
+    if index is None:raise ValueError('原始文件已變更，無法確定插入位置，請重新選取')
+    aid=upload_image(raw,note_id)
+    lines=content.splitlines(keepends=True)
+    if lines[index] and not lines[index].endswith('\n'):lines[index]+='\n'
+    lines.insert(index+1,'\n![插入圖片](asset://'+aid+')\n')
+    updated=''.join(lines)
+    update_note(note_id,content=updated)
+    st.session_state['block_content_'+note_id]=updated
+    st.session_state.pop('_reader_image_pending',None)
+    st.session_state['_composite_rev_'+note_id]=st.session_state.get('_composite_rev_'+note_id,0)+1
+
+def show_reader_image_upload(note):
+    pending=st.session_state.get('_reader_image_pending')
+    if not pending or pending.get('note_id')!=note['id']:return
+    st.info('將圖片插入選取文字的下一行。可選擇本地上傳，或在下方貼上圖片（Ctrl+V）。')
+    file=st.file_uploader('從本地上傳圖片',type=['png','jpg','jpeg','gif','webp','svg'],key='reader_upload_'+note['id'])
+    paste_event=reader_paste_component(key='reader_paste_'+note['id'],default=None)
+    if st.button('取消插入',key='reader_cancel_'+note['id']):
+        st.session_state.pop('_reader_image_pending',None);st.rerun()
+    if file is not None:
+        try:commit_reader_image(note['id'],file.getvalue());st.success('圖片已插入並同步儲存');st.rerun()
+        except Exception as exc:st.error('圖片插入失敗：'+str(exc))
+    if isinstance(paste_event,dict) and paste_event.get('data') and paste_event.get('nonce')!=st.session_state.get('_reader_paste_nonce'):
+        st.session_state['_reader_paste_nonce']=paste_event['nonce']
+        try:
+            raw=base64.b64decode(paste_event['data'].split(',',1)[-1],validate=True)
+            commit_reader_image(note['id'],raw);st.success('貼上圖片已插入並同步儲存');st.rerun()
+        except Exception as exc:st.error('貼上圖片失敗：'+str(exc))
+
 def show_composite_reader(note):
     content=note.get('content') or ''
     event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),key='reader_'+note['id'],default=None)
     reader_operation(note,event)
+    show_reader_image_upload(note)
 
 read_id=st.session_state.get('full_read_id')
 if read_id and read_id in byid:
