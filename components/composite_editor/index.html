@@ -30,12 +30,35 @@ let katexReady=false;
 function renderMath(){if(!window.katex)return;document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{try{window.katex.render(el.dataset.math,el,{throwOnError:false,displayMode:el.dataset.display==='block',strict:'ignore',trust:false})}catch(e){el.textContent=el.dataset.math}})}
 function loadKatex(){if(window.katex){katexReady=true;renderMath();return}const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js';sc.onload=()=>{katexReady=true;renderMath()};sc.onerror=()=>{status.textContent='數學字型資源載入失敗；仍保留 LaTeX 原始碼'};document.head.appendChild(sc)}
 function mathMarkup(expr,display){return '<span class="math-render'+(display?' math-block':'')+'" contenteditable="false" data-math="'+escapeHtml(expr)+'" data-display="'+(display?'block':'inline')+'">'+escapeHtml(expr)+'</span>'}
+function extractMarkdownImages(text){
+ const tokens=[];let output='',i=0;
+ while(i<text.length){
+  if(text.slice(i,i+2)!=='!['){output+=text[i++];continue}
+  let altEnd=text.indexOf('](',i+2);if(altEnd<0){output+=text[i++];continue}
+  let start=altEnd+2,src='',end=-1;
+  if(/^data:image\/(?:svg\+xml|png|jpeg|webp|gif)/i.test(text.slice(start))){
+   // Data URI can contain CSS parentheses. Only a closing ')' followed by a newline/end
+   // or the start of ordinary prose terminates the image.
+   let lineEnd=text.indexOf('\n',start);if(lineEnd<0)lineEnd=text.length;
+   for(let j=lineEnd-1;j>=start;j--){if(text[j]===')'){end=j;break}}
+  }else{
+   let depth=0;for(let j=start;j<text.length;j++){
+    if(text[j]==='(')depth++;else if(text[j]===')'){if(depth===0){end=j;break}depth--}
+    if(text[j]==='\n')break;
+   }
+  }
+  if(end<0){output+=text[i++];continue}
+  src=text.slice(start,end).trim();if(!/^(?:data:image\/|asset:\/\/|https?:\/\/)/i.test(src)){output+=text[i++];continue}
+  let alt=text.slice(i+2,altEnd),id=tokens.length;
+  tokens.push('<img loading="lazy" alt="'+escapeHtml(alt)+'" src="'+escapeHtml(src)+'">');
+  output+='\uE000'+id+'\uE001';i=end+1;
+ }
+ return {prepared:output,tokens};
+}
 function mathInline(str){
  const tokens=[];
  // Tokenize full Markdown image URLs before HTML escaping, including percent-encoded SVG data URLs.
- let prepared=String(str).replace(/!\[([^\]\n]*)\]\((data:image\/(?:svg\+xml|png|jpeg|gif|webp)(?:;[^\s)]*)?|asset:\/\/[0-9a-f-]{36}|https?:\/\/[^\s)]+)\)/gi,(full,alt,src)=>{
-   const id=tokens.length;tokens.push('<img loading="lazy" alt="'+escapeHtml(alt)+'" src="'+escapeHtml(src)+'">');return '\uE000'+id+'\uE001';
- });
+ const extracted=extractMarkdownImages(String(str));let prepared=extracted.prepared;tokens.push(...extracted.tokens);
  const parts=prepared.split(/(\\\([\s\S]*?\\\)|(?<!\\)\$(?!\$)[^\n$]+?(?<!\\)\$)/g);
  return parts.map(part=>{
    if(part.startsWith('\\(')&&part.endsWith('\\)'))return mathMarkup(part.slice(2,-2),false);
@@ -62,8 +85,8 @@ for(let i=0;i<lines.length;i++){
  if(marker){out.push('<h3>'+escapeHtml(marker[1])+'</h3>');continue}
  let h=line.match(/^(#{1,6})\s+(.+)$/);
  if(h){let n=h[1].length;out.push(`<h${n}>${inlineFormat(h[2])}</h${n}>`);continue}
- let img=line.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
- if(img){out.push('<p><img alt="'+escapeHtml(img[1])+'" src="'+escapeHtml(img[2])+'"></p>');continue}
+ let img=null; // Image URLs are handled by mathInline's balanced scanner.
+ if(/^!\[/.test(line)){out.push('<p>'+inlineFormat(line)+'</p>');continue}
  if(/^\s*[-*]\s+/.test(line)){out.push('<div>• '+inlineFormat(line.replace(/^\s*[-*]\s+/,''))+'</div>');continue}
  out.push('<div>'+inlineFormat(line)+'</div>')
 }
@@ -105,7 +128,7 @@ function cleanMathNodes(root){
  }
 }
 function parsePlainWithImages(txt){
- let frag=document.createDocumentFragment(),rx=/!\[([^\]\n]*)\]\((data:image\/(?:svg\+xml|png|jpeg|webp|gif)[^\n]*?)\)(?=\s|$)/gi,last=0,m;
+ let frag=document.createDocumentFragment(),rx=/!\[([^\]\n]*)\]\((data:image\/(?:svg\+xml|png|jpeg|webp|gif)[^\n]*)\)(?=\s|$)/gi,last=0,m;
  while((m=rx.exec(txt))){if(m.index>last)frag.append(document.createTextNode(txt.slice(last,m.index)));frag.append(registerImage(normalizeSvg(m[2]),m[1]||'GPT 圖表'));last=rx.lastIndex}
  if(last<txt.length)frag.append(document.createTextNode(txt.slice(last)));return frag
 }
