@@ -439,11 +439,14 @@ def asset_image(asset_id,assets):
         return None
 
 def signed_markdown(content,assets):
-    # Signed URLs are generated only for assets owned by the logged-in user.
+    import base64
     def replace(match):
-        alt,asset_id=match.group(1),match.group(2)
-        url=asset_url(asset_id,assets)
-        return f'![{alt}]({url})' if url else f'**[圖片無法讀取：{alt}]**'
+        alt,aid=match.group(1),match.group(2)
+        raw=asset_image(aid,assets)
+        if not raw:return f'**[圖片無法讀取：{alt}]**'
+        mime=(assets.get(aid) or {}).get('mime_type') or 'image/png'
+        if mime not in ('image/png','image/jpeg','image/gif','image/webp','image/svg+xml'):mime='image/png'
+        return f'![{alt}](data:{mime};base64,{base64.b64encode(raw).decode("ascii")})'
     return re.sub(r'!\[([^\]]*)\]\(asset://([0-9a-fA-F-]{36})\)',replace,content or '')
 
 # Table metadata is stored in the Markdown itself, so no database migration is needed.
@@ -1704,8 +1707,18 @@ if needs_assets:
 # Map persisted asset references to browser-readable signed URLs for the rich editor.
 # The Markdown source retains asset:// identifiers, never expiring URLs.
 def composite_asset_urls(content):
+    """Embed owned assets directly: no signed URL, browser auth or iframe CORS dependency."""
+    import base64
     ids=set(re.findall(r'asset://([0-9a-fA-F-]{36})',str(content or '')))
-    return {aid:url for aid in ids if (url:=asset_url(aid,assets))}
+    result={}
+    for aid in ids:
+        raw=asset_image(aid,assets)
+        if raw:
+            mime=(assets.get(aid) or {}).get('mime_type') or 'image/png'
+            if mime not in ('image/png','image/jpeg','image/gif','image/webp','image/svg+xml'):
+                mime='image/png'
+            result[aid]='data:'+mime+';base64,'+base64.b64encode(raw).decode('ascii')
+    return result
 
 # 本地備份與關閉操作保留在 Explorer 右鍵選單；不在編輯頁面頂部顯示。
 
