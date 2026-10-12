@@ -4,7 +4,7 @@
 
 const bvErrors=[];
 function bvLog(code,detail){const entry={code,time:new Date().toISOString(),detail:String(detail||'').slice(0,350)};bvErrors.push(entry);if(bvErrors.length>60)bvErrors.shift();const out=document.getElementById('bvLog');if(out)out.textContent=bvErrors.map(x=>`[${x.time}] ${x.code} ${x.detail}`).join('\n');}
-document.getElementById('bvCopyLog').onclick=()=>{const report=JSON.stringify({version:'5.0.1',platform:navigator.userAgent,document:hrcSourceStats(content),rendered:{tables:editor.querySelectorAll('table').length,images:editor.querySelectorAll('img').length,math:editor.querySelectorAll('.math-render').length},errors:bvErrors},null,2);if(navigator.clipboard?.writeText)navigator.clipboard.writeText(report).catch(()=>bvLog('HRC-LOG-001','Clipboard write failed'));else {const t=document.createElement('textarea');t.value=report;document.body.append(t);t.select();document.execCommand('copy');t.remove()}};
+document.getElementById('bvCopyLog').onclick=()=>{const report=JSON.stringify({version:'5.0.2',platform:navigator.userAgent,document:hrcSourceStats(content),rendered:{tables:editor.querySelectorAll('table').length,images:editor.querySelectorAll('img').length,math:editor.querySelectorAll('.math-render').length},errors:bvErrors},null,2);if(navigator.clipboard?.writeText)navigator.clipboard.writeText(report).catch(()=>bvLog('HRC-LOG-001','Clipboard write failed'));else {const t=document.createElement('textarea');t.value=report;document.body.append(t);t.select();document.execCommand('copy');t.remove()}};
 window.addEventListener('error',e=>bvLog('HRC-JS-001',e.message));window.addEventListener('unhandledrejection',e=>bvLog('HRC-JS-002',e.reason));
 
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -38,21 +38,34 @@ function hrcImageTokens(text){
  const tokens=[];let output='',i=0;
  while(i<text.length){
   if(text.slice(i,i+2)!=='!['){output+=text[i++];continue}
-  const altEnd=text.indexOf('](',i+2);if(altEnd<0||altEnd-i>1024){output+=text[i++];continue}
-  const start=altEnd+2,tail=text.slice(start),isData=/^data:image\/(?:svg\+xml|png|jpeg|webp|gif)/i.test(tail);
+  const altEnd=text.indexOf('](',i+2);
+  if(altEnd<0||altEnd-i>1024){output+=text[i++];continue}
+  const start=altEnd+2;
+  const probe=text.slice(start,start+100).replace(/\\([:()])/g,'$1');
+  const isData=/^data:image\/(?:svg\+xml|png|jpeg|webp|gif)(?:[;,]|$)/i.test(probe);
   let end=-1;
   if(isData){
-   // A data URI may contain literal parentheses. The image ends at the final ')' on the line.
-   const lineEnd=text.indexOf('\n',start),stop=lineEnd<0?text.length:lineEnd;
-   for(let j=stop-1;j>=start;j--){if(text[j]===')'){end=j;break}}
+   // Legacy Markdown escaping may add backslashes to data: and parentheses.
+   // Percent-encoded SVG may be huge; search until the closing Markdown delimiter.
+   for(let j=start;j<text.length&&j<start+2000000;j++){
+    if(text[j]===')' && (j===start||text[j-1]!=='\\')){
+     const remainder=text.slice(j+1,j+30);
+     if(j+1===text.length||/^\s*(?:\n|$)/.test(remainder)||/^[.,;!?，。；！]/.test(remainder)){end=j;break}
+    }
+   }
   }else{
    let depth=0;for(let j=start;j<text.length&&j<start+200000;j++){
     if(text[j]==='\n')break;
-    if(text[j]==='(')depth++;else if(text[j]===')'){if(depth===0){end=j;break}depth--}
+    if(text[j]==='('&&text[j-1]!=='\\')depth++;
+    else if(text[j]===')'&&text[j-1]!=='\\'){if(depth===0){end=j;break}depth--}
    }
   }
-  if(end<0){output+=text[i++];continue}
-  const src=text.slice(start,end).trim();
+  if(end<0){if(isData&&typeof bvLog==='function')bvLog('HRC-SVG-009','SVG image closing delimiter missing');output+=text[i++];continue}
+  let src=text.slice(start,end).trim();
+  if(isData){
+   if(/data\\:image/i.test(src)&&typeof bvLog==='function')bvLog('HRC-SVG-008','Recovered escaped data URI colon');
+   src=src.replace(/\\([:()])/g,'$1').replace(/\n/g,'');
+  }
   if(!/^(?:data:image\/(?:svg\+xml|png|jpeg|webp|gif)|asset:\/\/|https?:\/\/|clipboard-image:\/\/)/i.test(src)){
    output+=text[i++];continue;
   }
@@ -109,7 +122,7 @@ function renderMarkdown(md){
 function hrcSourceStats(md){
  const normalized=hrcNormalizeSource(md),lines=normalized.split('\n');
  const tables=lines.filter((line,i)=>i>0&&/^\s*\|?[\s:|\-]+\|?\s*$/.test(line)&&line.includes('-')&&lines[i-1].includes('|')).length;
- return {tablesExpected:tables,svgDataUris:(normalized.match(/!\[[^\]\n]*\]\(data:image\/svg\+xml/gi)||[]).length,imagesExpected:(normalized.match(/!\[[^\]\n]*\]\((?:data:image\/|asset:\/\/|https?:\/\/)/gi)||[]).length,mathExpected:(normalized.match(/\$\$|\\\[|\\\(|(?<!\\)\$(?!\$)/g)||[]).length};
+ return {tablesExpected:tables,svgDataUris:(normalized.match(/!\[[^\]\n]*\]\(data\\?:image\/svg\+xml/gi)||[]).length,imagesExpected:(normalized.match(/!\[[^\]\n]*\]\((?:data\\?:image\/|asset:\/\/|https?:\/\/)/gi)||[]).length,mathExpected:(normalized.match(/\$\$|\\\[|\\\(|(?<!\\)\$(?!\$)/g)||[]).length};
 }
 function hrcAudit(md,root){
  const source=hrcSourceStats(md),rendered={tables:root.querySelectorAll('table').length,images:root.querySelectorAll('img').length,math:root.querySelectorAll('.math-render').length};

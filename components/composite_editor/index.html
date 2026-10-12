@@ -25,7 +25,7 @@ function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...dat
 
 const bvErrors=[];
 function bvLog(code,detail){const entry={code,time:new Date().toISOString(),detail:String(detail||'').slice(0,350)};bvErrors.push(entry);if(bvErrors.length>60)bvErrors.shift();const out=document.getElementById('bvLog');if(out)out.textContent=bvErrors.map(x=>`[${x.time}] ${x.code} ${x.detail}`).join('\n');}
-document.getElementById('bvCopyLog').onclick=()=>{const report=JSON.stringify({version:'5.0.1',platform:navigator.userAgent,document:hrcSourceStats((source?raw.value:editor.textContent)),rendered:{tables:editor.querySelectorAll('table').length,images:editor.querySelectorAll('img').length,math:editor.querySelectorAll('.math-render').length},errors:bvErrors},null,2);if(navigator.clipboard?.writeText)navigator.clipboard.writeText(report).catch(()=>bvLog('HRC-LOG-001','Clipboard write failed'));else {const t=document.createElement('textarea');t.value=report;document.body.append(t);t.select();document.execCommand('copy');t.remove()}};
+document.getElementById('bvCopyLog').onclick=()=>{const report=JSON.stringify({version:'5.0.2',platform:navigator.userAgent,document:hrcSourceStats((source?raw.value:editor.textContent)),rendered:{tables:editor.querySelectorAll('table').length,images:editor.querySelectorAll('img').length,math:editor.querySelectorAll('.math-render').length},errors:bvErrors},null,2);if(navigator.clipboard?.writeText)navigator.clipboard.writeText(report).catch(()=>bvLog('HRC-LOG-001','Clipboard write failed'));else {const t=document.createElement('textarea');t.value=report;document.body.append(t);t.select();document.execCommand('copy');t.remove()}};
 window.addEventListener('error',e=>bvLog('HRC-JS-001',e.message));window.addEventListener('unhandledrejection',e=>bvLog('HRC-JS-002',e.reason));
 
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -59,21 +59,34 @@ function hrcImageTokens(text){
  const tokens=[];let output='',i=0;
  while(i<text.length){
   if(text.slice(i,i+2)!=='!['){output+=text[i++];continue}
-  const altEnd=text.indexOf('](',i+2);if(altEnd<0||altEnd-i>1024){output+=text[i++];continue}
-  const start=altEnd+2,tail=text.slice(start),isData=/^data:image\/(?:svg\+xml|png|jpeg|webp|gif)/i.test(tail);
+  const altEnd=text.indexOf('](',i+2);
+  if(altEnd<0||altEnd-i>1024){output+=text[i++];continue}
+  const start=altEnd+2;
+  const probe=text.slice(start,start+100).replace(/\\([:()])/g,'$1');
+  const isData=/^data:image\/(?:svg\+xml|png|jpeg|webp|gif)(?:[;,]|$)/i.test(probe);
   let end=-1;
   if(isData){
-   // A data URI may contain literal parentheses. The image ends at the final ')' on the line.
-   const lineEnd=text.indexOf('\n',start),stop=lineEnd<0?text.length:lineEnd;
-   for(let j=stop-1;j>=start;j--){if(text[j]===')'){end=j;break}}
+   // Legacy Markdown escaping may add backslashes to data: and parentheses.
+   // Percent-encoded SVG may be huge; search until the closing Markdown delimiter.
+   for(let j=start;j<text.length&&j<start+2000000;j++){
+    if(text[j]===')' && (j===start||text[j-1]!=='\\')){
+     const remainder=text.slice(j+1,j+30);
+     if(j+1===text.length||/^\s*(?:\n|$)/.test(remainder)||/^[.,;!?，。；！]/.test(remainder)){end=j;break}
+    }
+   }
   }else{
    let depth=0;for(let j=start;j<text.length&&j<start+200000;j++){
     if(text[j]==='\n')break;
-    if(text[j]==='(')depth++;else if(text[j]===')'){if(depth===0){end=j;break}depth--}
+    if(text[j]==='('&&text[j-1]!=='\\')depth++;
+    else if(text[j]===')'&&text[j-1]!=='\\'){if(depth===0){end=j;break}depth--}
    }
   }
-  if(end<0){output+=text[i++];continue}
-  const src=text.slice(start,end).trim();
+  if(end<0){if(isData&&typeof bvLog==='function')bvLog('HRC-SVG-009','SVG image closing delimiter missing');output+=text[i++];continue}
+  let src=text.slice(start,end).trim();
+  if(isData){
+   if(/data\\:image/i.test(src)&&typeof bvLog==='function')bvLog('HRC-SVG-008','Recovered escaped data URI colon');
+   src=src.replace(/\\([:()])/g,'$1').replace(/\n/g,'');
+  }
   if(!/^(?:data:image\/(?:svg\+xml|png|jpeg|webp|gif)|asset:\/\/|https?:\/\/|clipboard-image:\/\/)/i.test(src)){
    output+=text[i++];continue;
   }
@@ -130,7 +143,7 @@ function renderMarkdown(md){
 function hrcSourceStats(md){
  const normalized=hrcNormalizeSource(md),lines=normalized.split('\n');
  const tables=lines.filter((line,i)=>i>0&&/^\s*\|?[\s:|\-]+\|?\s*$/.test(line)&&line.includes('-')&&lines[i-1].includes('|')).length;
- return {tablesExpected:tables,svgDataUris:(normalized.match(/!\[[^\]\n]*\]\(data:image\/svg\+xml/gi)||[]).length,imagesExpected:(normalized.match(/!\[[^\]\n]*\]\((?:data:image\/|asset:\/\/|https?:\/\/)/gi)||[]).length,mathExpected:(normalized.match(/\$\$|\\\[|\\\(|(?<!\\)\$(?!\$)/g)||[]).length};
+ return {tablesExpected:tables,svgDataUris:(normalized.match(/!\[[^\]\n]*\]\(data\\?:image\/svg\+xml/gi)||[]).length,imagesExpected:(normalized.match(/!\[[^\]\n]*\]\((?:data\\?:image\/|asset:\/\/|https?:\/\/)/gi)||[]).length,mathExpected:(normalized.match(/\$\$|\\\[|\\\(|(?<!\\)\$(?!\$)/g)||[]).length};
 }
 function hrcAudit(md,root){
  const source=hrcSourceStats(md),rendered={tables:root.querySelectorAll('table').length,images:root.querySelectorAll('img').length,math:root.querySelectorAll('.math-render').length};
@@ -267,15 +280,55 @@ async function pasteChatGPT(cb){
  updateToc();renderMath();
  bvLog('HRC-CLIP-INFO',JSON.stringify({types:diagnostics.types,htmlChars:diagnostics.html,plainChars:diagnostics.plain,images:images.length-start,missing}));status.textContent='已解析 '+(images.length-start)+' 張圖片；缺失 '+missing+' 張。剪貼簿：'+diagnostics.types.join(', ')+(missing?'。❗ 請檢查圖片缺失':'');
 }
+
+// v5.0.3 independent clipboard pipeline; previous paste handler is not used.
+async function pasteGPT503(cb){
+ const html=cb.getData('text/html')||'',plain=cb.getData('text/plain')||'';
+ const root=document.createElement('div'),start=images.length;
+ if(html.trim()){
+  const doc=new DOMParser().parseFromString(html,'text/html');
+  doc.querySelectorAll('script,iframe,form,input,button,link,meta,base').forEach(n=>n.remove());
+  for(const el of [...doc.body.querySelectorAll('*')])for(const a of [...el.attributes]){
+   if(/^on/i.test(a.name)||a.name==='srcdoc'||(['href','src','data'].includes(a.name)&&/^\s*javascript:/i.test(a.value)))el.removeAttribute(a.name);
+  }
+  for(const svg of [...doc.body.querySelectorAll('svg')]){
+   try{svg.replaceWith(registerImage(svgData(svg),'SVG 圖表'))}catch(err){bvLog('503-SVG',err);svg.replaceWith(warningNode('SVG 無法轉換'))}
+  }
+  for(const im of [...doc.body.querySelectorAll('img')]){
+   const src=im.getAttribute('src')||'';
+   if(/^data:image\/(svg\+xml|png|jpeg|webp|gif)/i.test(src))im.replaceWith(registerImage(normalizeSvg(src),im.alt||'圖片'));
+   else if(!/^https?:\/\//i.test(src)&&!/^asset:\/\//i.test(src))im.replaceWith(warningNode('圖片未包含於剪貼簿'));
+  }
+  doc.body.querySelectorAll('canvas').forEach(n=>n.replaceWith(warningNode('Canvas 圖形無可複製的像素資料')));
+  cleanMathNodes(doc.body);
+  while(doc.body.firstChild)root.append(doc.body.firstChild);
+ }else if(plain.trim()){
+  const holder=document.createElement('div');holder.innerHTML=renderMarkdown(plain);
+  while(holder.firstChild)root.append(holder.firstChild);
+ }
+ if(!root.querySelector('img')&&images.length===start){
+  for(const item of [...cb.items].filter(x=>x.kind==='file'&&x.type.startsWith('image/'))){
+   const file=item.getAsFile();if(file&&file.size<=10*1024*1024)root.append(registerImage(await fileData(file),file.name||'圖片'));
+  }
+ }
+ if(!root.childNodes.length&&plain)root.append(document.createTextNode(plain));
+ const md=block(root).replace(/\n{3,}/g,'\n\n').trim();
+ if(source)raw.setRangeText(md,raw.selectionStart,raw.selectionEnd,'end');
+ else{const fragment=document.createDocumentFragment();while(root.firstChild)fragment.append(root.firstChild);insertAtCaret(fragment)}
+ updateToc();renderMath();
+ status.textContent='v5.0.3 已貼上；內嵌圖片 '+(images.length-start)+' 張，請儲存並重新開啟驗證';
+ bvLog('503-CLIP',JSON.stringify({html:html.length,plain:plain.length,images:images.length-start}));
+}
+
 editor.addEventListener('paste',async e=>{
 
  e.preventDefault();
- try{await pasteChatGPT(e.clipboardData)}catch(err){bvLog('HRC-CLIP-001',err);status.textContent='❗ 貼上失敗：'+String(err)+'；未自動丟棄剪貼簿內容';}
+ try{await pasteGPT503(e.clipboardData)}catch(err){bvLog('HRC-CLIP-001',err);status.textContent='❗ 貼上失敗：'+String(err)+'；未自動丟棄剪貼簿內容';}
 });
 // Source editor has its own paste event; rich clipboard must work in HRC there too.
 raw.addEventListener('paste',async e=>{
 
- e.preventDefault();try{await pasteChatGPT(e.clipboardData)}catch(err){bvLog('HRC-CLIP-001',err);status.textContent='❗ 貼上失敗：'+String(err)}
+ e.preventDefault();try{await pasteGPT503(e.clipboardData)}catch(err){bvLog('HRC-CLIP-001',err);status.textContent='❗ 貼上失敗：'+String(err)}
 });
 document.getElementById('uploadImage').onclick=()=>document.getElementById('imageFile').click();
 document.getElementById('imageFile').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;if(f.size>10*1024*1024){status.textContent='圖片不得超過 10 MB';return}const data=await fileData(f),i=images.length;images.push({data});const img=document.createElement('img');img.src=data;img.alt=f.name||'圖片';img.dataset.ref='clipboard-image://'+i;if(source){raw.value+='\n\n!['+(f.name||'圖片').replace(/[\[\]]/g,'')+'](clipboard-image://'+i+')\n';}else insertAtCaret(img);e.target.value='';updateToc();status.textContent='圖片已插入，請儲存圖文文件'};
