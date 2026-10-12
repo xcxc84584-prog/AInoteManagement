@@ -6,17 +6,20 @@ import html
 import io
 import json
 import logging
+import math
 import os
 import re
 import uuid
 import zipfile
 import time
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from datetime import datetime, timezone, date, time as dt_time, timedelta
 from pathlib import Path
 import streamlit as st
 import pandas as pd
 from PIL import Image, ImageOps
+import cairosvg
 from supabase import create_client
 from matrix_engine import calculate
 from local_backend import LocalDB
@@ -31,6 +34,7 @@ local_component=components.declare_component('ainote_local_save',path=str(Path(_
 matrix_component=components.declare_component('ainote_matrix_table',path=str(Path(__file__).parent/'components'/'matrix_table'))
 paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
 composite_component=components.declare_component('bv_composite_editor',path=str(Path(__file__).parent/'components'/'composite_editor'))
+composite_reader_component=components.declare_component('bv_composite_reader',path=str(Path(__file__).parent/'components'/'composite_reader'))
 rich_paste_component=components.declare_component('bv_rich_paste',path=str(Path(__file__).parent/'components'/'rich_paste'))
 schedule_calendar_component=components.declare_component('bv_schedule_calendar',path=str(Path(__file__).parent/'components'/'schedule_calendar'))
 section_scroll_component=components.declare_component('bv_section_scroll',path=str(Path(__file__).parent/'components'/'section_scroll'))
@@ -333,6 +337,43 @@ def subtree(nid,allnotes):
 
 def image_bytes(raw):
     if len(raw)>MAX_IMAGE:raise ValueError('圖片不得超過 10MB')
+    if re.search(br'<!\s*(?:DOCTYPE|ENTITY)',raw[:4096],re.I):raise ValueError('圖片不得包含 DOCTYPE 或 ENTITY')
+    # ChatGPT diagrams are often copied as SVG. Pillow cannot open SVG, so
+    # validate and sanitize the vector document, then retain it as SVG. It is
+    # displayed only as an image; external resources and active content are
+    # removed before it reaches Storage.
+    if raw.lstrip().startswith(b'<') and re.search(br'<\s*svg(?:\s|>)',raw[:4096],re.I):
+        try:
+            root=ET.fromstring(raw)
+            if root.tag.split('}')[-1].lower()!='svg':raise ValueError('無效的 SVG 圖片')
+            for parent in root.iter():
+                for child in list(parent):
+                    if child.tag.split('}')[-1].lower() in ('script','iframe','object','embed','form'):
+                        parent.remove(child)
+                for name,value in list(parent.attrib.items()):
+                    local=name.split('}')[-1].lower()
+                    if local.startswith('on'):
+                        del parent.attrib[name]
+                    elif local in ('href','src') and not value.strip().startswith(('#','data:image/')):
+                        del parent.attrib[name]
+                    elif local=='style':
+                        parent.attrib[name]=re.sub(r'url\([^)]*\)|@import[^;]*;?', '',value,flags=re.I)
+                if parent.tag.split('}')[-1].lower()=='style' and parent.text:
+                    parent.text=re.sub(r'url\([^)]*\)|@import[^;]*;?', '',parent.text,flags=re.I)
+            viewbox=root.get('viewBox') or root.get('viewbox') or ''
+            nums=[float(x) for x in re.split(r'[ ,]+',viewbox.strip()) if x]
+            if len(nums)==4 and nums[2]>0 and nums[3]>0:
+                width,height=nums[2],nums[3]
+            else:
+                def dimension(value,default):
+                    match=re.match(r'^\s*(\d+(?:\.\d+)?)\s*(?:px)?\s*$',value or '')
+                    return float(match.group(1)) if match else default
+                width=dimension(root.get('width'),800)
+                height=dimension(root.get('height'),450)
+            if not math.isfinite(width) or not math.isfinite(height) or width<=0 or height<=0 or width*height>25_000_000:raise ValueError('SVG 尺寸無效或過大')
+            return ET.tostring(root,encoding='utf-8'),'image/svg+xml','svg'
+        except ValueError:raise
+        except Exception as exc:raise ValueError('SVG 圖表格式無效，請改用 PNG 截圖後貼上') from exc
     im=Image.open(io.BytesIO(raw))
     if im.width*im.height>25_000_000:raise ValueError('圖片像素過大')
     im=ImageOps.exif_transpose(im)
@@ -1668,6 +1709,59 @@ def composite_asset_urls(content):
 
 # 本地備份與關閉操作保留在 Explorer 右鍵選單；不在編輯頁面頂部顯示。
 
+def selected_source_line(content, selection):
+    """Match a selected rendered phrase to its original Markdown line; reject ambiguity."""
+    needle=' '.join(str(selection or '').split()).strip()
+    if not needle or len(needle)>500:return None
+    lines=content.splitlines(keepends=True)
+    matches=[]
+    for i,line in enumerate(lines):
+        plain=re.sub(r'(?<!\\)[*_`#>\[\]]','',line)
+        if needle in ' '.join(plain.split()) or needle in ' '.join(line.split()):matches.append(i)
+    return matches[0] if len(matches)==1 else None
+
+def reader_operation(note,event):
+    if not isinstance(event,dict) or event.get('action') not in ('toc','split'):return
+    nonce_key='_reader_nonce_'+note['id']
+    if event.get('nonce')==st.session_state.get(nonce_key):return
+    st.session_state[nonce_key]=event.get('nonce')
+    content=note.get('content') or ''
+    index=selected_source_line(content,event.get('selection'))
+    if index is None:
+        st.error('無法唯一定位選取文字所在的原始行。請選取該行較長且唯一的文字。');return
+    lines=content.splitlines(keepends=True)
+    if event['action']=='toc':
+        title=re.sub(r'[\]\r\n]','',str(event.get('selection') or '')).strip()[:120]
+        if not title:return
+        marker='//['+title+']//'
+        if marker in lines[index]:return
+        lines.insert(index,marker+'\n')
+        update_note(note['id'],content=''.join(lines));st.success('已建立目錄');st.rerun()
+    else:
+        upper=''.join(lines[:index+1]);lower=''.join(lines[index+1:])
+        if not upper.strip() or not lower.strip():st.error('分割位置下方沒有內容');return
+        siblings=priority_siblings(note['parent_id'])
+        ids=[x['id'] for x in siblings]
+        if note['id'] not in ids:raise ValueError('找不到原文件優先權')
+        base=re.sub(r'-(?:1|2)$','',note['title'])
+        created=None
+        try:
+            created=insert_note('COMPOSITE',base+'-2',note['parent_id'],content=lower,position=len(ids)+1)
+            update_note(note['id'],title=(base+'-1')[:200],content=upper)
+            ids.insert(ids.index(note['id'])+1,created['id'])
+            apply_priority_order(note['parent_id'],ids)
+        except Exception:
+            if created:
+                try:c.table('notes').delete().eq('id',created['id']).eq('owner_id',uid).execute()
+                except Exception:pass
+            raise
+        st.success('分割完成：'+base+'-1、'+base+'-2');st.rerun()
+
+def show_composite_reader(note):
+    content=note.get('content') or ''
+    event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',key='reader_'+note['id'],default=None)
+    reader_operation(note,event)
+
 read_id=st.session_state.get('full_read_id')
 if read_id and read_id in byid:
     root_read=byid[read_id]
@@ -1699,7 +1793,7 @@ if read_id and read_id in byid:
                             if count==target:section_scroll_component(anchor=anchor,key='v46_scroll_'+n['id']+'_'+str(count),default=None)
                             count+=1
                         show_markdown(chunk,assets)
-                else:show_markdown(n['content'],assets)
+                else:show_composite_reader(n) if n['kind']=='COMPOSITE' else show_markdown(n['content'],assets)
             else:st.caption('此文件尚無內容')
     walk_read(root_read)
     st.stop()
@@ -1839,7 +1933,7 @@ if mode=='瀏覽模式':
             if node['kind'] in ('GRAPH','TABLE','HANDWRITE') and node.get('title'):
                 st.caption(('🖼️ ' if node['kind']=='GRAPH' else '✍️ ' if node['kind']=='HANDWRITE' else '▦ ')+node['title'])
             if node['kind']=='TABLE':continue
-            elif (node.get('content') or '').strip():show_markdown(node['content'],assets)
+            elif (node.get('content') or '').strip():show_composite_reader(node) if node['kind']=='COMPOSITE' else show_markdown(node['content'],assets)
 else:
     st.title(workspace['title'])
     if st.button('⛶ 完全單一編輯',key='full_from_editor'):
