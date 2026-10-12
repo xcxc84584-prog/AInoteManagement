@@ -33,7 +33,7 @@ function block(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)r
 function markdown(){return block(editor).replace(/\n{3,}/g,'\n\n').trim()}
 let katexReady=false;
 function renderMath(){if(!window.katex){mathFallback();return;}document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{try{window.katex.render(el.dataset.math,el,{throwOnError:true,displayMode:el.dataset.display==='block',strict:'ignore',trust:false})}catch(e){bvLog('HRC-MATH-002',e);el.textContent=el.dataset.math}})}
-function loadKatex(){if(window.katex){katexReady=true;renderMath();return}const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js';sc.onload=()=>{katexReady=true;renderMath()};sc.onerror=()=>{bvLog('HRC-MATH-001','KaTeX CDN failed');let st=document.getElementById('mathStatus');if(!st){st=document.createElement('div');st.id='mathStatus';st.className='missing-media';document.body.prepend(st)}st.textContent='❗ 數學渲染器未載入；已保留 LaTeX 原始碼';mathFallback();resize()};document.head.appendChild(sc)}
+function loadKatex(){if(window.katex){katexReady=true;renderMath();return}const sc=document.createElement('script');sc.src='https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js';sc.onload=()=>{katexReady=true;renderMath()};sc.onerror=()=>{if(!window.__bvKatexFallback){window.__bvKatexFallback=true;const alt=document.createElement('script');alt.src='https://unpkg.com/katex@0.16.22/dist/katex.min.js';alt.onload=()=>{katexReady=true;renderMath()};alt.onerror=()=>{bvLog('HRC-MATH-001','Both KaTeX CDNs failed');mathFallback()};document.head.appendChild(alt);return;}bvLog('HRC-MATH-001','KaTeX CDN failed');let st=document.getElementById('mathStatus');if(!st){st=document.createElement('div');st.id='mathStatus';st.className='missing-media';document.body.prepend(st)}st.textContent='❗ 數學渲染器未載入；已保留 LaTeX 原始碼';mathFallback();resize()};document.head.appendChild(sc)}
 function mathFallback(){document.querySelectorAll('#editor .math-render[data-math]').forEach(el=>{if(el.dataset.rendered==='yes')return;el.title='LaTeX 原始碼：'+el.dataset.math;el.style.whiteSpace='pre-wrap';el.style.overflowWrap='anywhere';});}
 function bvMathNormalizeNested(source){
  // Render-only normalization: the saved Markdown and clipboard remain untouched.
@@ -92,7 +92,20 @@ function hrcImageTokens(text){
   const probe=text.slice(start,start+100).replace(/\\([:()])/g,'$1');
   const isData=/^data:image\/(?:svg\+xml|png|jpeg|webp|gif)(?:[;,]|$)/i.test(probe);
   let end=-1;
-  if(isData){
+  if(isData && /^data:image\/svg\+xml/i.test(probe)){
+   // Find the end of the SVG document first, then the Markdown closing parenthesis.
+   // This avoids interpreting ')' inside SVG XML, styles, or attributes as Markdown syntax.
+   const tail=text.slice(start,start+2000000);
+   const rawEnd=/<\/svg\s*>/i.exec(tail);
+   const encodedEnd=/%3C\/svg%3E|%3C%2Fsvg%3E/i.exec(tail);
+   const found=rawEnd && encodedEnd ? (rawEnd.index<encodedEnd.index?rawEnd:encodedEnd) : (rawEnd||encodedEnd);
+   if(found){
+    const after=start+found.index+found[0].length;
+    const closer=/^[\s\\]*\)/.exec(text.slice(after,after+32));
+    if(closer)end=after+closer[0].length-1;
+   }
+  }
+  if(isData && end<0){
    // Legacy Markdown escaping may add backslashes to data: and parentheses.
    // Percent-encoded SVG may be huge; search until the closing Markdown delimiter.
    for(let j=start;j<text.length&&j<start+2000000;j++){
@@ -132,7 +145,8 @@ function hrcImageTokens(text){
   let src=text.slice(start,end).trim();
   if(isData){
    if(/data\\:image/i.test(src)&&typeof bvLog==='function')bvLog('HRC-SVG-008','Recovered escaped data URI colon');
-   src=src.replace(/\\([:()])/g,'$1').replace(/[\r\n]+/g,'').replace(/\s+/g,'');
+   src=src.replace(/\\([:()])/g,'$1');
+   if(!/^data:image\/svg\+xml[^,]*,<svg/i.test(src))src=src.replace(/[\r\n]+/g,'');
   }
   if(!/^(?:data:image\/(?:svg\+xml|png|jpeg|webp|gif)|asset:\/\/|https?:\/\/|clipboard-image:\/\/)/i.test(src)){
    output+=text[i++];continue;
@@ -156,12 +170,14 @@ function bvMathSegments(str){
 }
 
 function hrcInline(str){
- return bvMathSegments(String(str)).map(seg=>{
+ // Protect image data URIs BEFORE the math parser. An SVG can contain $, \(, \[,
+ // parentheses, or line breaks which must never be interpreted as TeX delimiters.
+ const protectedImages=hrcImageTokens(String(str));
+ return bvMathSegments(protectedImages.prepared).map(seg=>{
   if(seg.math!==undefined)return mathMarkup(seg.math.trim(),seg.display);
-  const x=hrcImageTokens(seg.text);
-  return x.prepared.split(/(`[^`]*`)/g).map(part=>{
+  return seg.text.split(/(`[^`]*`)/g).map(part=>{
    if(part.startsWith('`')&&part.endsWith('`'))return '<code>'+escapeHtml(part.slice(1,-1))+'</code>';
-   return escapeHtml(part).replace(/\uE000(\d+)\uE001/g,(_,id)=>x.tokens[Number(id)]||'')
+   return escapeHtml(part).replace(/\uE000(\d+)\uE001/g,(_,id)=>protectedImages.tokens[Number(id)]||'')
     .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
     .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g,'<em>$1</em>');
   }).join('');
