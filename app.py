@@ -1008,6 +1008,19 @@ with st.sidebar:
                 # when navigating to the same node or changing reading mode.
                 v431_commit_focus_before_navigation()
                 st.session_state.pop('full_read_id',None)
+            if action=='toc_remove' and nid in byid and byid[nid]['kind']=='COMPOSITE':
+                original=byid[nid].get('content') or ''
+                matches=list(re.finditer(r'//\[([^\]\n]+)\]//',original))
+                index=int(event.get('index',-1))
+                if index<0 or index>=len(matches):
+                    raise ValueError('找不到指定的目錄')
+                match=matches[index]
+                updated=original[:match.start()]+match.group(1)+original[match.end():]
+                update_note(nid,content=updated)
+                st.session_state['block_content_'+nid]=updated
+                st.session_state['v43_draft_'+nid]=updated
+                st.session_state['_composite_rev_'+nid]=st.session_state.get('_composite_rev_'+nid,0)+1
+                st.rerun()
             if action=='toc_nav' and nid in byid:
                 st.session_state.selected=nid
                 st.session_state.full_edit_id=nid
@@ -1745,17 +1758,11 @@ def split_meta(content):
     except Exception:return None
 
 def reader_operation(note,event):
-    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit','image'):return
+    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit'):return
     nonce_key='_reader_nonce_'+note['id']
     if event.get('nonce')==st.session_state.get(nonce_key):return
     st.session_state[nonce_key]=event.get('nonce')
     content=note.get('content') or ''
-    if event['action']=='image':
-        idx=selected_source_line(content,event.get('selection'))
-        if idx is None:
-            st.error('無法唯一定位插入位置，請選取該行較長且唯一的文字');return
-        st.session_state['_reader_image_pending']={'note_id':note['id'],'line':idx,'selection':event.get('selection','')}
-        st.rerun();return
     if event['action']=='unsplit':
         meta=split_meta(content)
         if not meta:
@@ -1815,46 +1822,10 @@ def reader_operation(note,event):
             raise
         st.success('分割完成：'+base+'-1、'+base+'-2');st.rerun()
 
-def commit_reader_image(note_id,raw):
-    pending=st.session_state.get('_reader_image_pending')
-    if not pending or pending['note_id']!=note_id:return
-    latest=c.table('notes').select('*').eq('id',note_id).eq('owner_id',uid).single().execute().data
-    content=latest.get('content') or ''
-    index=selected_source_line(content,pending['selection'])
-    if index is None:raise ValueError('原始文件已變更，無法確定插入位置，請重新選取')
-    aid=upload_image(raw,note_id)
-    lines=content.splitlines(keepends=True)
-    if lines[index] and not lines[index].endswith('\n'):lines[index]+='\n'
-    lines.insert(index+1,'\n![插入圖片](asset://'+aid+')\n')
-    updated=''.join(lines)
-    update_note(note_id,content=updated)
-    st.session_state['block_content_'+note_id]=updated
-    st.session_state.pop('_reader_image_pending',None)
-    st.session_state['_composite_rev_'+note_id]=st.session_state.get('_composite_rev_'+note_id,0)+1
-
-def show_reader_image_upload(note):
-    pending=st.session_state.get('_reader_image_pending')
-    if not pending or pending.get('note_id')!=note['id']:return
-    st.info('將圖片插入選取文字的下一行。可選擇本地上傳，或在下方貼上圖片（Ctrl+V）。')
-    file=st.file_uploader('從本地上傳圖片',type=['png','jpg','jpeg','gif','webp','svg'],key='reader_upload_'+note['id'])
-    paste_event=reader_paste_component(key='reader_paste_'+note['id'],default=None)
-    if st.button('取消插入',key='reader_cancel_'+note['id']):
-        st.session_state.pop('_reader_image_pending',None);st.rerun()
-    if file is not None:
-        try:commit_reader_image(note['id'],file.getvalue());st.success('圖片已插入並同步儲存');st.rerun()
-        except Exception as exc:st.error('圖片插入失敗：'+str(exc))
-    if isinstance(paste_event,dict) and paste_event.get('data') and paste_event.get('nonce')!=st.session_state.get('_reader_paste_nonce'):
-        st.session_state['_reader_paste_nonce']=paste_event['nonce']
-        try:
-            raw=base64.b64decode(paste_event['data'].split(',',1)[-1],validate=True)
-            commit_reader_image(note['id'],raw);st.success('貼上圖片已插入並同步儲存');st.rerun()
-        except Exception as exc:st.error('貼上圖片失敗：'+str(exc))
-
 def show_composite_reader(note):
     content=note.get('content') or ''
-    event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
+    event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),browseTarget=st.session_state.pop('_composite_browse_target_'+note['id'],None),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
     reader_operation(note,event)
-    show_reader_image_upload(note)
 
 read_id=st.session_state.get('full_read_id')
 if read_id and read_id in byid:
@@ -1876,18 +1847,10 @@ if read_id and read_id in byid:
         elif n['kind']!='TABLE':
             st.subheader(n['title'])
             if n.get('content'):
-                if n['kind']=='COMPOSITE' and n['id']==read_id and '_composite_browse_target_'+read_id in st.session_state:
-                    target=st.session_state.pop('_composite_browse_target_'+read_id)
-                    chunks=re.split(r'(//\[[^\]\n]+\]//)',n['content'])
-                    count=0
-                    for chunk in chunks:
-                        if re.fullmatch(r'//\[[^\]\n]+\]//',chunk):
-                            anchor='v46-browse-'+str(count)
-                            st.markdown('<div id=\"'+anchor+'\"></div>',unsafe_allow_html=True)
-                            if count==target:section_scroll_component(anchor=anchor,key='v46_scroll_'+n['id']+'_'+str(count),default=None)
-                            count+=1
-                        show_markdown(chunk,assets)
-                else:show_composite_reader(n) if n['kind']=='COMPOSITE' else show_markdown(n['content'],assets)
+                if n['kind']=='COMPOSITE':
+                    show_composite_reader(n)
+                else:
+                    show_markdown(n['content'],assets)
             else:st.caption('此文件尚無內容')
     walk_read(root_read)
     st.stop()
