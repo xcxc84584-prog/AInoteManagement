@@ -1729,6 +1729,8 @@ def composite_asset_urls(content):
         raw=asset_image(aid,assets)
         if raw:
             mime=(assets.get(aid) or {}).get('mime_type') or 'image/png'
+            if raw.lstrip().startswith(b'<svg') or (raw.lstrip().startswith(b'<?xml') and b'<svg' in raw[:500]):
+                mime='image/svg+xml'
             if mime not in ('image/png','image/jpeg','image/gif','image/webp','image/svg+xml'):
                 mime='image/png'
             result[aid]='data:'+mime+';base64,'+base64.b64encode(raw).decode('ascii')
@@ -1760,10 +1762,10 @@ def split_meta(content):
 EDITOR_MODE_RE=re.compile(r'^<!-- bv-editor-mode:(HRC|COM|MD) -->\n?')
 def editor_mode(content):
     m=EDITOR_MODE_RE.match(content or '')
-    return m.group(1) if m else 'COM'
+    return 'HRC'
 def with_editor_mode(content,mode):
     content=EDITOR_MODE_RE.sub('',content or '')
-    return '<!-- bv-editor-mode:'+mode+' -->\n'+content if mode in ('HRC','MD') else content
+    return content
 def save_composite_event(note_id,event):
     converted=str(event.get('markdown',''))
     for i,item in enumerate(event.get('images',[])):
@@ -1773,14 +1775,12 @@ def save_composite_event(note_id,event):
         aid=upload_image(raw,note_id)
         converted=re.sub(r'clipboard-image://'+str(i)+r'(?![0-9])','asset://'+aid,converted)
     if re.search(r'clipboard-image://\d+',converted):raise ValueError('有圖片尚未上傳，已中止儲存')
-    mode=event.get('mode','COM')
-    if mode not in ('HRC','COM','MD'):raise ValueError('不支援的編輯模式')
-    converted=with_editor_mode(converted,mode)
+    converted=with_editor_mode(converted,'HRC')
     update_note(note_id,content=converted)
     return converted
 
 def reader_operation(note,event):
-    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit','insert_image'):return
+    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit'):return
     nonce_key='_reader_nonce_'+note['id']
     if event.get('nonce')==st.session_state.get(nonce_key):return
     st.session_state[nonce_key]=event.get('nonce')
@@ -1872,30 +1872,6 @@ def show_composite_reader(note):
     content=note.get('content') or ''
     event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),browseTarget=st.session_state.pop('_composite_browse_target_'+note['id'],None),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
     reader_operation(note,event)
-    selection_key='_reader_insert_image_'+note['id']
-    if selection_key in st.session_state:
-        st.info('插入圖檔：請從本機選擇圖片，成功儲存後會插入到選取行的下一行。')
-        picked=st.file_uploader('選擇圖檔',type=['png','jpg','jpeg','webp','gif','svg'],key='reader_upload_'+note['id'])
-        if picked is not None and st.button('確認插入圖檔',key='reader_upload_confirm_'+note['id']):
-            try:
-                original=note.get('content') or ''
-                index=selected_source_line(original,st.session_state[selection_key])
-                if index is None:raise ValueError('無法唯一定位原始文字行，請重新選取較長文字')
-                raw=picked.getvalue()
-                # Validate before creating a new storage asset.
-                image_bytes(raw)
-                aid=upload_image(raw,note['id'])
-                lines=original.splitlines(keepends=True)
-                if lines[index] and not lines[index].endswith('\n'):lines[index]+='\n'
-                lines.insert(index+1,'\n!['+re.sub(r'[\[\]\n]','',picked.name)+'](asset://'+aid+')\n')
-                updated=''.join(lines)
-                update_note(note['id'],content=updated)
-                st.session_state['block_content_'+note['id']]=updated
-                st.session_state.pop(selection_key,None)
-                st.success('圖片已插入並儲存');st.rerun()
-            except Exception as exc:st.error('圖片插入失敗：'+str(exc))
-        if st.button('取消插入',key='reader_upload_cancel_'+note['id']):
-            st.session_state.pop(selection_key,None);st.rerun()
 
 read_id=st.session_state.get('full_read_id')
 if read_id and read_id in byid:
@@ -1983,6 +1959,7 @@ if full_id and full_id in byid:
                     st.session_state[draft_key]=converted
                     st.session_state['_composite_rev_'+full_id]=st.session_state.get('_composite_rev_'+full_id,0)+1
                     if event.get('action')=='save_close':
+                        st.session_state.pop('_submit_request_'+full_id,None)
                         st.session_state.pop('full_edit_id',None)
                         st.session_state.pop(draft_key,None)
                     st.success('圖文文件已儲存')
