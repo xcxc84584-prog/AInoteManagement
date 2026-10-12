@@ -1829,6 +1829,7 @@ def reader_operation(note,event):
         st.error('無法唯一定位選取文字所在的原始行，請選取該行較長且唯一的文字');return
     lines=content.splitlines(keepends=True)
     if event['action']=='toc':
+        st.warning('v6.1 目錄已改由瀏覽器 IndexedDB 管理，不會修改 Markdown');return
         selected=str(event.get('selection') or '').strip()
         if not selected or '\\n' in selected or '\\r' in selected:
             st.error('請選取同一行內的文字');return
@@ -1849,6 +1850,7 @@ def reader_operation(note,event):
         st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{})
         st.rerun()
     elif event['action']=='untoc':
+        st.warning('v6.1 請從本地目錄列表刪除');return
         original=lines[index]
         matches=list(re.finditer(r'//\[([^\]\n]+)\]//',original))
         selected=str(event.get('selection') or '').strip()
@@ -1887,7 +1889,7 @@ def reader_operation(note,event):
 
 def show_composite_reader(note):
     content=note.get('content') or ''
-    event=composite_reader_component(content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),browseTarget=st.session_state.pop('_composite_browse_target_'+note['id'],None),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
+    event=composite_reader_component(documentId=note['id'],content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),browseTarget=st.session_state.pop('_composite_browse_target_'+note['id'],None),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
     reader_operation(note,event)
 
 read_id=st.session_state.get('full_read_id')
@@ -1963,7 +1965,7 @@ if full_id and full_id in byid:
     if full_note['kind']=='COMPOSITE':
         text_key='block_content_'+full_id
         current=str(st.session_state.get(text_key,original) or '')
-        event=composite_component(content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+full_id,0),focusHeading=st.session_state.get('_composite_toc_target_'+full_id,-1),editorMode=editor_mode(current),submitRequest=st.session_state.get('_submit_request_'+full_id,0),key='focus_composite_'+full_id,default=None)
+        event=composite_component(documentId=full_id,content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+full_id,0),focusHeading=st.session_state.get('_composite_toc_target_'+full_id,-1),editorMode=editor_mode(current),submitRequest=st.session_state.get('_submit_request_'+full_id,0),key='focus_composite_'+full_id,default=None)
         if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_focus_composite_nonce_'+full_id):
             st.session_state['_focus_composite_nonce_'+full_id]=event.get('nonce')
             if event.get('action')=='headings':
@@ -2067,7 +2069,7 @@ else:
         if block['kind']=='COMPOSITE':
             text_key='block_content_'+block['id']
             current=st.session_state.get(text_key,block.get('content') or '')
-            event=composite_component(content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+block['id'],0),editorMode=editor_mode(current),key='composite_'+block['id'],default=None)
+            event=composite_component(documentId=block['id'],content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+block['id'],0),editorMode=editor_mode(current),key='composite_'+block['id'],default=None)
             if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_composite_nonce_'+block['id']):
                 st.session_state['_composite_nonce_'+block['id']]=event.get('nonce')
                 if event.get('action') in ('save','save_close'):

@@ -18,11 +18,25 @@
 /* v5.0.7 mobile layout: diagnostics must stay in normal flow and final line visible */
 html,body{min-width:0;max-width:100%;overflow-x:hidden}#bvDiagnostics{position:relative!important;inset:auto!important;z-index:1!important;max-width:100%;overflow-wrap:anywhere;clear:both}#bvDiagnostics pre{max-width:100%;overflow:auto}#editor{padding-bottom:76px!important;min-height:360px;scroll-padding-bottom:76px}#editor .math-block{overflow-x:auto;overflow-y:hidden;max-width:100%;-webkit-overflow-scrolling:touch}#editor .katex-display{margin:0.75em 0;overflow-x:auto;overflow-y:hidden;max-width:100%}#status{position:relative!important;clear:both;display:block;overflow-wrap:anywhere}body{padding-bottom:64px!important}
 </style><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css"></head><body>
-<div class="toolbar"><button id="rich">圖文編輯</button><button id="source">Markdown 原始碼</button><button id="insert">插入目錄分段</button><button id="uploadImage">插入圖片／圖表</button><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none"><button id="save" class="primary">💾 儲存圖文文件</button><span id="status">可直接貼上 ChatGPT 文字、表格及圖片</span></div>
+<div class="toolbar"><button id="rich">圖文編輯</button><button id="source">Markdown 原始碼</button><button id="bv61toc">目錄化 Ctrl+T</button><button id="uploadImage">插入圖片／圖表</button><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none"><button id="save" class="primary">💾 儲存圖文文件</button><span id="status">可直接貼上 ChatGPT 文字、表格及圖片</span></div>
 <details id="bvDiagnostics" style="margin:8px 0"><summary>HRC 診斷與錯誤紀錄</summary><button id="bvCopyLog" type="button">複製診斷報告</button><pre id="bvLog" style="white-space:pre-wrap;max-height:180px;overflow:auto"></pre><div id="svgClipboardNotice" role="status" style="display:none;margin:10px 0;padding:10px;border-left:3px solid #eab308;color:#fde68a;white-space:normal">此文本可能缺少SVG訊息，請安裝相關插件修復。</div></details>
-<div class="hint">輸入 <b>//[章節名稱]//</b> 可建立左側目錄；可在編輯區按 Ctrl+V 貼上 ChatGPT 富文本或圖片。</div>
-<div id="editToc"><b>目錄基準 · 快速定位</b><div id="tocEntries"></div></div><div class="split"><div id="main"><div id="editor" contenteditable="true" spellcheck="false"></div><textarea id="raw" aria-label="Markdown 原始碼"></textarea></div></div>
+<div class="hint">框選文字按 Ctrl+T 建立獨立本地目錄，不會改寫文件；Ctrl+V 可貼上圖文。</div><div id="bv61toclist" aria-label="本地目錄"></div>
+<div class="split"><div id="main"><div id="editor" contenteditable="true" spellcheck="false"></div><textarea id="raw" aria-label="Markdown 原始碼"></textarea></div></div>
 <script>
+/* v6.1: browser-local TOC. IndexedDB is scoped to the browser origin. */
+const BV61TOC=(()=>{
+ const dbName='bvtext-v61-toc',store='entries';let dbPromise;
+ function db(){return dbPromise||(dbPromise=new Promise((resolve,reject)=>{const r=indexedDB.open(dbName,1);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains(store)){const s=d.createObjectStore(store,{keyPath:'id'});s.createIndex('document_id','document_id',{unique:false})}};r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error)}))}
+ async function transaction(mode,work){const d=await db();return new Promise((resolve,reject)=>{const t=d.transaction(store,mode),s=t.objectStore(store);let result;const r=work(s);r.onsuccess=()=>result=r.result;r.onerror=()=>reject(r.error);t.oncomplete=()=>resolve(result);t.onerror=()=>reject(t.error)})}
+ const list=async id=>(await transaction('readonly',s=>s.index('document_id').getAll(id))).sort((a,b)=>a.lineStart-b.lineStart||a.columnStart-b.columnStart);
+ const put=e=>transaction('readwrite',s=>s.put(e));const remove=id=>transaction('readwrite',s=>s.delete(id));
+ function lineColumn(text,offset){const before=text.slice(0,offset),last=before.lastIndexOf('\n');return {line:before.split('\n').length,column:offset-last-1}}
+ function create(doc,text,start,end,selected){const a=lineColumn(text,start),b=lineColumn(text,end);return {id:crypto.randomUUID(),document_id:doc,title:selected.trim().slice(0,300),selectedText:selected,lineStart:a.line,lineEnd:b.line,columnStart:a.column,columnEnd:b.column,context:text.slice(Math.max(0,start-40),Math.min(text.length,end+40)),createdAt:new Date().toISOString()}}
+ function locate(text,e){const lines=text.split('\n'),line=lines[e.lineStart-1]||'';if(line.slice(e.columnStart).startsWith(e.selectedText.split('\n')[0]))return {line:e.lineStart,column:e.columnStart};let at=text.indexOf(e.selectedText);if(at<0||text.indexOf(e.selectedText,at+1)>=0)return null;return lineColumn(text,at)}
+ return {list,put,remove,create,locate};
+})();
+
+
 const editor=document.getElementById('editor'),raw=document.getElementById('raw'),status=document.getElementById('status');let images=[],revision=-1,source=false,lastFocus=-1,assetUrls={},editorMode="HRC",lastSubmitRequest=null;
 function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')};function resize(){send('streamlit:setFrameHeight',{height:Math.min(document.body.scrollHeight+96,16000)})};function safe(s){return (s||'').replace(/\r/g,'').replace(/\u00a0/g,' ')};
 
@@ -33,7 +47,7 @@ document.getElementById('bvCopyLog').onclick=()=>{const report=JSON.stringify({v
 window.addEventListener('error',e=>bvLog('HRC-JS-001',e.message));window.addEventListener('unhandledrejection',e=>bvLog('HRC-JS-002',e.reason));
 
 function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
-function inline(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase();if(t==='svg')return inline(registerImage(svgData(n),'SVG 圖表'));let v=Array.from(n.childNodes).map(inline).join('');if(n.hasAttribute&&n.hasAttribute('data-math'))return n.getAttribute('data-display')==='block'?'\n\n$$'+n.getAttribute('data-math')+'$$\n\n':'$'+n.getAttribute('data-math')+'$';if(t==='br')return '\n';if(n.classList&&n.classList.contains('missing-media'))return '\n\n❗ '+v+'\n\n';if(t==='img'){let src=n.getAttribute('data-ref')||n.getAttribute('src')||'';return '!['+(n.getAttribute('alt')||'圖片').replace(/[\[\]]/g,'')+']('+src+')'}if(t==='b'||t==='strong')return '**'+v+'**';if(t==='em'||t==='i')return '*'+v+'*';if(t==='code')return '`'+v.replace(/`/g,'\\`')+'`';if(t==='a'){let href=n.getAttribute('href')||'';return /^https?:/i.test(href)?'['+v+']('+href+')':v}if(t==='s'||t==='del')return '~~'+v+'~~';return v}
+function inline(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase();if(t==='svg')return inline(registerImage(svgData(n),'SVG 圖表'));let v=Array.from(n.childNodes).map(inline).join('');if(n.hasAttribute&&n.hasAttribute('data-math'))return n.getAttribute('data-display')==='block'?'\n\n\\['+n.getAttribute('data-math')+'\\]\n\n':'\\('+n.getAttribute('data-math')+'\\)';if(t==='br')return '\n';if(n.classList&&n.classList.contains('missing-media'))return '\n\n❗ '+v+'\n\n';if(t==='img'){let src=n.getAttribute('data-ref')||n.getAttribute('src')||'';return '!['+(n.getAttribute('alt')||'圖片').replace(/[\[\]]/g,'')+']('+src+')'}if(t==='b'||t==='strong')return '**'+v+'**';if(t==='em'||t==='i')return '*'+v+'*';if(t==='code')return '`'+v.replace(/`/g,'\\`')+'`';if(t==='a'){let href=n.getAttribute('href')||'';return /^https?:/i.test(href)?'['+v+']('+href+')':v}if(t==='s'||t==='del')return '~~'+v+'~~';return v}
 function table(n){let rows=Array.from(n.querySelectorAll('tr')).map(r=>Array.from(r.children).filter(c=>/^(TD|TH)$/.test(c.tagName)).map(c=>inline(c).replace(/\|/g,'\\|').replace(/\n/g,' ')));let w=Math.max(0,...rows.map(r=>r.length));if(!w)return '';let fill=r=>Array.from({length:w},(_,i)=>r[i]||'');return '\n'+[fill(rows[0]),Array(w).fill('---'),...rows.slice(1).map(fill)].map(r=>'| '+r.join(' | ')+' |').join('\n')+'\n\n'}
 function block(n){if(n.nodeType===3)return safe(n.nodeValue);if(n.nodeType!==1)return '';let t=n.tagName.toLowerCase();if(n.hasAttribute&&n.hasAttribute('data-math'))return inline(n);if(t==='table')return table(n);if(t==='svg')return inline(n)+'\n\n';if(t==='img')return inline(n)+'\n\n';if(t==='pre')return '\n```\n'+safe(n.textContent).trimEnd()+'\n```\n\n';if(/^h[1-6]$/.test(t))return '\n'+'#'.repeat(Number(t[1]))+' '+inline(n).trim()+'\n\n';if(t==='ul'||t==='ol')return '\n'+Array.from(n.children).filter(c=>c.tagName==='LI').map((c,i)=>(t==='ul'?'- ':`${i+1}. `)+inline(c).trim()).join('\n')+'\n\n';if(t==='blockquote')return '\n'+inline(n).trim().split('\n').map(x=>'> '+x).join('\n')+'\n\n';if(t==='hr')return '\n---\n';if(['div','p','section','article'].includes(t))return '\n'+Array.from(n.childNodes).map(c=>c.nodeType===1&&/^(TABLE|PRE|UL|OL|DIV|P|SECTION|ARTICLE|H[1-6]|BLOCKQUOTE|IMG)$/.test(c.tagName)?block(c):inline(c)).join('')+'\n\n';return Array.from(n.childNodes).map(block).join('')}
 function markdown(){return block(editor).replace(/\n{3,}/g,'\n\n').trim()}
@@ -141,17 +155,13 @@ function hrcImageTokens(text){
  }
  return {prepared:output,tokens};
 }
-function bvInlineMathTokens(str){
- const tokens=[];
- const prepared=String(str).replace(/(?<!\\)\$\$([^\n]+?)\$\$/g,(_,tex)=>{let id=tokens.length;tokens.push(mathMarkup(tex.trim(),true));return '\uE100'+id+'\uE101'});
- return {prepared,tokens};
-}
+function bvInlineMathTokens(str){return {prepared:String(str),tokens:[]}}
 function hrcInline(str){
  const mathTokens=bvInlineMathTokens(str);str=mathTokens.prepared;
  const x=hrcImageTokens(String(str));
- return x.prepared.split(/(\\\([\s\S]*?\\\)|(?<!\\)\$(?!\$)[^\n$]+?(?<!\\)\$)/g).map(part=>{
+ return x.prepared.split(/(\\\([\s\S]*?\\\))/g).map(part=>{
   if(part.startsWith('\\(')&&part.endsWith('\\)'))return mathMarkup(part.slice(2,-2),false);
-  if(part.startsWith('$')&&part.endsWith('$')&&part.length>2)return mathMarkup(part.slice(1,-1),false);
+  
   return escapeHtml(part).replace(/\uE100(\d+)\uE101/g,(_,id)=>mathTokens.tokens[Number(id)]||'').replace(/\uE000(\d+)\uE001/g,(_,id)=>x.tokens[Number(id)]||'')
    .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g,'<em>$1</em>')
@@ -166,8 +176,8 @@ function renderMarkdown(md){
   let line=lines[i];
   if(line.startsWith('```')){if(inCode){out.push('<pre><code>'+escapeHtml(code.join('\n'))+'</code></pre>');code=[]}inCode=!inCode;continue}
   if(inCode){code.push(line);continue}
-  if(/^\s*(?:\$\$|\\\[)/.test(line)){
-   let square=/^\s*\\\[/.test(line),op=square?'\\[':'$$',cl=square?'\\]':'$$',expr=line.trim().slice(op.length);
+  if(/^\s*\\\[/.test(line)){
+   let op='\\[',cl='\\]',expr=line.trim().slice(op.length);
    while(!expr.includes(cl)&&i+1<lines.length)expr+='\n'+lines[++i];
    let pos=expr.lastIndexOf(cl);
    if(pos>=0)out.push(mathMarkup(expr.slice(0,pos).trim(),true));
@@ -179,9 +189,9 @@ function renderMarkdown(md){
    while(i<lines.length&&lines[i].includes('|')&&lines[i].trim()){rows.push(cells(lines[i]));i++}i--;
    out.push('<div class="table-scroll"><table><thead><tr>'+heads.map(c=>'<th>'+hrcInline(c)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+heads.map((_,j)=>'<td>'+hrcInline(r[j]||'')+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>');continue;
   }
-  let marker=line.match(/^\s*\/\/\[([^\]\n]+)\]\/\/\s*$/);
+  let marker=null;
   if(marker){out.push('<h3>'+escapeHtml(marker[1])+'</h3>');continue}
-  if(line.includes('//[')){out.push('<div>'+line.split(/(\/\/\[[^\]\n]+\]\/\/)/g).map(part=>part.startsWith('//[')?'<span class="toc-inline">'+escapeHtml(part.slice(3,-3))+'</span>':hrcInline(part)).join('')+'</div>');continue}
+  if(false && line.includes('//[')){out.push('<div>'+line.split(/(\/\/\[[^\]\n]+\]\/\/)/g).map(part=>part.startsWith('//[')?'<span class="toc-inline">'+escapeHtml(part.slice(3,-3))+'</span>':hrcInline(part)).join('')+'</div>');continue}
   let h=line.match(/^(#{1,6})\s+(.+)$/);
   if(h){let n=h[1].length;out.push(`<h${n}>${hrcInline(h[2])}</h${n}>`);continue}
   if(/^!\[/.test(line)){out.push('<p>'+hrcInline(line)+'</p>');continue}
@@ -207,9 +217,9 @@ function hrcAudit(md,root){
 }
 
 let lastHeadings='',headingTimer=null;
-function tocEntries(){let md=source?raw.value:editor.textContent;return [...md.matchAll(/\/\/\[([^\]\n]+)\]\/\//g)].map((m,i)=>({title:m[1].trim(),index:i,offset:m.index}))}
-function updateToc(){let entries=tocEntries(),target=document.getElementById('tocEntries');target.replaceChildren();for(const e of entries){let b=document.createElement('button');b.textContent=(e.index+1)+'. '+e.title;b.onclick=()=>focusHeading(e.index);target.append(b)}if(!entries.length)target.textContent='尚無目錄（使用 //[章節名稱]//）';let key=JSON.stringify(entries.map(x=>x.title));if(key!==lastHeadings){lastHeadings=key;if(images.length)return;clearTimeout(headingTimer);headingTimer=setTimeout(()=>send('streamlit:setComponentValue',{value:{action:'headings',markdown:source?raw.value:editor.textContent,nonce:'h'+Date.now()+Math.random()}}),500)}resize()}
-function focusHeading(index){let e=tocEntries()[index];if(!e)return;if(source){raw.focus();raw.setSelectionRange(e.offset,e.offset+e.title.length+6);let line=raw.value.slice(0,e.offset).split('\n').length-1;raw.scrollTop=Math.max(0,line*parseFloat(getComputedStyle(raw).lineHeight||'20')-raw.clientHeight/3)}else{let walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT),node;while((node=walker.nextNode())){if(node.textContent.includes(e.title)){node.parentElement.scrollIntoView({block:'center'});editor.focus();break}}}}
+function tocEntries(){return []}
+function updateToc(){resize()}
+function focusHeading(index){}
 function insertAtCaret(node){
  const selection=window.getSelection();
  const valid=selection&&selection.rangeCount&&editor.contains(selection.anchorNode);
@@ -409,7 +419,16 @@ function saveEditor(close=false){let md=normalizeMobileMath503(source?raw.value:
 document.getElementById('save').onclick=()=>saveEditor(false);
 document.getElementById('source').onclick=()=>{if(!source){raw.value=syncMarkdown();editor.style.display='none';raw.style.display='block';source=true;updateToc()}};
 document.getElementById('rich').onclick=()=>{if(source){editor.innerHTML=renderMarkdown(raw.value);resolveAssetImages();renderMath();raw.style.display='none';editor.style.display='block';source=false;updateToc()}};
-document.getElementById('insert').onclick=()=>{let name=prompt('目錄名稱');if(!name||!name.trim())return;let marker='//['+name.replace(/[\]\n]/g,'').trim()+']//';if(source){raw.value+='\n\n'+marker+'\n';}else{let p=document.createElement('p');p.textContent=marker;insertAtCaret(p)}updateToc()};
+
 editor.addEventListener('input',updateToc);raw.addEventListener('input',updateToc);
-window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.revision!==revision){assetUrls=args.assetUrls||{};revision=args.revision;restore((args.content||'').replace(/^<!-- bv-editor-mode:(HRC|COM|MD) -->\n?/,''));editorMode='HRC'}if(args.submitRequest!=null&&args.submitRequest!==lastSubmitRequest){lastSubmitRequest=args.submitRequest;if(args.submitRequest>0)saveEditor(true)}if(Number.isInteger(args.focusHeading)&&args.focusHeading>=0&&args.focusHeading!==lastFocus){lastFocus=args.focusHeading;focusHeading(args.focusHeading)}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
+window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.documentId&&args.documentId!==bv61Doc){bv61Doc=args.documentId;bv61Refresh()}if(args.revision!==revision){assetUrls=args.assetUrls||{};revision=args.revision;restore((args.content||'').replace(/^<!-- bv-editor-mode:(HRC|COM|MD) -->\n?/,''));editorMode='HRC'}if(args.submitRequest!=null&&args.submitRequest!==lastSubmitRequest){lastSubmitRequest=args.submitRequest;if(args.submitRequest>0)saveEditor(true)}if(Number.isInteger(args.focusHeading)&&args.focusHeading>=0&&args.focusHeading!==lastFocus){lastFocus=args.focusHeading;focusHeading(args.focusHeading)}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
+
+let bv61Doc='';
+async function bv61Refresh(){if(!bv61Doc)return;const box=document.getElementById('bv61toclist');box.replaceChildren();for(const e of await BV61TOC.list(bv61Doc)){const b=document.createElement('button');b.textContent=`${e.lineStart}: ${e.title}`;b.onclick=()=>bv61Jump(e);box.append(b);const del=document.createElement('button');del.textContent='×';del.title='刪除目錄';del.onclick=async()=>{await BV61TOC.remove(e.id);bv61Refresh()};box.append(del)}}
+function bv61Text(){return source?raw.value:syncMarkdown()}
+async function bv61Create(){if(!bv61Doc)return;let text=bv61Text(),selection='',start=-1,end=-1;if(source){start=raw.selectionStart;end=raw.selectionEnd;selection=text.slice(start,end)}else{selection=String(window.getSelection()||'').trim();start=text.indexOf(selection);end=start+selection.length;if(selection&&text.indexOf(selection,start+1)>=0){status.textContent='選取文字重複，請切換 Markdown 原始碼精確框選';return}}if(!selection||start<0||end<=start){status.textContent='請先框選文字';return}await BV61TOC.put(BV61TOC.create(bv61Doc,text,start,end,selection));await bv61Refresh();status.textContent='已本地目錄化（未修改正文）'}
+function bv61Jump(e){const pos=BV61TOC.locate(bv61Text(),e);if(!pos){status.textContent='原始位置已變更，無法唯一定位';return}if(!source){document.getElementById('source').click()}const lines=raw.value.split('\n');let offset=0;for(let i=0;i<pos.line-1;i++)offset+=lines[i].length+1;raw.focus();raw.setSelectionRange(offset+pos.column,offset+pos.column+e.selectedText.length);raw.scrollTop=Math.max(0,(pos.line-1)*20-raw.clientHeight/3)}
+document.getElementById('bv61toc').onclick=bv61Create;
+document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='t'&&(document.activeElement===raw||document.activeElement===editor||editor.contains(document.activeElement))){e.preventDefault();bv61Create()}});
+
 loadKatex();</script></body></html>

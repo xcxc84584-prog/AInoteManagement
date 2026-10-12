@@ -4,7 +4,7 @@ from hashlib import sha256
 from uuid import uuid4
 import re
 
-TOC = re.compile(r'^\s*//\[([^\]\n]+)\]//\s*$', re.MULTILINE)
+# Legacy markers are ordinary text in v6.1; TOC lives in IndexedDB.
 
 
 def source_digest(source: str) -> str:
@@ -12,9 +12,8 @@ def source_digest(source: str) -> str:
 
 
 def extract_toc(source: str):
-    """Derived TOC positions. Offsets refer to Python Unicode character indices."""
-    return [{'id': f'toc-{i}', 'title': m.group(1).strip(), 'start': m.start(), 'end': m.end(), 'index': i}
-            for i, m in enumerate(TOC.finditer(source))]
+    """Legacy compatibility: no longer derives TOC from Markdown."""
+    return []
 
 
 @dataclass
