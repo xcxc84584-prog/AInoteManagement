@@ -5,4 +5,3 @@ bleach>=6,<7
 markdown>=3.6,<4
 requests>=2.32,<3
 pandas>=2.2,<3
-CairoSVG>=2.7,<3

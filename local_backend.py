@@ -13,10 +13,8 @@ FIELDS={
  'notes':{'id','owner_id','parent_id','kind','title','content','has_page','position','is_deleted','deleted_at','created_at','updated_at'},
  'assets':{'id','owner_id','note_id','storage_path','mime_type','created_at'},
  'schedule_cards':{'id','owner_id','title','schedule_date','scheduled_at','details','created_at','is_completed','batch_tag','batch_id'},
- 'daily_tasks':{'id','owner_id','title','no_time','task_time','details','created_at'},
- 'daily_task_checks':{'id','owner_id','task_id','task_date','is_completed','created_at'},
 }
-BOOL={'has_page','is_deleted','is_completed','no_time'}
+BOOL={'has_page','is_deleted','is_completed'}
 def now():return datetime.now(timezone.utc).isoformat()
 class LocalDB:
  def __init__(self,path=':memory:'):
@@ -32,9 +30,6 @@ class LocalDB:
    self.conn.executescript('''CREATE TABLE IF NOT EXISTS notes(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,parent_id TEXT,kind TEXT,title TEXT,content TEXT DEFAULT '',has_page INTEGER DEFAULT 0,position INTEGER DEFAULT 0,is_deleted INTEGER DEFAULT 0,deleted_at TEXT,created_at TEXT,updated_at TEXT);
 CREATE TABLE IF NOT EXISTS assets(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,note_id TEXT,storage_path TEXT,mime_type TEXT,created_at TEXT);
 CREATE TABLE IF NOT EXISTS schedule_cards(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,title TEXT,schedule_date TEXT,scheduled_at TEXT,details TEXT DEFAULT '',created_at TEXT,is_completed INTEGER DEFAULT 0,batch_tag TEXT,batch_id TEXT);
-CREATE TABLE IF NOT EXISTS daily_tasks(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,title TEXT NOT NULL,no_time INTEGER DEFAULT 1,task_time TEXT,details TEXT DEFAULT '',created_at TEXT);
-CREATE TABLE IF NOT EXISTS daily_task_checks(id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,task_id TEXT NOT NULL,task_date TEXT NOT NULL,is_completed INTEGER DEFAULT 0,created_at TEXT);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_check_unique ON daily_task_checks(owner_id,task_id,task_date);
 CREATE TABLE IF NOT EXISTS media(path TEXT PRIMARY KEY,content BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS sync_state(key TEXT PRIMARY KEY,value TEXT);
 CREATE INDEX IF NOT EXISTS idx_notes_owner ON notes(owner_id,position);
