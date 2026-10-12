@@ -1787,19 +1787,38 @@ def reader_operation(note,event):
         st.error('無法唯一定位選取文字所在的原始行，請選取該行較長且唯一的文字');return
     lines=content.splitlines(keepends=True)
     if event['action']=='toc':
-        title=re.sub(r'[\]\r\n]','',str(event.get('selection') or '')).strip()[:120]
-        if not title:return
-        if re.search(r'^\s*//\[[^\]\n]+\]//\s*$',lines[index]):return
-        # Replace the actual source line with a marker instead of inserting a duplicate heading.
-        original=lines[index].rstrip('\r\n')
-        lines[index]='//['+original.strip().removeprefix('#').strip().replace(']','')+']//'+('\n' if lines[index].endswith('\n') else '')
-        update_note(note['id'],content=''.join(lines));st.session_state['block_content_'+note['id']]=''.join(lines);st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{});st.rerun()
+        selected=str(event.get('selection') or '').strip()
+        if not selected or '\\n' in selected or '\\r' in selected:
+            st.error('請選取同一行內的文字');return
+        original=lines[index]
+        if selected not in original:
+            st.error('選取內容與編輯文本不一致');return
+        if re.search(r'//\\[[^\\]\\n]+\\]//',original):
+            st.error('該行已包含目錄標記，請先取消');return
+        # Preserve surrounding text and mark ONLY the selected substring.
+        pos=original.index(selected)
+        lines[index]=original[:pos]+'//['+selected+']//'+original[pos+len(selected):]
+        updated=''.join(lines)
+        update_note(note['id'],content=updated)
+        st.session_state['block_content_'+note['id']]=updated
+        st.session_state['v43_draft_'+note['id']]=updated
+        st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{})
+        st.rerun()
     elif event['action']=='untoc':
-        match=re.match(r'^(\s*)//\[([^\]\n]+)\]//(\s*)$',lines[index].rstrip('\r\n'))
-        if not match:
-            st.error('選取的文字不是目錄標記');return
-        lines[index]=match.group(1)+match.group(2)+('\n' if lines[index].endswith('\n') else '')
-        update_note(note['id'],content=''.join(lines));st.session_state['block_content_'+note['id']]=''.join(lines);st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{});st.rerun()
+        original=lines[index]
+        matches=list(re.finditer(r'//\\[([^\\]\\n]+)\\]//',original))
+        selected=str(event.get('selection') or '').strip()
+        matching=[m for m in matches if selected in m.group(1) or m.group(1) in selected]
+        if len(matching)!=1:
+            st.error('無法唯一找到選取的目錄');return
+        m=matching[0]
+        lines[index]=original[:m.start()]+m.group(1)+original[m.end():]
+        updated=''.join(lines)
+        update_note(note['id'],content=updated)
+        st.session_state['block_content_'+note['id']]=updated
+        st.session_state['v43_draft_'+note['id']]=updated
+        st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{})
+        st.rerun()
     else:
         if split_meta(content):st.error('此文件已有未還原的分割紀錄，請先還原');return
         upper=''.join(lines[:index+1]);lower=''.join(lines[index+1:])
