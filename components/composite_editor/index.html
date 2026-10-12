@@ -160,7 +160,7 @@ function hrcImageTokens(text){
      const src=text.slice(start,after).replace(/\\([:()])/g,'$1').replace(/[\r\n]+/g,'').replace(/\s+/g,'');
      if(/^data:image\/svg\+xml/i.test(src)){
       const id=tokens.length;
-      tokens.push('<img loading="lazy" alt="SVG" src="'+escapeHtml(src)+'">');
+      tokens.push('<img loading="eager" decoding="async" alt="SVG" src="'+escapeHtml(src)+'">');
       output+='\uE000'+id+'\uE001';i=after;
       if(typeof bvLog==='function')bvLog('HRC-SVG-010','Recovered complete encoded SVG without Markdown closing delimiter');
       continue;
@@ -179,7 +179,7 @@ function hrcImageTokens(text){
    output+=text[i++];continue;
   }
   const alt=text.slice(i+2,altEnd),id=tokens.length;
-  tokens.push('<img loading="lazy" alt="'+escapeHtml(alt)+'" src="'+escapeHtml(src)+'">');
+  tokens.push('<img loading="eager" decoding="async" alt="'+escapeHtml(alt)+'" src="'+escapeHtml(src)+'">');
   output+='\uE000'+id+'\uE001';i=end+1;
  }
  return {prepared:output,tokens};
@@ -218,6 +218,21 @@ function renderMarkdown(md){
   let line=lines[i];
   if(line.startsWith('```')){if(inCode){out.push('<pre><code>'+escapeHtml(code.join('\n'))+'</code></pre>');code=[]}inCode=!inCode;continue}
   if(inCode){code.push(line);continue}
+  // BV 6.2.1: safely render HTML img with SVG data URI, including loading=lazy.
+  if(/<img\b/i.test(line)){
+   const htmlImages=line.match(/<img\b[^>]*>/gi)||[];
+   let safe=line;
+   for(const tag of htmlImages){
+    const dom=new DOMParser().parseFromString(tag,'text/html');const img=dom.querySelector('img');
+    let uri=(img?.getAttribute('src')||'').replace(/^data\\:/i,'data:').replace(/&amp;/g,'&');
+    if(/^data:image\/svg\+xml(?:;[^,]*)?,/i.test(uri)){
+     const loading=img?.getAttribute('loading')==='lazy'?'lazy':'eager';
+     safe=safe.replace(tag,'<img loading="'+loading+'" decoding="async" alt="'+escapeHtml(img?.getAttribute('alt')||'SVG')+'" src="'+escapeHtml(uri)+'">');
+    }else safe=safe.replace(tag,escapeHtml(tag));
+   }
+   if(htmlImages.length===1 && line.trim()===htmlImages[0] && /^<img\b/i.test(safe.trim())){out.push('<div class="bv-svg-html">'+safe+'</div>');continue}
+  }
+
   // A complete $$...$$ display block is recognized before generic Markdown.
   const wholeDollar=line.match(/^\s*\$\$([\s\S]*?)\$\$\s*$/);
   if(wholeDollar){out.push(mathMarkup(wholeDollar[1],true));continue;}
@@ -510,9 +525,9 @@ const BV62=(()=>{
  const getText=()=>isEditor?(source?raw.value:syncMarkdown()):content;
  function selectionRange(){const text=getText();if(isEditor&&source){let a=raw.selectionStart,b=raw.selectionEnd;return a<b?{a,b,selected:text.slice(a,b)}:null}
   const s=window.getSelection();if(!s||s.isCollapsed)return null;const val=s.toString();if(!val)return null;
-  const a=text.indexOf(val);if(a<0||text.indexOf(val,a+1)!==-1)return null;return {a,b:a+val.length,selected:val};
+  let a=text.indexOf(val);if(a<0){const clean=val.trim();a=text.indexOf(clean);if(a>=0&&text.indexOf(clean,a+1)<0)return {a,b:a+clean.length,selected:clean};return null}if(text.indexOf(val,a+1)!==-1)return null;return {a,b:a+val.length,selected:val};
  }
- function mark(which){const r=selectionRange()||selected;if(!r){showMessage('請先框選文字；若文字重複，請切換 Markdown 原始碼精確選取');return}marks[which]=which==='start'?r.a:r.b-1;showMessage((which==='start'?'起始':'末尾')+'修正點已設定');if(marks.start!==null&&marks.end!==null)openDialog()}
+ function mark(which){const r=selected||selectionRange();if(!r){showMessage('請先框選文字；若文字重複，請切換 Markdown 原始碼精確選取');return}marks[which]=which==='start'?r.a:r.b-1;showMessage((which==='start'?'起始':'末尾')+'修正點已設定');if(marks.start!==null&&marks.end!==null)openDialog()}
  function showMessage(msg){const s=document.getElementById('status');if(s)s.textContent=msg}
  function makeDialog(){const el=document.createElement('div');el.id='bv62-overlay';el.innerHTML=`<div id="bv62-dialog" role="dialog" aria-modal="true"><h3>手動文本修正</h3><p id="bv62-preview"></p><label><input type="radio" name="bv62mode" value="math" checked> 數學式修正</label><label><input type="radio" name="bv62mode" value="svg"> SVG 修正（含 lazy 圖片）</label><label><input type="radio" name="bv62mode" value="replace"> 替代文本／分割文件</label><div id="bv62-replace" hidden><select id="bv62-kind"><option value="COMPOSITE">圖文文件</option><option value="IMAGE">圖片</option><option value="HANDWRITING">手寫稿</option></select></div><textarea id="bv62-output" aria-label="修正後文本" spellcheck="false"></textarea><div id="bv62-result"></div><div class="bv62-actions"><button id="bv62-cancel">取消</button><button id="bv62-confirm">確認套用</button></div></div>`;document.body.append(el);el.querySelector('#bv62-cancel').onclick=()=>{el.style.display='none';marks={start:null,end:null}};el.querySelectorAll('input[name=bv62mode]').forEach(x=>x.onchange=()=>preview());el.querySelector('#bv62-confirm').onclick=confirm;return el}
  function fixMath(s){return s.replace(/\\\[\s*\$\$([\s\S]*?)\$\$\s*\\\]/g,'\\[$1\\]').replace(/^\s*\$\$([\s\S]*?)\$\$\s*$/,'\\[$1\\]')}
@@ -525,7 +540,7 @@ const BV62=(()=>{
  let value=dialog.querySelector('#bv62-output').value;if(!value){showMessage('修正結果為空，未套用');return}if(!isEditor){send('streamlit:setComponentValue',{value:{action:'correct_range',start:a,end:b,replacement:value,selection:text.slice(a,b),nonce:String(Date.now())+Math.random()}})}else{let updated=text.slice(0,a)+value+text.slice(b);raw.value=updated;editor.innerHTML=renderMarkdown(updated);resolveAssetImages();renderMath();if(!source){editor.style.display='block';raw.style.display='none'}showMessage('修正已套用到編輯內容，請按儲存提交');}
  dialog.style.display='none';marks={start:null,end:null}}
  function init(){menu=document.createElement('div');menu.id='bv62-menu';menu.innerHTML='<button data-mark="start">標註起始修正點</button><button data-mark="end">標註末尾修正點</button>';document.body.append(menu);menu.querySelectorAll('button').forEach(b=>b.onclick=()=>{menu.style.display='none';mark(b.dataset.mark)});document.addEventListener('click',e=>{if(!menu.contains(e.target))menu.style.display='none'});const targets=isEditor?[editor,raw]:[editor];targets.forEach(t=>t.addEventListener('contextmenu',e=>{const r=selectionRange();if(!r)return;selected=r;e.preventDefault();e.stopImmediatePropagation();menu.style.display='block';menu.style.left=Math.max(0,Math.min(e.clientX,innerWidth-230))+'px';menu.style.top=Math.max(0,Math.min(e.clientY,innerHeight-95))+'px'},true));document.addEventListener('keydown',e=>{if(e.key==='Escape'&&dialog?.style.display==='flex'){dialog.style.display='none';marks={start:null,end:null}}})}
- return {init};
+ return {init,markSelected:mark,rememberSelection:()=>{const r=selectionRange();if(r)selected=r;return !!r}};
 })();
 BV62.init();
 
