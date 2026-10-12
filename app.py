@@ -1930,10 +1930,11 @@ if full_id and full_id in byid:
                     converted=str(event.get('markdown',''))
                     for i,item in enumerate(event.get('images',[])):
                         data=item.get('data','')
-                        if not data.startswith('data:image/') or ';base64,' not in data:continue
+                        if not data.startswith('data:image/') or ';base64,' not in data:raise ValueError('圖片資料不完整，已中止儲存，避免內容遺失')
                         raw=base64.b64decode(data.split(';base64,',1)[1],validate=True)
                         aid=upload_image(raw,full_id)
                         converted=converted.replace('clipboard-image://'+str(i),'asset://'+aid)
+                    if re.search(r'clipboard-image://\\d+',converted):raise ValueError('有圖片尚未成功上傳，已中止儲存')
                     update_note(full_id,content=converted)
                     st.session_state[text_key]=converted
                     st.session_state[draft_key]=converted
@@ -2029,10 +2030,11 @@ else:
                         converted=str(event.get('markdown',''))
                         for i,item in enumerate(event.get('images',[])):
                             data=item.get('data','')
-                            if not data.startswith('data:image/') or ';base64,' not in data:continue
+                            if not data.startswith('data:image/') or ';base64,' not in data:raise ValueError('圖片資料不完整，已中止儲存，避免內容遺失')
                             raw=base64.b64decode(data.split(';base64,',1)[1],validate=True)
                             aid=upload_image(raw,block['id'])
                             converted=converted.replace('clipboard-image://'+str(i),'asset://'+aid)
+                        if re.search(r'clipboard-image://\\d+',converted):raise ValueError('有圖片尚未成功上傳，已中止儲存')
                         update_note(block['id'],content=converted)
                         st.session_state[text_key]=converted
                         st.session_state['_composite_rev_'+block['id']]=st.session_state.get('_composite_rev_'+block['id'],0)+1
@@ -2114,7 +2116,7 @@ else:
                             converted=pending.get('markdown','')
                             for i,item in enumerate(pending.get('images',[])):
                                 data=item.get('data','')
-                                if not data.startswith('data:image/') or ';base64,' not in data:continue
+                                if not data.startswith('data:image/') or ';base64,' not in data:raise ValueError('圖片資料不完整，已中止儲存，避免內容遺失')
                                 raw=base64.b64decode(data.split(';base64,',1)[1],validate=True)
                                 aid=upload_image(raw,block['id'])
                                 converted=converted.replace('clipboard-image://'+str(i),'asset://'+aid)
