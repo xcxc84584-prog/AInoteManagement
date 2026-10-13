@@ -759,15 +759,11 @@ html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{max-width:100
 /* Keep popovers/dialogs above schedule-card frames. */
 [data-testid="stPopoverBody"], [data-testid="stDialog"], [role="dialog"]{z-index:100000!important}
 [data-testid="stExpander"]{isolation:auto}
-/* Sidebar menu must overlay the sidebar Explorer and its scrollable content. */
-[data-testid="stSidebar"]{isolation:isolate!important;overflow:visible!important}
+/* Use an inline expander instead of a floating popover inside the sidebar.
+   The sidebar scroll container clips portal/popover content regardless of z-index. */
+[data-testid="stSidebar"]{overflow:hidden!important}
 [data-testid="stSidebarContent"]{overflow-x:hidden!important;overflow-y:auto!important}
-[data-testid="stSidebar"] [data-testid="stPopover"]:has(button[aria-expanded="true"]){position:relative!important;z-index:100001!important}
-[data-testid="stSidebar"] [data-testid="stPopoverBody"],
-[data-testid="stSidebar"] [data-baseweb="popover"],
-[data-testid="stSidebar"] [data-baseweb="popover"]>div{z-index:100002!important}
-/* Streamlit may render the popover in a portal outside the sidebar. */
-[data-baseweb="popover"], [data-baseweb="layer"], [data-testid="stPopoverBody"]{z-index:100002!important}
+[data-testid="stSidebar"] [data-testid="stExpander"]{position:relative!important;z-index:auto!important}
 
 
 [data-testid="stTextArea"] textarea{width:100%!important;max-width:100%!important;box-sizing:border-box!important}
@@ -984,66 +980,53 @@ def v431_change_page():
 
 with st.sidebar:
     st.title('📚 BV-Text')
-    with st.popover('☰ 功能選單',width='stretch'):
-        st.caption('建立組別／獨立文件')
-        standalone_title=st.text_input('無組別純文件名稱',key='new_standalone_title')
-        if st.button('＋ 建立無組別純文件',key='new_standalone',width='stretch'):
-            if standalone_title.strip():
-                try:
-                    n=insert_note('MARKDOWN',standalone_title.strip(),None)
-                    st.session_state.selected=n['id'];st.rerun()
-                except Exception as exc:st.error('建立失敗：'+str(exc))
-
-        newgroup=st.text_input('組別名稱',key='newgroup')
-        if st.button('＋ 創建新組別',width='stretch'):
-            if newgroup.strip():
-                try:
-                    progress=operation_progress('建立組別');progress(30,'送出新增請求')
-                    r=insert_note('GROUP',newgroup.strip(),has_page=False)
-                    progress(100,'建立完成')
-                    st.session_state['creation_notice']='已建立組別：'+r['title']
-                    st.session_state.selected=r['id'];st.rerun()
-                except Exception as exc:st.error('建立失敗：'+str(exc))
-        uploaded=st.file_uploader('開啟本地組別 (.ainote / .zip)',type=['ainote','zip'],key='import')
-        if uploaded and st.button('匯入組別'):
-            try:st.session_state.selected=import_group(uploaded.getvalue());st.rerun()
-            except Exception as e:st.error(f'匯入失敗：{e}')
-        if selected:
-            rootid=get_ancestors(selected['id'],byid)[-1]
-            root=byid[rootid]
-            if root['kind']=='GROUP':
-                try:st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name=download_filename(root['title']),mime='application/zip',width='stretch')
-                except Exception:st.warning('暫時無法匯出')
-        with st.expander('v4.3 舊表格清理（不可復原）'):
-            table_notes=[n for n in notes if n.get('kind')=='TABLE' and not n.get('is_deleted')]
-            st.warning(f'目前共有 {len(table_notes)} 個舊 TABLE。清理前請先下載完整備份。')
-            confirm_table=st.checkbox('我已完成備份，確定永久刪除舊 TABLE 文件',key='v43_table_confirm')
-            if st.button('永久清理舊 TABLE',disabled=not confirm_table or not table_notes,key='v43_table_purge'):
-                try:
-                    for row in table_notes:
-                        c.table('notes').delete().eq('id',row['id']).eq('owner_id',uid).execute()
-                    st.success('舊 TABLE 已清理');st.rerun()
-                except Exception as exc:st.error('清理失敗：'+str(exc))
-        st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
+    if st.session_state.get('_explorer_function_panel',False):
+        with st.expander('功能',expanded=False):
+            st.caption('建立組別／獨立文件')
+            standalone_title=st.text_input('無組別純文件名稱',key='new_standalone_title')
+            if st.button('＋ 建立無組別純文件',key='new_standalone',width='stretch'):
+                if standalone_title.strip():
+                    try:
+                        n=insert_note('MARKDOWN',standalone_title.strip(),None)
+                        st.session_state.selected=n['id'];st.rerun()
+                    except Exception as exc:st.error('建立失敗：'+str(exc))
+    
+            newgroup=st.text_input('組別名稱',key='newgroup')
+            if st.button('＋ 創建新組別',width='stretch'):
+                if newgroup.strip():
+                    try:
+                        progress=operation_progress('建立組別');progress(30,'送出新增請求')
+                        r=insert_note('GROUP',newgroup.strip(),has_page=False)
+                        progress(100,'建立完成')
+                        st.session_state['creation_notice']='已建立組別：'+r['title']
+                        st.session_state.selected=r['id'];st.rerun()
+                    except Exception as exc:st.error('建立失敗：'+str(exc))
+            uploaded=st.file_uploader('開啟本地組別 (.ainote / .zip)',type=['ainote','zip'],key='import')
+            if uploaded and st.button('匯入組別'):
+                try:st.session_state.selected=import_group(uploaded.getvalue());st.rerun()
+                except Exception as e:st.error(f'匯入失敗：{e}')
+            if selected:
+                rootid=get_ancestors(selected['id'],byid)[-1]
+                root=byid[rootid]
+                if root['kind']=='GROUP':
+                    try:st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name=download_filename(root['title']),mime='application/zip',width='stretch')
+                    except Exception:st.warning('暫時無法匯出')
+            with st.expander('v4.3 舊表格清理（不可復原）'):
+                table_notes=[n for n in notes if n.get('kind')=='TABLE' and not n.get('is_deleted')]
+                st.warning(f'目前共有 {len(table_notes)} 個舊 TABLE。清理前請先下載完整備份。')
+                confirm_table=st.checkbox('我已完成備份，確定永久刪除舊 TABLE 文件',key='v43_table_confirm')
+                if st.button('永久清理舊 TABLE',disabled=not confirm_table or not table_notes,key='v43_table_purge'):
+                    try:
+                        for row in table_notes:
+                            c.table('notes').delete().eq('id',row['id']).eq('owner_id',uid).execute()
+                        st.success('舊 TABLE 已清理');st.rerun()
+                    except Exception as exc:st.error('清理失敗：'+str(exc))
+            st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
+            if st.button('收合功能',key='hide_explorer_function_panel'):
+                st.session_state['_explorer_function_panel']=False
+                st.rerun()
     st.divider()
-    nav_history=st.session_state.setdefault('_nav_history',[])
-    nav_now=(st.session_state.get('selected'),st.session_state.get('full_edit_id'),st.session_state.get('full_read_id'),st.session_state.get('view_mode',''))
-    if st.session_state.get('_nav_last')!=nav_now:
-        if st.session_state.get('_nav_last') is not None and not st.session_state.pop('_nav_back_in_progress',False):
-            nav_history.append(st.session_state['_nav_last'])
-            if len(nav_history)>50:del nav_history[:-50]
-        st.session_state['_nav_last']=nav_now
-    heading_col,previous_col=st.columns([3,2],vertical_alignment='center')
-    with heading_col:st.subheader('EXPLORER')
-    with previous_col:
-        if st.button('← Previous',disabled=not bool(nav_history),key='nav_previous'):
-            previous=nav_history.pop()
-            st.session_state['_nav_back_in_progress']=True
-            for field,value in zip(('selected','full_edit_id','full_read_id','view_mode'),previous):
-                if value is None:st.session_state.pop(field,None)
-                else:st.session_state[field]=value
-            st.session_state['_nav_last']=previous
-            st.rerun()
+    st.subheader('EXPLORER')
     # Keep last active document and workspace mode in the URL across browser refreshes.
     try:
         if not st.session_state.get('_nav_url_restored'):
@@ -1082,6 +1065,9 @@ with st.sidebar:
         try:
             op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav','import_child') else None
             if op_progress:op_progress(15,'正在處理 '+str(action))
+            if action=='open_functions':
+                st.session_state['_explorer_function_panel']=not st.session_state.get('_explorer_function_panel',False)
+                st.rerun()
             if action=='close_sidebar':
                 st.session_state['_explorer_close_sidebar']=True
             if action in ('select','full_edit','full_read','quick_nav','toc_nav','toc_edit_nav','toc_browse_nav') and nid in byid:
