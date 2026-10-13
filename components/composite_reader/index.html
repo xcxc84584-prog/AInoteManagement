@@ -343,7 +343,7 @@ function isImage(b){return b&&b.size>0&&b.size<=20*1024*1024&&/^image\/(?:png|jp
 async function download(url){if(!/^(?:data:image\/|https?:\/\/)/i.test(url))return null;try{const r=await fetch(url,{mode:'cors',credentials:'omit'});if(!r.ok)return null;const b=await r.blob();return isImage(b)?b:null}catch{return null}}
 async function sha(key){const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(key));return Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,'0')).join('')}
 async function saveFolder(key,blob){if(!directory)return;const ext={'image/svg+xml':'svg','image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif'}[blob.type]||'bin';const file=await directory.getFileHandle((await sha(key))+'.'+ext,{create:true});const writer=await file.createWritable();await writer.write(blob);await writer.close()}
-async function obtain(key,url){if(tasks.has(key))return tasks.get(key);const job=(async()=>{const cached=await dbRead(STORE,key).catch(()=>null);if(cached?.blob)return cached.blob;const blob=await download(url);if(blob){await dbWrite(STORE,key,{key,blob,savedAt:Date.now()}).catch(()=>{});saveFolder(key,blob).catch(()=>{})}return blob})();tasks.set(key,job);try{return await job}finally{tasks.delete(key)}}
+async function obtain(key,url){if(tasks.has(key))return tasks.get(key);const job=(async()=>{const cached=await dbRead(STORE,key).catch(()=>null);if(cached?.blob){if(directory)saveFolder(key,cached.blob).catch(()=>{});return cached.blob;}const blob=await download(url);if(blob){await dbWrite(STORE,key,{key,blob,savedAt:Date.now()}).catch(()=>{});saveFolder(key,blob).catch(()=>{})}return blob})();tasks.set(key,job);try{return await job}finally{tasks.delete(key)}}
 async function apply(im,urls){if(!im.isConnected)return;const ref=im.dataset.ref||im.dataset.bvOriginalSrc||im.getAttribute('src')||'';if(!ref||ref.startsWith('blob:'))return;const key=keyFor(ref);const m=ref.match(/^asset:\/\/([0-9a-f-]{36})$/i);const src=m?(urls?.[m[1]]||urls?.[m[1].toLowerCase()]||''):ref;
  if(im.dataset.bvLocalKey===key&&objectUrls.has(im))return;
  const blob=await obtain(key,src);if(!blob||!im.isConnected)return;
@@ -357,8 +357,14 @@ async function connectFolder(){if(!window.showDirectoryPicker){alert('此瀏覽�
 async function syncFolder(){if(!directory)return;const d=await openDB();const all=await new Promise((ok,no)=>{const r=d.transaction(STORE).objectStore(STORE).getAll();r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error);r.transaction.oncomplete=()=>d.close()});for(const item of all){try{await saveFolder(item.key,item.blob)}catch{}}}
 async function restoreFolder(){try{const saved=await dbRead('settings','directory');if(!saved)return;const status=await saved.queryPermission({mode:'readwrite'});if(status==='granted'){directory=saved;await syncFolder()}}catch{}}
 function init(){restoreFolder();scan();const observer=new MutationObserver(changes=>{for(const c of changes)for(const node of c.addedNodes)if(node.nodeType===1)scan(node)});observer.observe(document.body,{subtree:true,childList:true});
- const btn=document.createElement('button');btn.type='button';btn.textContent='授權圖片資料夾';btn.title='只需授權一次（瀏覽器可能要求重新授權）；之後自動儲存新圖片及 SVG';btn.style.cssText='position:fixed;bottom:8px;right:8px;z-index:99990;padding:6px 9px;background:#24364c;color:white;border:1px solid #5b7899;border-radius:6px;cursor:pointer';btn.onclick=connectFolder;document.body.appendChild(btn)}
-window.BVMedia627={scan,connectFolder};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+ }
+async function beforeSave(interactive=false){
+  if(!directory){await restoreFolder();}
+  if(!directory && interactive && window.showDirectoryPicker){await connectFolder();}
+  if(directory){try{await syncFolder()}catch(e){console.warn('Local media folder sync:',e)}}
+  scan();
+ }
+ window.BVMedia627={scan,connectFolder,beforeSave};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
 
 </script>

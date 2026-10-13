@@ -504,13 +504,19 @@ function syncMarkdown(){
  }
  return block(clone).replace(/\n{3,}/g,'\n\n').trim()
 }
-function saveEditor(close=false){let md=normalizeMobileMath503(source?raw.value:syncMarkdown());hrcAudit(md,editor);send('streamlit:setComponentValue',{value:{action:close?'save_close':'save',markdown:md,images,mode:"HRC",nonce:String(Date.now())+Math.random()}});status.textContent=close?'正在儲存，成功後才會退出…':'正在儲存…'}
+async function saveEditor(close=false,interactive=false){
+  // Save is never blocked by a denied folder permission.
+  if(window.BVMedia627){try{await window.BVMedia627.beforeSave(interactive)}catch(e){console.warn('Local media sync failed:',e)}}
+  let md=normalizeMobileMath503(source?raw.value:syncMarkdown());hrcAudit(md,editor);
+  send('streamlit:setComponentValue',{value:{action:close?'save_close':'save',markdown:md,images,mode:'HRC',nonce:String(Date.now())+Math.random()}});
+  status.textContent=close?'正在儲存，成功後才會退出…':'正在儲存…';
+ }
 document.getElementById('save').onclick=()=>saveEditor(false);
 document.getElementById('source').onclick=()=>{if(!source){raw.value=syncMarkdown();editor.style.display='none';raw.style.display='block';source=true;updateToc()}};
 document.getElementById('rich').onclick=()=>{if(source){editor.innerHTML=renderMarkdown(raw.value);resolveAssetImages();renderMath();raw.style.display='none';editor.style.display='block';source=false;updateToc()}};
 
 let bv62PruneTimer;function bv62Prune(){clearTimeout(bv62PruneTimer);bv62PruneTimer=setTimeout(()=>BV61TOC.prune(bv61Doc,bv61Text()),800)}editor.addEventListener('input',()=>{updateToc();bv62Prune()});raw.addEventListener('input',()=>{updateToc();bv62Prune()});
-window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.documentId&&args.documentId!==bv61Doc){bv61Doc=args.documentId;bv61Refresh()}if(args.revision!==revision){assetUrls=args.assetUrls||{};revision=args.revision;restore((args.content||'').replace(/^<!-- bv-editor-mode:(HRC|COM|MD) -->\n?/,''));editorMode='HRC'}if(args.submitRequest!=null&&args.submitRequest!==lastSubmitRequest){lastSubmitRequest=args.submitRequest;if(args.submitRequest>0)saveEditor(true)}if(args.tocTargetId&&args.tocTargetId!==lastFocus){lastFocus=args.tocTargetId;BV61TOC.list(bv61Doc).then(entries=>{const item=entries.find(x=>x.id===args.tocTargetId);if(item)bv61Jump(item)})}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
+window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let args=e.data.args||{};if(args.documentId&&args.documentId!==bv61Doc){bv61Doc=args.documentId;bv61Refresh()}if(args.revision!==revision){assetUrls=args.assetUrls||{};revision=args.revision;restore((args.content||'').replace(/^<!-- bv-editor-mode:(HRC|COM|MD) -->\n?/,''));editorMode='HRC'}if(args.submitRequest!=null&&args.submitRequest!==lastSubmitRequest){lastSubmitRequest=args.submitRequest;if(args.submitRequest>0)saveEditor(true,false)}if(args.tocTargetId&&args.tocTargetId!==lastFocus){lastFocus=args.tocTargetId;BV61TOC.list(bv61Doc).then(entries=>{const item=entries.find(x=>x.id===args.tocTargetId);if(item)bv61Jump(item)})}resize()});send('streamlit:componentReady',{apiVersion:1});resize();
 
 let bv61Doc='';
 async function bv61Refresh(){if(!bv61Doc)return;const box=document.getElementById('bv61toclist');box.replaceChildren();for(const e of await BV61TOC.list(bv61Doc)){const b=document.createElement('button');b.textContent=`${e.lineStart}: ${e.title}`;b.onclick=()=>bv61Jump(e);box.append(b);const del=document.createElement('button');del.textContent='×';del.title='刪除目錄';del.onclick=async()=>{await BV61TOC.remove(e.id);bv61Refresh()};box.append(del)}}
@@ -540,7 +546,7 @@ function isImage(b){return b&&b.size>0&&b.size<=20*1024*1024&&/^image\/(?:png|jp
 async function download(url){if(!/^(?:data:image\/|https?:\/\/)/i.test(url))return null;try{const r=await fetch(url,{mode:'cors',credentials:'omit'});if(!r.ok)return null;const b=await r.blob();return isImage(b)?b:null}catch{return null}}
 async function sha(key){const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(key));return Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,'0')).join('')}
 async function saveFolder(key,blob){if(!directory)return;const ext={'image/svg+xml':'svg','image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif'}[blob.type]||'bin';const file=await directory.getFileHandle((await sha(key))+'.'+ext,{create:true});const writer=await file.createWritable();await writer.write(blob);await writer.close()}
-async function obtain(key,url){if(tasks.has(key))return tasks.get(key);const job=(async()=>{const cached=await dbRead(STORE,key).catch(()=>null);if(cached?.blob)return cached.blob;const blob=await download(url);if(blob){await dbWrite(STORE,key,{key,blob,savedAt:Date.now()}).catch(()=>{});saveFolder(key,blob).catch(()=>{})}return blob})();tasks.set(key,job);try{return await job}finally{tasks.delete(key)}}
+async function obtain(key,url){if(tasks.has(key))return tasks.get(key);const job=(async()=>{const cached=await dbRead(STORE,key).catch(()=>null);if(cached?.blob){if(directory)saveFolder(key,cached.blob).catch(()=>{});return cached.blob;}const blob=await download(url);if(blob){await dbWrite(STORE,key,{key,blob,savedAt:Date.now()}).catch(()=>{});saveFolder(key,blob).catch(()=>{})}return blob})();tasks.set(key,job);try{return await job}finally{tasks.delete(key)}}
 async function apply(im,urls){if(!im.isConnected)return;const ref=im.dataset.ref||im.dataset.bvOriginalSrc||im.getAttribute('src')||'';if(!ref||ref.startsWith('blob:'))return;const key=keyFor(ref);const m=ref.match(/^asset:\/\/([0-9a-f-]{36})$/i);const src=m?(urls?.[m[1]]||urls?.[m[1].toLowerCase()]||''):ref;
  if(im.dataset.bvLocalKey===key&&objectUrls.has(im))return;
  const blob=await obtain(key,src);if(!blob||!im.isConnected)return;
@@ -554,8 +560,14 @@ async function connectFolder(){if(!window.showDirectoryPicker){alert('此瀏覽�
 async function syncFolder(){if(!directory)return;const d=await openDB();const all=await new Promise((ok,no)=>{const r=d.transaction(STORE).objectStore(STORE).getAll();r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error);r.transaction.oncomplete=()=>d.close()});for(const item of all){try{await saveFolder(item.key,item.blob)}catch{}}}
 async function restoreFolder(){try{const saved=await dbRead('settings','directory');if(!saved)return;const status=await saved.queryPermission({mode:'readwrite'});if(status==='granted'){directory=saved;await syncFolder()}}catch{}}
 function init(){restoreFolder();scan();const observer=new MutationObserver(changes=>{for(const c of changes)for(const node of c.addedNodes)if(node.nodeType===1)scan(node)});observer.observe(document.body,{subtree:true,childList:true});
- const btn=document.createElement('button');btn.type='button';btn.textContent='授權圖片資料夾';btn.title='只需授權一次（瀏覽器可能要求重新授權）；之後自動儲存新圖片及 SVG';btn.style.cssText='position:fixed;bottom:8px;right:8px;z-index:99990;padding:6px 9px;background:#24364c;color:white;border:1px solid #5b7899;border-radius:6px;cursor:pointer';btn.onclick=connectFolder;document.body.appendChild(btn)}
-window.BVMedia627={scan,connectFolder};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+ }
+async function beforeSave(interactive=false){
+  if(!directory){await restoreFolder();}
+  if(!directory && interactive && window.showDirectoryPicker){await connectFolder();}
+  if(directory){try{await syncFolder()}catch(e){console.warn('Local media folder sync:',e)}}
+  scan();
+ }
+ window.BVMedia627={scan,connectFolder,beforeSave};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
 
 </script>
