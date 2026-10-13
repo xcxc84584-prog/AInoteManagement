@@ -23,7 +23,7 @@ import cairosvg
 from supabase import create_client
 from matrix_engine import calculate
 from local_backend import LocalDB
-from manual_sync import pull_from_cloud,push_to_cloud,clear_cloud,remove_exact_duplicates
+from manual_sync import pull_from_cloud,push_to_cloud,clear_cloud,remove_exact_duplicates,merge_duplicate_named_notes
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title='BV-Text',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
@@ -239,8 +239,6 @@ def place_after(note_id, target_id):
     if source['kind']=='GROUP' and destination is not None:
         new_kind='SUBFILE';new_has_page=True
     else:new_kind=source['kind'];new_has_page=source['has_page']
-    if source['kind']!='GROUP' and destination is not None and get_ancestors(destination,byid)[-1]!=get_ancestors(note_id,byid)[-1]:
-        raise ValueError('一般文件跨組別請使用複製')
     old_parent=source['parent_id']
     target_siblings=priority_siblings(destination,exclude=note_id)
     ordered=[r['id'] for r in target_siblings]
@@ -1173,7 +1171,6 @@ with st.sidebar:
                 if not dest:raise ValueError('請選擇目標組別或子文件')
                 if action=='move' or (action=='paste' and event.get('cut')):
                     if dest in subtree(nid,notes):raise ValueError('不能移入自己或自己的子節點')
-                    if source['kind']!='GROUP' and get_ancestors(dest,byid)[-1]!=get_ancestors(nid,byid)[-1]:raise ValueError('一般文件移動僅限同一組別；跨組別請使用複製')
                     if source['parent_id']!=dest:
                         update_note(nid,parent_id=dest,kind='SUBFILE' if source['kind']=='GROUP' else source['kind'],has_page=True if source['kind']=='GROUP' else source['has_page'],position=len([x for x in active_notes if x['parent_id']==dest])+1)
                     if source['parent_id']!=dest:
@@ -1203,10 +1200,11 @@ with st.sidebar:
                         source=byid[x]
                         if dest in subtree(x,notes):raise ValueError('不能移入自身子節點')
                         if source['kind']=='GROUP' and source['parent_id'] is None:raise ValueError('根組別不支援剪下到其他組別')
-                        if get_ancestors(dest,byid)[-1]!=get_ancestors(x,byid)[-1]:raise ValueError('跨組別請使用複製')
                     for x in ids:
                         source=byid[x]
-                        if source['parent_id']!=dest:update_note(x,parent_id=dest,position=len(priority_siblings(dest))+1)
+                        if source['parent_id']!=dest:
+                            update_note(x,parent_id=dest,kind='SUBFILE' if source['kind']=='GROUP' else source['kind'],has_page=True if source['kind']=='GROUP' else source['has_page'],position=len(priority_siblings(dest))+1)
+                            apply_priority_order(source['parent_id'],[r['id'] for r in priority_siblings(source['parent_id'],exclude=x)])
                 else:
                     for x in ids:clone_note(x,dest)
             elif action=='delete' and nid in byid:delete_note(nid)
@@ -1242,72 +1240,6 @@ with st.sidebar:
     st.divider()
     st.divider()
     st.caption('本地優先 · '+('SQLite：'+str(db_root) if STORAGE_MODE=='sqlite' else 'IndexedDB：目前瀏覽器'))
-    if page_choice=='☁️ 雲端服務':
-        st.header('☁️ 雲端服務')
-        st.warning('請先備份。同步需要 Supabase 資料表與 Storage 的 RLS 權限。')
-        def sync_progress():
-            bar=st.progress(0,text='準備中…')
-            def report(fraction,message):bar.progress(min(1,max(0,float(fraction))),text=message)
-            return report
-        live=st.checkbox('即時更新（本地操作同步到雲端）',value=bool(st.session_state.get('sync_live_enabled')),key='sync_live_checkbox')
-        if live and not st.session_state.get('sync_live_enabled'):
-            st.info('首次開啟需先下載雲端資料；下載會覆蓋本地資料，請先備份。')
-            if st.button('確認：先下載雲端並開啟即時更新',key='enable_live_sync'):
-                try:
-                    progress=sync_progress()
-                    pull_from_cloud(cloud_client,local_db,uid,progress)
-                    mark_local_change()
-                    st.session_state['_cloud_reload_pending']=True
-                    st.session_state['sync_live_enabled']=True
-                    st.session_state['_sync_pending']=False
-                    progress(1,'已完成初始化')
-                    st.session_state['_cloud_reload_notice']='雲端資料已載入，即時同步已開啟。'
-                    st.rerun()
-                except Exception as exc:st.error('初始化失敗，未開啟即時同步：'+str(exc))
-        elif not live:
-            st.session_state['sync_live_enabled']=False
-            st.session_state['_sync_pending']=False
-        confirm_upload=st.checkbox('我確認要將本地資料上傳到 Supabase',key='sync_upload_confirm')
-        if st.button('↑ 手動上傳雲端',disabled=not confirm_upload,key='sync_upload_button'):
-            try:
-                progress=sync_progress()
-                result=push_to_cloud(cloud_client,local_db,uid,progress)
-                progress(1,'上傳完成')
-                st.success('已上傳：'+str(result))
-            except Exception as exc:st.error('雲端上傳失敗：'+str(exc))
-        confirm_download=st.checkbox('我確認要以雲端資料覆蓋本地資料',key='sync_download_confirm')
-        if st.button('↓ 手動下載雲端',disabled=not confirm_download,key='sync_download_button'):
-            try:
-                progress=sync_progress()
-                result=pull_from_cloud(cloud_client,local_db,uid,progress)
-                mark_local_change()
-                st.session_state['_sync_pending']=False
-                progress(1,'下載完成')
-                st.session_state['_cloud_reload_pending']=True
-                st.session_state['_cloud_reload_notice']='已下載：'+str(result)
-                st.rerun()
-            except Exception as exc:st.error('雲端下載失敗：'+str(exc))
-        st.divider()
-        st.caption('危險操作只作用於目前登入帳號的資料，不會刪除其他使用者資料。')
-        delete_confirm=st.checkbox('我了解：重製雲端資料不可復原',key='cloud_reset_confirm')
-        if st.button('重製雲端資料（刪除全部個人雲端內容）',disabled=not delete_confirm,key='cloud_reset_button'):
-            try:
-                st.session_state['sync_live_enabled']=False
-                st.session_state['_sync_pending']=False
-                progress=sync_progress()
-                result=clear_cloud(cloud_client,uid,progress)
-                st.success('雲端個人資料已刪除：'+str(result)+'；本地資料未刪除。')
-            except Exception as exc:st.error('雲端重製未完成：'+str(exc))
-        dedup_confirm=st.checkbox('我確認刪除完全重複的雲端紀錄',key='cloud_dedup_confirm')
-        if st.button('刪除重複資料（保留最新）',disabled=not dedup_confirm,key='cloud_dedup_button'):
-            try:
-                progress=sync_progress()
-                result=remove_exact_duplicates(cloud_client,uid,progress)
-                st.success('重複資料清理結果：'+str(result))
-                st.caption('為避免破壞外鍵，筆記、任務與資產目前只檢查，不自動刪除。')
-            except Exception as exc:st.error('重複資料清理失敗：'+str(exc))
-        if STORAGE_MODE=='browser':
-            st.download_button('下載本地快照 JSON',data=json.dumps(local_db.export_snapshot(uid),ensure_ascii=False),file_name='BV-Text-local-backup.json',mime='application/json')
     if st.button('登出',width='stretch'):
         for k in ['user_id','access_token','refresh_token','selected','remember_enabled']:st.session_state.pop(k,None)
         st.session_state.skip_auto_login=True
@@ -1385,7 +1317,95 @@ if close_target and close_target in byid:
 
 if st.session_state.get('main_page')=='☁️ 雲端服務':
     st.title('☁️ 雲端服務')
-    st.info('雲端操作位於左側雲端服務區。')
+if st.session_state.get('main_page')=='☁️ 雲端服務':
+    st.header('☁️ 雲端服務')
+    st.warning('請先備份。同步需要 Supabase 資料表與 Storage 的 RLS 權限。')
+    st.subheader('雲端文件清單與局部載入')
+    if st.button('查看當前在雲端的文件',key='cloud_list_refresh'):
+        try:
+            cloud_rows=cloud_client.table('notes').select('id,parent_id,title,kind,position,updated_at,created_at,is_deleted').eq('owner_id',uid).execute().data or []
+            st.session_state['_cloud_file_rows']=[r for r in cloud_rows if not r.get('is_deleted')]
+        except Exception as exc:st.error('讀取雲端文件清單失敗：'+str(exc))
+    cloud_rows=st.session_state.get('_cloud_file_rows',[])
+    if cloud_rows:
+        choices={r['id']:r for r in cloud_rows}
+        selected_ids=st.multiselect('選擇要載入的文件',options=list(choices),format_func=lambda rid:(str(choices[rid].get('title') or '未命名')+' ['+str(choices[rid].get('kind') or '')+']'),key='cloud_selected_files')
+        st.caption('局部載入會保留本地其他資料；選取文件的雲端版本會取代本地相同 ID 的文件。會自動補齊必要的父節點及關聯圖片。')
+        if st.button('局部載入所選文件',disabled=not selected_ids,key='cloud_partial_import'):
+            try:
+                from manual_sync import pull_selected_from_cloud
+                progress=sync_progress()
+                result=pull_selected_from_cloud(cloud_client,local_db,uid,selected_ids,progress)
+                mark_local_change()
+                st.session_state['_sync_pending']=False
+                st.session_state['_cloud_reload_pending']=True
+                st.session_state['_cloud_reload_notice']='局部載入完成：'+str(result)
+                st.rerun()
+            except Exception as exc:st.error('局部載入失敗：'+str(exc))
+    def sync_progress():
+        bar=st.progress(0,text='準備中…')
+        def report(fraction,message):bar.progress(min(1,max(0,float(fraction))),text=message)
+        return report
+    live=st.checkbox('即時更新（本地操作同步到雲端）',value=bool(st.session_state.get('sync_live_enabled')),key='sync_live_checkbox')
+    if live and not st.session_state.get('sync_live_enabled'):
+        st.info('首次開啟需先下載雲端資料；下載會覆蓋本地資料，請先備份。')
+        if st.button('確認：先下載雲端並開啟即時更新',key='enable_live_sync'):
+            try:
+                progress=sync_progress()
+                pull_from_cloud(cloud_client,local_db,uid,progress)
+                mark_local_change()
+                st.session_state['_cloud_reload_pending']=True
+                st.session_state['sync_live_enabled']=True
+                st.session_state['_sync_pending']=False
+                progress(1,'已完成初始化')
+                st.session_state['_cloud_reload_notice']='雲端資料已載入，即時同步已開啟。'
+                st.rerun()
+            except Exception as exc:st.error('初始化失敗，未開啟即時同步：'+str(exc))
+    elif not live:
+        st.session_state['sync_live_enabled']=False
+        st.session_state['_sync_pending']=False
+    confirm_upload=st.checkbox('我確認要將本地資料上傳到 Supabase',key='sync_upload_confirm')
+    if st.button('↑ 手動上傳雲端',disabled=not confirm_upload,key='sync_upload_button'):
+        try:
+            progress=sync_progress()
+            result=push_to_cloud(cloud_client,local_db,uid,progress)
+            progress(1,'上傳完成')
+            st.success('已上傳：'+str(result))
+        except Exception as exc:st.error('雲端上傳失敗：'+str(exc))
+    confirm_download=st.checkbox('我確認要以雲端資料覆蓋本地資料',key='sync_download_confirm')
+    if st.button('↓ 手動下載雲端',disabled=not confirm_download,key='sync_download_button'):
+        try:
+            progress=sync_progress()
+            result=pull_from_cloud(cloud_client,local_db,uid,progress)
+            mark_local_change()
+            st.session_state['_sync_pending']=False
+            progress(1,'下載完成')
+            st.session_state['_cloud_reload_pending']=True
+            st.session_state['_cloud_reload_notice']='已下載：'+str(result)
+            st.rerun()
+        except Exception as exc:st.error('雲端下載失敗：'+str(exc))
+    st.divider()
+    st.caption('危險操作只作用於目前登入帳號的資料，不會刪除其他使用者資料。')
+    delete_confirm=st.checkbox('我了解：重製雲端資料不可復原',key='cloud_reset_confirm')
+    if st.button('重製雲端資料（刪除全部個人雲端內容）',disabled=not delete_confirm,key='cloud_reset_button'):
+        try:
+            st.session_state['sync_live_enabled']=False
+            st.session_state['_sync_pending']=False
+            progress=sync_progress()
+            result=clear_cloud(cloud_client,uid,progress)
+            st.success('雲端個人資料已刪除：'+str(result)+'；本地資料未刪除。')
+        except Exception as exc:st.error('雲端重製未完成：'+str(exc))
+    dedup_confirm=st.checkbox('我已備份雲端資料，確認合併同父節點、同類型、同名文件並刪除舊筆記',key='cloud_dedup_confirm')
+    if st.button('刪除重複資料（保留最新）',disabled=not dedup_confirm,key='cloud_dedup_button'):
+        try:
+            progress=sync_progress()
+            result=merge_duplicate_named_notes(cloud_client,uid,progress)
+            st.success('重複資料清理結果：'+str(result))
+            st.caption('同名文件先按段落標題合併，重疊段落採最新修改時間；遇到無法安全判定的重複組則保留並回報。')
+        except Exception as exc:st.error('重複資料清理失敗：'+str(exc))
+    if STORAGE_MODE=='browser':
+        st.download_button('下載本地快照 JSON',data=json.dumps(local_db.export_snapshot(uid),ensure_ascii=False),file_name='BV-Text-local-backup.json',mime='application/json')
+
     st.stop()
 
 if st.session_state.get('import_child_target'):

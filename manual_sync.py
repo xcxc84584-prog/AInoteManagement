@@ -115,3 +115,99 @@ def remove_exact_duplicates(cloud,owner,progress=None):
   removed[table]=len(victims)
   if progress:progress((i+1)/len(tables),'清理 '+table)
  return removed
+
+def pull_selected_from_cloud(cloud,local,owner,selected_ids,progress=None):
+ """Fetch selected notes and required ancestors/assets without replacing unrelated local data."""
+ import base64
+ selected=set(selected_ids)
+ if not selected:return {'notes':0,'assets':0}
+ rows=cloud.table('notes').select('*').eq('owner_id',owner).execute().data or []
+ byid={r['id']:r for r in rows if not r.get('is_deleted')}
+ missing=selected-set(byid)
+ if missing:raise ValueError('雲端找不到所選文件：'+','.join(sorted(missing)))
+ wanted=set(selected)
+ for nid in list(selected):
+  seen=set();cur=byid[nid]
+  while cur.get('parent_id') in byid:
+   pid=cur['parent_id']
+   if pid in seen:raise ValueError('雲端文件父節點循環')
+   seen.add(pid);wanted.add(pid);cur=byid[pid]
+ if progress:progress(.15,'已取得文件與父節點')
+ assets=cloud.table('assets').select('*').eq('owner_id',owner).execute().data or []
+ chosen_assets=[a for a in assets if a.get('note_id') in wanted]
+ media={}
+ for i,a in enumerate(chosen_assets):
+  path=a.get('storage_path')
+  if path:
+   media[path]=base64.b64encode(cloud.storage.from_('note-images').download(path)).decode('ascii')
+  if progress:progress(.2+.55*(i+1)/max(len(chosen_assets),1),'下載相關圖片')
+ # Preserve other tables, and preserve unrelated notes/assets by merging IDs.
+ snapshot=local.export_snapshot(owner)
+ for table,incoming in [('notes',[byid[i] for i in wanted]),('assets',chosen_assets)]:
+  merged={r['id']:r for r in snapshot.get(table,[])}
+  merged.update({r['id']:r for r in incoming})
+  snapshot[table]=list(merged.values())
+ snapshot.setdefault('media',{}).update(media)
+ if progress:progress(.85,'寫入本地工作區')
+ local.import_snapshot(owner,snapshot,replace=True)
+ if progress:progress(1,'局部載入完成')
+ return {'notes':len(wanted),'assets':len(chosen_assets)}
+
+
+def _merge_sections(old,new):
+ """Merge Markdown sections by heading; latest version wins on matching headings."""
+ import re
+ def sections(text):
+  chunks=[];key='__intro__';buf=[]
+  for line in (text or '').splitlines(keepends=True):
+   if re.match(r'^#{1,6}\s+\S',line):
+    chunks.append((key,''.join(buf)));key=line.strip();buf=[line]
+   else:buf.append(line)
+  chunks.append((key,''.join(buf)))
+  return [(k,v) for k,v in chunks if v]
+ older=sections(old);newer=sections(new)
+ merged={k:v for k,v in older};order=[k for k,v in older]
+ for k,v in newer:
+  if k not in merged:order.append(k)
+  merged[k]=v
+ return ''.join(merged[k] for k in order)
+
+
+def merge_duplicate_named_notes(cloud,owner,progress=None):
+ """Conservative name-based merge; never delete referenced notes without safely migrating links."""
+ from collections import defaultdict
+ rows=cloud.table('notes').select('*').eq('owner_id',owner).execute().data or []
+ groups=defaultdict(list)
+ for r in rows:
+  if not r.get('is_deleted') and r.get('title'):
+   groups[(r.get('parent_id'),r['title'].strip(),r.get('kind'))].append(r)
+ dupes=[g for g in groups.values() if len(g)>1]
+ result={'merged':0,'removed':0,'skipped':0,'groups':len(dupes)}
+ for i,group in enumerate(dupes):
+  group.sort(key=lambda r:str(r.get('updated_at') or r.get('created_at') or ''))
+  survivor=group[-1]
+  # Only text notes with unique section headings can be merged automatically.
+  if survivor.get('kind') not in ('COMPOSITE','MD','FILE','TEXT'):
+   result['skipped']+=1;continue
+  import re
+  def headings(content):
+   h=re.findall(r'^#{1,6}\s+.+$',content or '',re.M)
+   return len(h)==len(set(h))
+  if not all(headings(r.get('content')) for r in group):
+   result['skipped']+=1;continue
+  combined=group[0].get('content') or ''
+  for r in group[1:]:combined=_merge_sections(combined,r.get('content') or '')
+  try:
+   cloud.table('notes').update({'content':combined}).eq('id',survivor['id']).eq('owner_id',owner).execute()
+   for old in group[:-1]:
+    # Transfer foreign keys before deletion; restrict updates to the current owner.
+    for table,col in [('notes','parent_id'),('assets','note_id')]:
+     cloud.table(table).update({col:survivor['id']}).eq('owner_id',owner).eq(col,old['id']).execute()
+    cloud.table('notes').delete().eq('owner_id',owner).eq('id',old['id']).execute()
+    result['removed']+=1
+   result['merged']+=1
+  except Exception as exc:
+   raise RuntimeError('同名文件合併未完成，請檢查雲端資料（'+str(survivor.get('title'))+'）：'+str(exc)) from exc
+  if progress:progress((i+1)/max(len(dupes),1),'合併同名文件')
+ if progress:progress(1,'雲端同名文件整理完成')
+ return result
