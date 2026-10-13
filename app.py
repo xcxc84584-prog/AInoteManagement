@@ -24,6 +24,7 @@ from supabase import create_client
 from matrix_engine import calculate
 from local_backend import LocalDB
 from manual_sync import pull_from_cloud,push_to_cloud,clear_cloud,remove_exact_duplicates
+from lan_client import send as lan_send,receive as lan_receive
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title='BV-Text',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
@@ -1210,48 +1211,16 @@ with st.sidebar:
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
         st.success(st.session_state.pop('operation_notice'))
-    page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','⚙️ 設定'],key='main_page',horizontal=True,on_change=v431_change_page)
+    page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','☁️ 雲端與局域網','⚙️ 設定'],key='main_page',horizontal=True,on_change=v431_change_page)
     if st.session_state.get('v431_navigation_error'):st.error(st.session_state.pop('v431_navigation_error'))
     if page_choice!='📝 筆記工作區':st.session_state.pop('full_read_id',None)
+    if st.session_state.get('_sync_notice'):st.success(st.session_state.pop('_sync_notice'))
     st.divider()
     st.divider()
     st.caption('本地優先 · '+('SQLite：'+str(db_root) if STORAGE_MODE=='sqlite' else 'IndexedDB：目前瀏覽器'))
-    if st.session_state.get('cloud_download_notice'):
-        st.success(st.session_state.pop('cloud_download_notice'))
-    with st.expander('🔗 WebRTC P2P｜同帳號裝置交換（免 Supabase 資料庫傳輸）'):
-        st.caption('兩台裝置均須登入相同帳號。資料經瀏覽器 WebRTC DataChannel 交換；登入驗證仍可能使用 Supabase Auth。')
-        st.info('先從來源裝置匯出完整本地快照，再在下方 P2P 視窗傳送；接收端下載收到的檔案後，使用「匯入收到的快照」載入。')
-        snapshot=local_db.export_snapshot(uid)
-        envelope={'format':'bvtext-p2p-snapshot','version':1,'owner_id':uid,'exported_at':datetime.now(timezone.utc).isoformat(),'snapshot':snapshot}
-        st.download_button('① 匯出本帳號完整資料（含圖片）',data=json.dumps(envelope,ensure_ascii=False).encode('utf-8'),file_name='BV-Text-P2P-'+uid[:8]+'.json',mime='application/json',key='p2p_export_snapshot')
-        st.caption('② 在兩台裝置下方的 WebRTC 面板手動交換邀請與回覆，再傳送剛匯出的 JSON。')
-        p2p_html=(Path(__file__).parent/'p2p'/'index.html').read_text(encoding='utf-8')
-        components.html(p2p_html,height=740,scrolling=True)
-        st.caption('③ 在接收裝置匯入 P2P 收到的快照。匯入僅修改本地資料，不會呼叫 Supabase 雲端同步。')
-        incoming=st.file_uploader('選擇 P2P 收到的 BV-Text 快照 JSON',type=['json'],key='p2p_received_snapshot')
-        replace=st.checkbox('以收到的資料取代目前本地資料（取消勾選則按 ID 合併）',value=False,key='p2p_replace_snapshot')
-        confirmed=st.checkbox('我已確認來源裝置可信，且已備份目前資料',key='p2p_import_confirm')
-        if st.button('匯入收到的快照並重新載入',disabled=not (incoming and confirmed),key='p2p_import_snapshot'):
-            try:
-                if incoming.size>150*1024*1024:raise ValueError('快照超過 150 MB，請分批交換')
-                payload=json.loads(incoming.getvalue().decode('utf-8'))
-                if payload.get('format')!='bvtext-p2p-snapshot' or payload.get('version')!=1:raise ValueError('不是受支援的 BV-Text P2P 快照')
-                if payload.get('owner_id')!=uid:raise ValueError('帳號不一致：禁止匯入其他帳號的資料')
-                data=payload.get('snapshot')
-                if not isinstance(data,dict):raise ValueError('快照格式無效')
-                for name in ('notes','assets','schedule_cards','daily_tasks','daily_task_checks'):
-                    rows=data.get(name,[])
-                    if not isinstance(rows,list) or any(not isinstance(r,dict) or r.get('owner_id')!=uid for r in rows):raise ValueError('快照資料擁有者不符：'+name)
-                local_db.import_snapshot(uid,data,replace=replace)
-                st.session_state['_sync_pending']=False
-                st.session_state['sync_live_enabled']=False
-                mark_local_change()
-                st.session_state['p2p_import_notice']='P2P 快照已匯入本地，並重新載入工作區；雲端即時更新已關閉。'
-                st.rerun()
-            except Exception as exc:st.error('P2P 快照匯入失敗：'+str(exc))
-    if st.session_state.get('p2p_import_notice'):
-        st.success(st.session_state.pop('p2p_import_notice'))
-    with st.expander('☁️ 雲端操作與同步'):
+    if page_choice=='☁️ 雲端與局域網':
+        st.subheader('雲端與局域網')
+        st.caption('雲端操作與 LAN 資料交接集中管理。LAN 傳輸不使用 Supabase Database / Storage。')
         st.warning('請先備份。同步需要 Supabase 資料表與 Storage 的 RLS 權限。')
         def sync_progress():
             bar=st.progress(0,text='準備中…')
@@ -1268,7 +1237,7 @@ with st.sidebar:
                     st.session_state['sync_live_enabled']=True
                     st.session_state['_sync_pending']=False
                     progress(1,'已完成初始化')
-                    st.session_state['cloud_download_notice']='雲端初始化完成，已重新載入工作區。'
+                    st.session_state['_sync_notice']='雲端下載完成，已開啟即時更新'
                     st.rerun()
                 except Exception as exc:st.error('初始化失敗，未開啟即時同步：'+str(exc))
         elif not live:
@@ -1290,7 +1259,7 @@ with st.sidebar:
                 mark_local_change()
                 st.session_state['_sync_pending']=False
                 progress(1,'下載完成')
-                st.session_state['cloud_download_notice']='雲端下載完成：'+str(result)+'；工作區已重新載入。'
+                st.session_state['_sync_notice']='雲端下載完成：'+str(result)
                 st.rerun()
             except Exception as exc:st.error('雲端下載失敗：'+str(exc))
         st.divider()
@@ -1314,6 +1283,39 @@ with st.sidebar:
             except Exception as exc:st.error('重複資料清理失敗：'+str(exc))
         if STORAGE_MODE=='browser':
             st.download_button('下載本地快照 JSON',data=json.dumps(local_db.export_snapshot(uid),ensure_ascii=False),file_name='BV-Text-local-backup.json',mime='application/json')
+        st.divider()
+        st.subheader('局域網 LAN 資料交接')
+        st.info('先在同一局域網的一台電腦執行 python lan_exchange.py，兩台裝置須能連到該電腦。LAN 服務以一次性密鑰保護。')
+        if os.getenv('STREAMLIT_SHARING_MODE'):
+            st.warning('目前在 Streamlit Cloud 執行：雲端伺服器無法直接連到家中 LAN 私人 IP。請在區網電腦本地執行 Streamlit 才能使用此模式；雲端部署可改用手動檔案交換。')
+        lan_url=st.text_input('LAN 服務位址',value='http://192.168.1.100:8765',key='lan_url')
+        lan_token=st.text_input('LAN 配對密鑰',type='password',key='lan_token')
+        st.caption('傳送或接收僅作用於相同帳號 UID；匯入前請備份。LAN 服務需保持運作。')
+        lan_col1,lan_col2=st.columns(2)
+        with lan_col1:
+            if st.button('↑ 傳送本地資料至 LAN',key='lan_send',disabled=not bool(lan_token)):
+                try:
+                    progress=sync_progress();progress(.15,'匯出本地快照')
+                    snapshot=local_db.export_snapshot(uid)
+                    progress(.4,'透過 LAN 傳送')
+                    result=lan_send(lan_url,lan_token,uid,snapshot)
+                    progress(1,'傳送完成');st.success('LAN 傳送成功：'+str(result))
+                except Exception as exc:st.error('LAN 傳送失敗：'+str(exc))
+        with lan_col2:
+            lan_confirm=st.checkbox('確認以 LAN 快照取代本地資料',key='lan_receive_confirm')
+            if st.button('↓ 從 LAN 接收並重新載入',key='lan_receive',disabled=not (lan_token and lan_confirm)):
+                try:
+                    progress=sync_progress();progress(.1,'連線 LAN')
+                    snapshot=lan_receive(lan_url,lan_token,uid)
+                    progress(.75,'寫入本地資料')
+                    local_db.import_snapshot(uid,snapshot,replace=True)
+                    st.session_state['sync_live_enabled']=False
+                    st.session_state['_sync_pending']=False
+                    progress(1,'匯入完成')
+                    st.session_state['_sync_notice']='LAN 資料接收完成，工作區已重新載入'
+                    st.rerun()
+                except Exception as exc:st.error('LAN 接收失敗：'+str(exc))
+        st.caption('LAN 傳輸在兩台裝置均本地部署時可用。若在 Streamlit Cloud 上使用，此頁面的 LAN 請求由雲端伺服器發出，不能直接連到使用者私人網路。')
     if st.button('登出',width='stretch'):
         for k in ['user_id','access_token','refresh_token','selected','remember_enabled']:st.session_state.pop(k,None)
         st.session_state.skip_auto_login=True
@@ -1557,6 +1559,9 @@ def restore_schedule_backup(rows,mode):
 # Dialogs must be invoked from the root Streamlit layout context.
 # Invoking them inside calendar widgets/containers can raise
 # StreamlitInvalidLayoutContextError on Streamlit Cloud.
+if st.session_state.get('main_page')=='☁️ 雲端與局域網':
+    st.stop()
+
 if st.session_state.get('main_page')=='📅 行程表':
     _quick_day=st.session_state.pop('schedule_quick_day',None)
     if _quick_day:
