@@ -1359,7 +1359,7 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
                 rid=str(r['id'])
                 if rid in visited:continue
                 kind=str(r.get('kind') or '').upper()
-                icon={'GROUP':'📁','FOLD':'📁','FOLDER':'📁','FILE':'📄','MARKDOWN':'📄','COMPOSITE':'📝','GRAPH':'🖼️','HANDWRITE':'✍️','TABLE':'▦'}.get(kind,'📄')
+                icon={'GROUP':'📁','FOLD':'📁','SUBFILE':'📁','FOLDER':'📁','FILE':'📄','MARKDOWN':'📄','COMPOSITE':'📝','GRAPH':'🖼️','HANDWRITE':'✍️','TABLE':'▦'}.get(kind,'📄')
                 nested=build_tree(rid,visited|{rid})
                 expandable=bool(nested)
                 label=html.escape(str(r.get('title') or '未命名'))
@@ -1387,7 +1387,7 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
         components.html(markup,height=460,scrolling=True)
         # Native Streamlit actions: iframe navigation was blocked in hosted browsers.
         # The tree remains a lightweight, expandable structural preview.
-        st.caption('上方為雲端 Explorer 結構預覽；從下方選擇節點後，使用原生按鈕執行載入或刪除。')
+        st.caption('選擇節點後可只載入該文件，不會自動下載整個 ROOT；載入及刪除均顯示進度。')
         def cloud_node_label(nid):
             r=by_cloud_id[nid]
             return str(r.get('title') or '未命名')+'  ['+str(r.get('kind') or 'FILE')+']'
@@ -1412,7 +1412,7 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
                 progress=sync_progress()
                 if load_clicked:
                     from manual_sync import pull_selected_from_cloud
-                    result=pull_selected_from_cloud(cloud_client,local_db,uid,[target],progress)
+                    result=pull_selected_from_cloud(cloud_client,local_db,uid,[target],progress,include_ancestors=False)
                     st.session_state['selected']=target
                     st.session_state['main_page']='📝 筆記工作區'
                     st.session_state.pop('full_read_id',None)

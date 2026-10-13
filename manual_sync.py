@@ -29,11 +29,14 @@ def push_selected_to_cloud(cloud,local,owner,note_id,progress=None):
  for i,row in enumerate(reversed(chain)):
   cloud.table('notes').upsert(_pack_note(row),on_conflict='id').execute()
   if progress:progress(.1+.55*(i+1)/len(chain),'上傳文件與必要父節點')
- assets=[a for a in snapshot.get('assets',[]) if a.get('note_id')==note_id]
+ import re
+ referenced=set(re.findall(r'asset://([0-9a-fA-F-]{36})',byid[note_id].get('content') or ''))
+ assets=[a for a in snapshot.get('assets',[]) if a.get('note_id')==note_id or a.get('id') in referenced]
  for i,asset in enumerate(assets):
   cloud.table('assets').upsert(asset,on_conflict='id').execute()
   path=asset.get('storage_path');encoded=snapshot.get('media',{}).get(path)
-  if encoded:cloud.storage.from_('note-images').upload(path,base64.b64decode(encoded),{'content-type':asset.get('mime_type') or 'application/octet-stream','upsert':'true'})
+  if not encoded:raise RuntimeError('本地圖片資料不存在，停止雲端化以避免不完整圖片：'+str(path))
+  cloud.storage.from_('note-images').upload(path,base64.b64decode(encoded),{'content-type':asset.get('mime_type') or 'application/octet-stream','upsert':'true'})
   if progress:progress(.65+.3*(i+1)/len(assets),'上傳文件圖片')
  if progress:progress(1,'雲端化完成')
  return {'notes':len(chain),'assets':len(assets)}
@@ -163,42 +166,61 @@ def remove_exact_duplicates(cloud,owner,progress=None):
   if progress:progress((i+1)/len(tables),'清理 '+table)
  return removed
 
-def pull_selected_from_cloud(cloud,local,owner,selected_ids,progress=None):
- """Fetch selected notes and required ancestors/assets without replacing unrelated local data."""
- import base64
+def pull_selected_from_cloud(cloud,local,owner,selected_ids,progress=None,include_ancestors=False):
+ """Import ONLY explicitly selected notes by default, retaining unrelated local records.
+ A missing parent is detached locally (parent_id=None); the cloud hierarchy stays intact.
+ Referenced image assets are resolved by both note_id and asset:// IDs.
+ """
+ import base64,re
  selected=set(selected_ids)
  if not selected:return {'notes':0,'assets':0}
- rows=cloud.table('notes').select('*').eq('owner_id',owner).execute().data or []
- byid={r['id']:_unpack_note(r) for r in rows if not r.get('is_deleted')}
- missing=selected-set(byid)
- if missing:raise ValueError('雲端找不到所選文件：'+','.join(sorted(missing)))
- wanted=set(selected)
- for nid in list(selected):
-  seen=set();cur=byid[nid]
-  while cur.get('parent_id') in byid:
-   pid=cur['parent_id']
-   if pid in seen:raise ValueError('雲端文件父節點循環')
-   seen.add(pid);wanted.add(pid);cur=byid[pid]
- if progress:progress(.15,'已取得文件與父節點')
- assets=cloud.table('assets').select('*').eq('owner_id',owner).execute().data or []
- chosen_assets=[a for a in assets if a.get('note_id') in wanted]
+ if progress:progress(.05,'查詢選取文件')
+ rows=[]
+ for i,nid in enumerate(selected):
+  found=cloud.table('notes').select('*').eq('owner_id',owner).eq('id',nid).execute().data or []
+  if not found or found[0].get('is_deleted'):raise ValueError('雲端找不到所選文件：'+str(nid))
+  rows.append(_unpack_note(found[0]))
+  if progress:progress(.08+.2*(i+1)/len(selected),'下載文件內容')
+ byid={r['id']:r for r in rows}
+ if include_ancestors:
+  for nid in list(selected):
+   current=byid[nid];seen=set()
+   while current.get('parent_id') and current['parent_id'] not in byid:
+    pid=current['parent_id']
+    if pid in seen:raise ValueError('雲端父節點循環')
+    seen.add(pid)
+    found=cloud.table('notes').select('*').eq('owner_id',owner).eq('id',pid).execute().data or []
+    if not found:break
+    current=_unpack_note(found[0]);byid[pid]=current
+ snapshot=local.export_snapshot(owner)
+ existing={r['id'] for r in snapshot.get('notes',[])}
+ for row in byid.values():
+  if row.get('parent_id') and row['parent_id'] not in byid and row['parent_id'] not in existing:
+   row['parent_id']=None
+ if progress:progress(.35,'查詢文件引用的圖片')
+ referenced=set()
+ for row in byid.values():referenced.update(re.findall(r'asset://([0-9a-fA-F-]{36})',row.get('content') or ''))
+ chosen={}
+ for row in byid.values():
+  for a in cloud.table('assets').select('*').eq('owner_id',owner).eq('note_id',row['id']).execute().data or []:chosen[a['id']]=a
+ for aid in referenced-chosen.keys():
+  for a in cloud.table('assets').select('*').eq('owner_id',owner).eq('id',aid).execute().data or []:chosen[a['id']]=a
  media={}
- for i,a in enumerate(chosen_assets):
+ for i,a in enumerate(chosen.values()):
   path=a.get('storage_path')
   if path:
-   media[path]=base64.b64encode(cloud.storage.from_('note-images').download(path)).decode('ascii')
-  if progress:progress(.2+.55*(i+1)/max(len(chosen_assets),1),'下載相關圖片')
- # Preserve other tables, and preserve unrelated notes/assets by merging IDs.
- snapshot=local.export_snapshot(owner)
- for table,incoming in [('notes',[byid[i] for i in wanted]),('assets',chosen_assets)]:
+   try:media[path]=base64.b64encode(cloud.storage.from_('note-images').download(path)).decode('ascii')
+   except Exception as exc:raise RuntimeError('圖片資源下載失敗：'+str(path)) from exc
+  if progress:progress(.4+.45*(i+1)/max(len(chosen),1),'下載圖片 '+str(i+1)+'/'+str(len(chosen)))
+ for table,incoming in [('notes',list(byid.values())),('assets',list(chosen.values()))]:
   merged={r['id']:r for r in snapshot.get(table,[])}
   merged.update({r['id']:r for r in incoming})
   snapshot[table]=list(merged.values())
  snapshot.setdefault('media',{}).update(media)
- if progress:progress(.85,'寫入本地工作區')
+ if progress:progress(.9,'寫入本地工作區')
  local.import_snapshot(owner,snapshot,replace=True)
- if progress:progress(1,'局部載入完成')
- return {'notes':len(wanted),'assets':len(chosen_assets)}
+ if progress:progress(1,'單一文件局部載入完成')
+ return {'notes':len(byid),'assets':len(chosen)}
 
 
 def _merge_sections(old,new):
