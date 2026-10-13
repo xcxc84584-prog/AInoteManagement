@@ -1053,6 +1053,15 @@ with st.sidebar:
                 st.query_params['area']=area
     except Exception:pass
 
+    if st.session_state.pop('_explorer_close_sidebar',False):
+        components.html("""<script>
+        try { const d=window.parent.document;
+          const sidebar=d.querySelector('[data-testid=\"stSidebar\"]');
+          const btn=sidebar?.querySelector('[data-testid=\"stSidebarCollapseButton\"] button')
+             || sidebar?.querySelector('button[aria-label*=\"Close sidebar\"]');
+          if(btn)btn.click();
+        } catch(e) { console.warn('Sidebar close unavailable',e); }
+        </script>""",height=0)
     st.caption('右鍵操作 · 拖曳移動 · F2 · Delete 刪除 · Ctrl+C/V/X · 文件操作→批量選取')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
     payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':[]} for n in active_notes if n['kind']!='TABLE']
@@ -1063,6 +1072,8 @@ with st.sidebar:
         try:
             op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav','import_child') else None
             if op_progress:op_progress(15,'正在處理 '+str(action))
+            if action=='close_sidebar':
+                st.session_state['_explorer_close_sidebar']=True
             if action in ('select','full_edit','full_read','quick_nav','toc_nav','toc_edit_nav','toc_browse_nav') and nid in byid:
                 st.session_state['main_page']='📝 筆記工作區'
                 # Every Explorer navigation commits the current focused draft, even
@@ -1443,6 +1454,20 @@ def restore_schedule_backup(rows,mode):
                                   ','.join('?' for _ in cols)+')',[int(row[k]) if k=='is_completed' else row[k] for k in cols])
     mark_local_change()
 
+# Dialogs must be invoked from the root Streamlit layout context.
+# Invoking them inside calendar widgets/containers can raise
+# StreamlitInvalidLayoutContextError on Streamlit Cloud.
+if st.session_state.get('main_page')=='📅 行程表':
+    if st.session_state.get('schedule_quick_day'):
+        schedule_quick_create_dialog()
+    if st.session_state.get('schedule_edit_id'):
+        try:
+            _dialog_cards=c.table('schedule_cards').select('*').eq('owner_id',uid).eq('id',st.session_state['schedule_edit_id']).execute().data or []
+            if _dialog_cards:schedule_edit_dialog(_dialog_cards[0])
+            else:st.session_state.pop('schedule_edit_id',None)
+        except Exception as _dialog_exc:
+            st.error('無法載入行程編輯視窗：'+str(_dialog_exc))
+
 if st.session_state.get('main_page')=='📅 行程表':
     st.title('📅 行程表')
     st.caption('行程卡編輯後會先保存在本機 SQLite 或瀏覽器 IndexedDB。下方可另外匯出獨立的行程表備份，並從本地檔案還原。')
@@ -1700,12 +1725,6 @@ if st.session_state.get('main_page')=='📅 行程表':
                         st.success(f'已建立 {total} 張行程卡')
                         st.rerun()
                     except Exception as exc:st.error('建立失敗：'+str(exc))
-    if st.session_state.get('schedule_edit_id'):
-        editing=next((x for x in cards if x['id']==st.session_state['schedule_edit_id']),None)
-        if editing:schedule_edit_dialog(editing)
-        else:st.session_state.pop('schedule_edit_id',None)
-    if st.session_state.get('schedule_quick_day'):
-        schedule_quick_create_dialog()
     st.stop()
 
 if st.session_state.get('main_page')=='⚙️ 設定':
