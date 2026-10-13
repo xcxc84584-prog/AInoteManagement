@@ -42,6 +42,13 @@ schedule_calendar_component=components.declare_component('bv_schedule_calendar',
 schedule_cards_component=components.declare_component('bv_schedule_cards_v631',path=str(Path(__file__).parent/'components'/'schedule_cards'))
 section_scroll_component=components.declare_component('bv_section_scroll',path=str(Path(__file__).parent/'components'/'section_scroll'))
 
+def sync_progress():
+    """Progress reporter available from every page and Explorer callback."""
+    bar=st.progress(0,text='準備中…')
+    def report(fraction,message):
+        bar.progress(min(1.0,max(0.0,float(fraction))),text=str(message))
+    return report
+
 def config(key):
     try:return st.secrets.get(key) or os.getenv(key)
     except Exception:return os.getenv(key)
@@ -1047,7 +1054,7 @@ def explorer_functions_dialog():
             try:
                 from manual_sync import push_selected_to_cloud
                 if not cloud_client:raise RuntimeError('尚未連線 Supabase')
-                result=push_selected_to_cloud(cloud_client,local_db,uid,selected['id'],sync_progress() if 'sync_progress' in globals() else None)
+                result=push_selected_to_cloud(cloud_client,local_db,uid,selected['id'],sync_progress())
                 st.success('雲端化完成：'+str(result))
             except Exception as exc:st.error('雲端化失敗：'+str(exc))
         rootid=get_ancestors(selected['id'],byid)[-1]
@@ -1351,10 +1358,6 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
 if st.session_state.get('main_page')=='☁️ 雲端服務':
     st.header('☁️ 雲端服務')
     st.warning('請先備份。同步需要 Supabase 資料表與 Storage 的 RLS 權限。')
-    def sync_progress():
-        bar=st.progress(0,text='準備中…')
-        def report(fraction,message):bar.progress(min(1,max(0,float(fraction))),text=message)
-        return report
     st.subheader('雲端 Explorer（只載入文件結構）')
     if st.button('查看當前在雲端的文件',key='cloud_list_refresh'):
         try:
