@@ -1320,28 +1320,58 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
 if st.session_state.get('main_page')=='☁️ 雲端服務':
     st.header('☁️ 雲端服務')
     st.warning('請先備份。同步需要 Supabase 資料表與 Storage 的 RLS 權限。')
-    st.subheader('雲端文件清單與局部載入')
+    st.subheader('雲端 Explorer（只載入文件結構）')
     if st.button('查看當前在雲端的文件',key='cloud_list_refresh'):
         try:
-            cloud_rows=cloud_client.table('notes').select('id,parent_id,title,kind,position,updated_at,created_at,is_deleted').eq('owner_id',uid).execute().data or []
-            st.session_state['_cloud_file_rows']=[r for r in cloud_rows if not r.get('is_deleted')]
+            rows=cloud_client.table('notes').select('id,parent_id,title,kind,position,is_deleted').eq('owner_id',uid).execute().data or []
+            st.session_state['_cloud_file_rows']=[r for r in rows if not r.get('is_deleted')]
         except Exception as exc:st.error('讀取雲端文件清單失敗：'+str(exc))
     cloud_rows=st.session_state.get('_cloud_file_rows',[])
     if cloud_rows:
-        choices={r['id']:r for r in cloud_rows}
-        selected_ids=st.multiselect('選擇要載入的文件',options=list(choices),format_func=lambda rid:(str(choices[rid].get('title') or '未命名')+' ['+str(choices[rid].get('kind') or '')+']'),key='cloud_selected_files')
-        st.caption('局部載入會保留本地其他資料；選取文件的雲端版本會取代本地相同 ID 的文件。會自動補齊必要的父節點及關聯圖片。')
-        if st.button('局部載入所選文件',disabled=not selected_ids,key='cloud_partial_import'):
-            try:
-                from manual_sync import pull_selected_from_cloud
-                progress=sync_progress()
-                result=pull_selected_from_cloud(cloud_client,local_db,uid,selected_ids,progress)
-                mark_local_change()
-                st.session_state['_sync_pending']=False
-                st.session_state['_cloud_reload_pending']=True
-                st.session_state['_cloud_reload_notice']='局部載入完成：'+str(result)
-                st.rerun()
-            except Exception as exc:st.error('局部載入失敗：'+str(exc))
+        import streamlit.components.v1 as components
+        import html
+        by_cloud_id={str(r['id']):r for r in cloud_rows}
+        children={}
+        for r in cloud_rows:
+            pid=str(r.get('parent_id') or '')
+            children.setdefault(pid if pid in by_cloud_id else '',[]).append(r)
+        for rr in children.values():rr.sort(key=lambda r:(r.get('position') or 0,str(r.get('title') or '')))
+        def build_tree(pid='',visited=None):
+            visited=set(visited or ())
+            result=[]
+            for r in children.get(pid,[]):
+                rid=str(r['id'])
+                if rid in visited:continue
+                result.append('<li><span class="node" data-id="'+html.escape(rid,quote=True)+'">📄 '+html.escape(str(r.get('title') or '未命名'))+' ['+html.escape(str(r.get('kind') or ''))+']</span>')
+                nested=build_tree(rid,visited|{rid})
+                if nested:result.append('<ul>'+nested+'</ul>')
+                result.append('</li>')
+            return ''.join(result)
+        markup="""<style>body{background:#111827;color:#eee;font:14px sans-serif}ul{list-style:none;padding-left:18px}.node{display:inline-block;padding:5px;cursor:context-menu}.node:hover{background:#334155}#menu{display:none;position:fixed;background:#334155;padding:8px;z-index:10}button{padding:8px}</style><p>右鍵文件以選擇載入或刪除</p><ul>"""+build_tree()+"""</ul><div id="menu"><button id="load">載入</button><button id="delete">刪除</button></div><script>let id='';document.querySelectorAll('.node').forEach(n=>n.addEventListener('contextmenu',e=>{e.preventDefault();id=n.dataset.id;let m=document.getElementById('menu');m.style.display='block';m.style.left=Math.min(e.clientX,innerWidth-140)+'px';m.style.top=Math.min(e.clientY,innerHeight-60)+'px'}));for(let action of ['load','delete'])document.getElementById(action).onclick=()=>{let url=new URL(window.parent.location.href);url.searchParams.set('cloud_action',action);url.searchParams.set('cloud_note',id);window.parent.location.href=url.toString()};</script>"""
+        components.html(markup,height=360,scrolling=True)
+        action=st.query_params.get('cloud_action')
+        target=st.query_params.get('cloud_note')
+        if action in ('load','delete') and target in by_cloud_id:
+            st.info(('載入：' if action=='load' else '刪除：')+str(by_cloud_id[target].get('title')))
+            confirmed=True if action=='load' else st.checkbox('我確認刪除雲端文件及其子文件',key='cloud_delete_confirm')
+            if st.button('確認'+('載入' if action=='load' else '刪除'),disabled=not confirmed,key='cloud_tree_confirm'):
+                try:
+                    if action=='load':
+                        from manual_sync import pull_selected_from_cloud
+                        result=pull_selected_from_cloud(cloud_client,local_db,uid,[target],sync_progress())
+                        mark_local_change()
+                        st.session_state['_sync_pending']=False
+                        st.session_state['_cloud_reload_pending']=True
+                        st.session_state['_cloud_reload_notice']='局部載入完成：'+str(result)
+                    else:
+                        from manual_sync import delete_cloud_note_subtree
+                        result=delete_cloud_note_subtree(cloud_client,uid,target,sync_progress())
+                        st.session_state.pop('_cloud_file_rows',None)
+                        st.session_state['_cloud_reload_notice']='刪除完成：'+str(result)
+                    st.query_params.clear()
+                    st.rerun()
+                except Exception as exc:st.error('操作失敗：'+str(exc))
+    else:st.info('請按「查看當前在雲端的文件」載入樹狀結構。')
     def sync_progress():
         bar=st.progress(0,text='準備中…')
         def report(fraction,message):bar.progress(min(1,max(0,float(fraction))),text=message)

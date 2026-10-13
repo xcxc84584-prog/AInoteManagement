@@ -64,6 +64,12 @@ def push_to_cloud(cloud,local,owner,progress=None):
  for i,row in enumerate(snapshot.get('schedule_cards',[])):
   if progress:progress(.72+.06*(i+1)/max(len(snapshot.get('schedule_cards',[])),1),'同步行程')
   if row.get('owner_id')==owner:cloud.table('schedule_cards').upsert(row,on_conflict='id').execute()
+ # Sync daily task templates before dated checks (FK dependency).
+ for table in ('daily_tasks','daily_task_checks'):
+  records=[r for r in snapshot.get(table,[]) if r.get('owner_id')==owner]
+  for index,row in enumerate(records):
+   if progress:progress(.78+.02*(index+1)/max(len(records),1),'同步 '+table)
+   cloud.table(table).upsert(row,on_conflict='id').execute()
  for i,a in enumerate(snapshot.get('assets',[])):
   if progress:progress(.8+.15*(i+1)/max(len(snapshot.get('assets',[])),1),'上傳圖片')
   if a.get('owner_id')!=owner:continue
@@ -211,3 +217,30 @@ def merge_duplicate_named_notes(cloud,owner,progress=None):
   if progress:progress((i+1)/max(len(dupes),1),'合併同名文件')
  if progress:progress(1,'雲端同名文件整理完成')
  return result
+
+def delete_cloud_note_subtree(cloud,owner,note_id,progress=None):
+ """Delete one owner's selected note subtree, including asset rows and Storage files."""
+ rows=cloud.table('notes').select('id,parent_id').eq('owner_id',owner).execute().data or []
+ ids={str(r['id']) for r in rows}
+ if str(note_id) not in ids:raise ValueError('雲端文件不存在或無權操作')
+ children={}
+ for r in rows:children.setdefault(str(r.get('parent_id') or ''),[]).append(str(r['id']))
+ ordered=[];seen=set()
+ def visit(n):
+  if n in seen:return
+  seen.add(n)
+  for child in children.get(n,[]):visit(child)
+  ordered.append(n)
+ visit(str(note_id))
+ paths=[]
+ for i,nid in enumerate(ordered):
+  if progress:progress(.1+.65*(i+1)/len(ordered),'刪除雲端文件及附件')
+  assets=cloud.table('assets').select('id,storage_path').eq('owner_id',owner).eq('note_id',nid).execute().data or []
+  for a in assets:
+   if a.get('storage_path'):paths.append(a['storage_path'])
+  cloud.table('assets').delete().eq('owner_id',owner).eq('note_id',nid).execute()
+  cloud.table('notes').delete().eq('owner_id',owner).eq('id',nid).execute()
+ if paths:
+  for i in range(0,len(paths),100):cloud.storage.from_('note-images').remove(paths[i:i+100])
+ if progress:progress(1,'雲端刪除完成')
+ return {'notes':len(ordered),'assets':len(paths)}
