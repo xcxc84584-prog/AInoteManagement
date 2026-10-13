@@ -2046,8 +2046,8 @@ if st.session_state.get('main_page')=='⚙️ 設定':
             st.caption('IndexedDB 位於瀏覽器內，沒有可由網站直接開啟的 Windows 固定路徑。下方按鈕可開啟瀏覽器資料夾選擇器。')
         local_component(mode='settings',key='local_save_settings_v1',default=None)
     with st.container():
-        st.markdown('#### 自動 Load 路徑（與儲存路徑分開）')
-        st.caption('可在下方關閉自動載入。啟用後重新整理頁面會掃描指定資料夾中的 FOLD 備份、文件與行程表；需保留瀏覽器資料夾讀取權限。')
+        st.markdown('#### 本地化｜自動載入與資料夾管理')
+        st.caption('選擇本機資料夾後，可管理自動載入。重新整理時會依瀏覽器授權讀取備份、文件與行程表。完整的本地上傳、下載及 Explorer 統一操作仍在開發中。')
         auto_load_component(mode='settings',key='auto_load_settings_v631',default=None)
         if st.session_state.get('_auto_load_report'):
             st.caption('最近一次自動載入：')
@@ -2091,7 +2091,7 @@ if st.session_state.get('main_page')=='⚙️ 設定':
                     st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
     st.stop()
 
-DEMO_GUIDE = '# BV-Text v6.7 使用教學\n\n## 1. 登入與工作區\n登入後使用「筆記工作區」、「行程表」、「雲端服務」、「設定」四個頁面。雲端版的工作區主要保存在目前瀏覽器的 IndexedDB；不同瀏覽器與裝置不會自動共享。首次載入時會顯示進度。\n\n## 2. Explorer\n在左側 Explorer 建立組別、資料夾與文件。選擇節點後可瀏覽、編輯、移動或刪除。新增尚未完成前關閉視窗，視為取消。\n\n## 3. 圖文文件\n使用 Markdown 編寫標題、表格、圖片與數學公式。數學公式建議以 $$...$$ 包裹。圖片請使用可匯入的實際圖片資源；不要只依賴遠端圖片連結。\n\n## 4. 單一閱讀與編輯\nExplorer 中選擇文件可進入單一閱讀或編輯；保存後返回工作區。目錄與快速定位在瀏覽器本地保存，跨裝置需另外檢查。\n\n## 5. 行程表\n在「行程表」建立行程卡與每日任務，並可下載 JSON 備份。\n\n## 6. 雲端服務\n「雲端服務」是獨立頁面，提供手動上傳、下載、即時更新、清空個人雲端資料及去重。下載前先備份；下載成功後系統會先寫入本地 IndexedDB，再重新載入工作區。所有雲端操作需要正確的 Supabase RLS 權限。\n\n## 7. 本地保存與資料安全\n雲端部署不代表 Python 伺服器磁碟就是使用者電腦。IndexedDB 受瀏覽器與網域限制，清除網站資料可能遺失內容。定期下載獨立備份，並在覆蓋或刪除前確認備份可用。\n\n## 8. 效能與故障排查\nPC 端優先使用本地工作區；大量圖片會增加首次載入時間。進度條顯示載入階段而非精確位元組比例。若停在載入中，檢查瀏覽器是否允許 IndexedDB、可用儲存空間及開發者工具錯誤。\n\n## 9. AI 提示詞\n教學 FOLD 內另有「AI提示詞」圖文文件，可複製給 AI，要求生成單一圖文文件的 AINOTE ZIP。\n'
+DEMO_GUIDE = '# BV-Text｜使用教學與操作目錄\n\n## 目錄\n1. 第一次使用與資料保存\n2. Explorer 文件管理\n3. 建立、編輯及閱讀筆記\n4. 目錄與快速定位\n5. 行程表及每日任務\n6. 雲端同步\n7. 本地化及備份\n8. 手機與電腦操作差異\n9. 常見問題與資料安全\n\n## 1. 第一次使用與資料保存\n登入後開啟筆記工作區，從左側 Explorer 建立文件。瀏覽器版本主要使用 IndexedDB 保存資料；清除網站資料前，請先完成備份。不同裝置的資料不會自動共用。\n\n## 2. Explorer 文件管理\n使用 Explorer 上方「＋文件」建立文件；按「操作」可查看文件操作。電腦使用滑鼠右鍵開啟文件選單，手機在操作模式下直接點選文件即可開啟。重新命名與移動不應當作建立新文件。\n\n## 3. 建立、編輯及閱讀筆記\n選取文件後進入閱讀或編輯模式。圖文文件支援 Markdown 標題、表格、圖片及數學公式。完成後按保存；切換文件前也請確認保存成功。\n\n## 4. 目錄與快速定位\n在圖文文件中建立目錄項目後，使用快速定位前往對應段落。編輯與閱讀模式的定位可能不同，請確認目前模式。\n\n## 5. 行程表及每日任務\n切換至行程表建立行程卡和每日任務。雲端服務提供上傳、下載行程表：勾選完全覆蓋會以來源取代目標；未勾選則嘗試合併。現有版本對修改時間的比較仍有限制，正式資料請先備份。\n\n## 6. 雲端同步\n在雲端服務頁查看雲端 Explorer、上傳或下載資料。第一次同步前先下載獨立備份，避免覆蓋本地內容。需要正常的 Supabase 權限與網路連線。\n\n## 7. 本地化及備份\n設定頁的「本地化」區域可管理自動載入路徑。瀏覽器可能要求授權讀取資料夾；手機或不支援的瀏覽器可能無法使用資料夾選擇器。本地化並不等於自動與雲端同步。\n\n## 8. 手機與電腦操作差異\n電腦：對 Explorer 文件按滑鼠右鍵。手機：先按「操作」，再點選文件以開啟操作選單。操作後請檢查是否保存成功。\n\n## 9. 常見問題與資料安全\n看不到文件：確認所在工作區及是否完成載入。同步失敗：檢查網路、登入狀態與 Supabase 權限。圖片失效：檢查資源是否完整保存。刪除、覆蓋或重置前，務必保留可驗證的備份。\n'
 AI_PROMPT_GUIDE = '# AI提示詞｜AINOTE 單一圖文文件封包規格\n\n請將你接下來的對話文本打包成能載入 ainote 的 ZIP 文件，並且只能由一個圖文文件組成。對話內容需要有圖片說明，減少 SVG 圖的使用，數學公式必須使用 $$數學式$$。\n\n## ZIP 結構（版本 1）\n\n```text\nconversation.ainote （ZIP 格式）\n├── manifest.json\n├── structure.json\n├── documents/\n│   └── <document-uuid>.md\n└── assets/               # 有圖片時才需要\n    └── <asset-uuid>.png\n```\n\n`manifest.json` 範例（使用實際 UUID，不可照抄示意值）：\n\n```json\n{"format":"ainote","version":1,"root_id":"<document-uuid>","name":"對話筆記"}\n```\n\n`structure.json` 必須是陣列，而且**只能有一個節點**，例如：\n\n```json\n[{"id":"<document-uuid>","parent_id":null,"kind":"COMPOSITE","title":"對話筆記","content":"# 對話筆記\\n內容…","has_page":true,"position":1}]\n```\n\n根節點就是這個 `COMPOSITE` 文件，不需要建立 GROUP 或 FOLD。`manifest.root_id` 必須與文件 `id` 一致。`documents/<document-uuid>.md` 存放同一份完整 Markdown 內容。所有 JSON 必須是 UTF-8。\n\n## 文字與圖片要求\n- 完整保留對話順序、標題、段落、清單、表格、程式碼及文字說明。\n- 只能有一個圖文文件；不得拆成多份文件或額外建立資料夾節點。\n- 優先使用 PNG、JPG、WebP 圖片；圖片應放在 `assets/`，並在內容以 `asset://<asset-uuid>` 引用。不要僅使用失效的外部圖片 URL。\n- 減少 SVG 圖，盡可能以一般圖片與文字說明呈現。\n- 所有獨立數學公式使用 `$$數學式$$`，例如：\n\n$$E=mc^2$$\n\n- 封包完成後，確認 ZIP 能解壓、UUID 關聯正確、圖片確實存在、文件內容完整，並提供 ZIP。\n'
 
 if not selected:
