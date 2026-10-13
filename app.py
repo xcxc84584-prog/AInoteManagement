@@ -24,7 +24,6 @@ from supabase import create_client
 from matrix_engine import calculate
 from local_backend import LocalDB
 from manual_sync import pull_from_cloud,push_to_cloud,clear_cloud,remove_exact_duplicates
-from lan_client import send as lan_send,receive as lan_receive
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title='BV-Text',page_icon='📚',layout='wide',initial_sidebar_state='expanded')
@@ -163,14 +162,18 @@ else:
     if st.session_state.get('_browser_loaded_uid')!=uid:
         result=browser_component(user_id=uid,mode='load',revision='init',key='browser_database_v1',default=None)
         if not isinstance(result,dict):
-            st.info('正在載入瀏覽器 IndexedDB 工作區…');st.stop()
+            st.progress(0.30,text='正在讀取瀏覽器 IndexedDB 工作區…')
+            st.stop()
         if not result.get('ok'):
             st.error('無法讀取 IndexedDB：'+str(result.get('error')));st.stop()
         if result.get('snapshot'):
+            st.progress(0.70,text='正在還原工作區資料…')
             try:local_db.import_snapshot(uid,result['snapshot'])
             except Exception as exc:st.error('本地資料還原失敗：'+str(exc));st.stop()
         st.session_state['_browser_loaded_uid']=uid
+        st.progress(1.0,text='IndexedDB 工作區載入完成')
         st.rerun()
+    # A cloud import is not complete until the browser acknowledges the IndexedDB write.
     # Changes are flushed through the browser component on subsequent reruns.
     revision=st.session_state.get('_browser_revision',0)
     if revision:
@@ -179,6 +182,12 @@ else:
             st.warning('本地資料正在寫入 IndexedDB；請等待完成再關閉分頁。')
         elif not result.get('ok'):
             st.error('IndexedDB 寫入失敗：'+str(result.get('error')))
+        elif st.session_state.pop('_cloud_reload_pending',False):
+            st.session_state['_browser_loaded_uid']=None
+            st.session_state['_browser_revision']=0
+            st.rerun()
+if STORAGE_MODE=='sqlite' and st.session_state.pop('_cloud_reload_pending',False):
+    st.rerun()
 c=local_db
 # Fail fast if a stale local backend was deployed.
 if not hasattr(c.storage, 'from_'):
@@ -1211,16 +1220,16 @@ with st.sidebar:
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
         st.success(st.session_state.pop('operation_notice'))
-    page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','☁️ 雲端與局域網','⚙️ 設定'],key='main_page',horizontal=True,on_change=v431_change_page)
+    page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','☁️ 雲端服務','⚙️ 設定'],key='main_page',horizontal=True,on_change=v431_change_page)
     if st.session_state.get('v431_navigation_error'):st.error(st.session_state.pop('v431_navigation_error'))
+    if st.session_state.get('_cloud_reload_notice'):
+        st.success(st.session_state.pop('_cloud_reload_notice'))
     if page_choice!='📝 筆記工作區':st.session_state.pop('full_read_id',None)
-    if st.session_state.get('_sync_notice'):st.success(st.session_state.pop('_sync_notice'))
     st.divider()
     st.divider()
     st.caption('本地優先 · '+('SQLite：'+str(db_root) if STORAGE_MODE=='sqlite' else 'IndexedDB：目前瀏覽器'))
-    if page_choice=='☁️ 雲端與局域網':
-        st.subheader('雲端與局域網')
-        st.caption('雲端操作與 LAN 資料交接集中管理。LAN 傳輸不使用 Supabase Database / Storage。')
+    if page_choice=='☁️ 雲端服務':
+        st.header('☁️ 雲端服務')
         st.warning('請先備份。同步需要 Supabase 資料表與 Storage 的 RLS 權限。')
         def sync_progress():
             bar=st.progress(0,text='準備中…')
@@ -1234,10 +1243,11 @@ with st.sidebar:
                     progress=sync_progress()
                     pull_from_cloud(cloud_client,local_db,uid,progress)
                     mark_local_change()
+                    st.session_state['_cloud_reload_pending']=True
                     st.session_state['sync_live_enabled']=True
                     st.session_state['_sync_pending']=False
                     progress(1,'已完成初始化')
-                    st.session_state['_sync_notice']='雲端下載完成，已開啟即時更新'
+                    st.session_state['_cloud_reload_notice']='雲端資料已載入，即時同步已開啟。'
                     st.rerun()
                 except Exception as exc:st.error('初始化失敗，未開啟即時同步：'+str(exc))
         elif not live:
@@ -1259,7 +1269,8 @@ with st.sidebar:
                 mark_local_change()
                 st.session_state['_sync_pending']=False
                 progress(1,'下載完成')
-                st.session_state['_sync_notice']='雲端下載完成：'+str(result)
+                st.session_state['_cloud_reload_pending']=True
+                st.session_state['_cloud_reload_notice']='已下載：'+str(result)
                 st.rerun()
             except Exception as exc:st.error('雲端下載失敗：'+str(exc))
         st.divider()
@@ -1283,39 +1294,6 @@ with st.sidebar:
             except Exception as exc:st.error('重複資料清理失敗：'+str(exc))
         if STORAGE_MODE=='browser':
             st.download_button('下載本地快照 JSON',data=json.dumps(local_db.export_snapshot(uid),ensure_ascii=False),file_name='BV-Text-local-backup.json',mime='application/json')
-        st.divider()
-        st.subheader('局域網 LAN 資料交接')
-        st.info('先在同一局域網的一台電腦執行 python lan_exchange.py，兩台裝置須能連到該電腦。LAN 服務以一次性密鑰保護。')
-        if os.getenv('STREAMLIT_SHARING_MODE'):
-            st.warning('目前在 Streamlit Cloud 執行：雲端伺服器無法直接連到家中 LAN 私人 IP。請在區網電腦本地執行 Streamlit 才能使用此模式；雲端部署可改用手動檔案交換。')
-        lan_url=st.text_input('LAN 服務位址',value='http://192.168.1.100:8765',key='lan_url')
-        lan_token=st.text_input('LAN 配對密鑰',type='password',key='lan_token')
-        st.caption('傳送或接收僅作用於相同帳號 UID；匯入前請備份。LAN 服務需保持運作。')
-        lan_col1,lan_col2=st.columns(2)
-        with lan_col1:
-            if st.button('↑ 傳送本地資料至 LAN',key='lan_send',disabled=not bool(lan_token)):
-                try:
-                    progress=sync_progress();progress(.15,'匯出本地快照')
-                    snapshot=local_db.export_snapshot(uid)
-                    progress(.4,'透過 LAN 傳送')
-                    result=lan_send(lan_url,lan_token,uid,snapshot)
-                    progress(1,'傳送完成');st.success('LAN 傳送成功：'+str(result))
-                except Exception as exc:st.error('LAN 傳送失敗：'+str(exc))
-        with lan_col2:
-            lan_confirm=st.checkbox('確認以 LAN 快照取代本地資料',key='lan_receive_confirm')
-            if st.button('↓ 從 LAN 接收並重新載入',key='lan_receive',disabled=not (lan_token and lan_confirm)):
-                try:
-                    progress=sync_progress();progress(.1,'連線 LAN')
-                    snapshot=lan_receive(lan_url,lan_token,uid)
-                    progress(.75,'寫入本地資料')
-                    local_db.import_snapshot(uid,snapshot,replace=True)
-                    st.session_state['sync_live_enabled']=False
-                    st.session_state['_sync_pending']=False
-                    progress(1,'匯入完成')
-                    st.session_state['_sync_notice']='LAN 資料接收完成，工作區已重新載入'
-                    st.rerun()
-                except Exception as exc:st.error('LAN 接收失敗：'+str(exc))
-        st.caption('LAN 傳輸在兩台裝置均本地部署時可用。若在 Streamlit Cloud 上使用，此頁面的 LAN 請求由雲端伺服器發出，不能直接連到使用者私人網路。')
     if st.button('登出',width='stretch'):
         for k in ['user_id','access_token','refresh_token','selected','remember_enabled']:st.session_state.pop(k,None)
         st.session_state.skip_auto_login=True
@@ -1390,6 +1368,11 @@ close_target=st.session_state.get('workspace_close_requested')
 if close_target and close_target in byid:
     root_id=get_ancestors(close_target,byid)[-1]
     v46_close_root_dialog(root_id)
+
+if st.session_state.get('main_page')=='☁️ 雲端服務':
+    st.title('☁️ 雲端服務')
+    st.info('雲端操作位於左側雲端服務區。')
+    st.stop()
 
 if st.session_state.get('import_child_target'):
     import_child_dialog()
@@ -1559,9 +1542,6 @@ def restore_schedule_backup(rows,mode):
 # Dialogs must be invoked from the root Streamlit layout context.
 # Invoking them inside calendar widgets/containers can raise
 # StreamlitInvalidLayoutContextError on Streamlit Cloud.
-if st.session_state.get('main_page')=='☁️ 雲端與局域網':
-    st.stop()
-
 if st.session_state.get('main_page')=='📅 行程表':
     _quick_day=st.session_state.pop('schedule_quick_day',None)
     if _quick_day:
@@ -1915,7 +1895,8 @@ if st.session_state.get('main_page')=='⚙️ 設定':
                     st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
     st.stop()
 
-DEMO_GUIDE = '# BV-Text 使用者操作指南\n\n## 1. 開始使用\n開啟 BV-Text 後進入筆記工作臺。若尚無文件，可以建立「空 FOLD」或「教學 FOLD」。FOLD 是資料夾，FILE 是可編輯的內容；教學 FOLD 會包含本操作指南。\n\n## 2. 文件類型\n- **圖文文件**：編輯文字、標題、清單、Markdown 表格及圖片。\n- **圖片**：上傳與檢視照片。\n- **手寫稿**：使用畫布手寫、繪圖與管理多頁內容。\n\n## 3. 新增文件\n1. 在左側 Explorer 選取 FOLD。\n2. 右鍵選擇「新增文件」，再次右鍵展開子選單，選擇圖文文件、圖片或手寫稿。\n3. 直接點擊「新增文件」則會在畫面中央顯示小型類型選擇視窗。\n4. 輸入名稱並建立。手機使用觸控選單操作。\n\n## 4. 單一編輯\n1. 選取 FILE，開啟完全單一編輯。\n2. 編輯區置於畫面中央，上方提供「儲存」「返回」「更多操作」。\n3. 「儲存」保存變更而不離開；「返回」遇到未儲存內容時會要求確認。\n4. 頁面下方的「提交」會儲存後關閉。\n5. 工作臺編輯模式僅顯示節點標題及輸入框；保存增量更新與關閉可由右鍵選單操作。\n\n## 5. 完全單一閱讀\n- 對 FILE 開啟：閱讀單一文件。\n- 對 FOLD 開啟：依節點優先權將其下所有文件串成連續長頁面。\n- 閱讀不會更改文件內容；結束時返回原工作臺。\n\n## 6. 文件操作\n1. 在 Explorer 對 FOLD 或 FILE 右鍵。\n2. 選擇「文件操作」並再次右鍵展開。\n3. 可調整節點優先權、複製、剪下、移動、貼上、移動回收桶或永久刪除。\n4. 永久刪除無法依賴回收桶復原，操作前先匯出備份。\n\n## 7. 瀏覽與快速定位\n切換至瀏覽模式，選擇快速定位的目標段落。系統會嘗試捲動至目前頁面的對應位置；若瀏覽器限制自動捲動，可點擊段落連結。\n\n## 8. 保存與備份\n- 增量儲存會保存編輯中的變更。\n- 本地備份可下載 `.ainote` 文件，或在瀏覽器支援且取得授權時寫入本地資料夾。\n- 可以從本機選擇 `.ainote` 或支援的 ZIP 文件重新匯入。\n- 手機瀏覽器可能改用下載，請確認下載檔案實際存在。\n- 建議定期保存獨立備份，勿只依賴單一瀏覽器或雲端。\n\n## 9. 行程表\n1. 開啟行程表，選擇日期並建立行程卡。\n2. 可設定連續建立天數；標題運算式中的 `d` 從 0 起算。\n3. 例如 `ipas複習第(10+d)張` 連續三天會得到第 10、11、12 張。\n4. 批量建立時保留原始標題 Tag，可依 Tag 批量刪除。\n5. 行程表可以保存為本地 JSON 備份，也可選擇備份檔案載入。\n\n## 10. 常見問題\n**儲存後沒有下載檔案？** 檢查瀏覽器下載設定與權限，必要時使用直接下載。\n\n**關閉頁面後找不到內容？** 確認先前已完成儲存，並檢查本地備份。\n\n**手機無法寫入指定資料夾？** 部分瀏覽器不支援資料夾寫入 API，請使用下載方式。\n\n**舊表格怎麼辦？** v4.3 將移除獨立 TABLE 類型。升級前先匯出備份，確認資料不再需要後再執行清理。\n'
+DEMO_GUIDE = '# BV-Text v6.7 使用教學\n\n## 1. 登入與工作區\n登入後使用「筆記工作區」、「行程表」、「雲端服務」、「設定」四個頁面。雲端版的工作區主要保存在目前瀏覽器的 IndexedDB；不同瀏覽器與裝置不會自動共享。首次載入時會顯示進度。\n\n## 2. Explorer\n在左側 Explorer 建立組別、資料夾與文件。選擇節點後可瀏覽、編輯、移動或刪除。新增尚未完成前關閉視窗，視為取消。\n\n## 3. 圖文文件\n使用 Markdown 編寫標題、表格、圖片與數學公式。數學公式建議以 $$...$$ 包裹。圖片請使用可匯入的實際圖片資源；不要只依賴遠端圖片連結。\n\n## 4. 單一閱讀與編輯\nExplorer 中選擇文件可進入單一閱讀或編輯；保存後返回工作區。目錄與快速定位在瀏覽器本地保存，跨裝置需另外檢查。\n\n## 5. 行程表\n在「行程表」建立行程卡與每日任務，並可下載 JSON 備份。\n\n## 6. 雲端服務\n「雲端服務」是獨立頁面，提供手動上傳、下載、即時更新、清空個人雲端資料及去重。下載前先備份；下載成功後系統會先寫入本地 IndexedDB，再重新載入工作區。所有雲端操作需要正確的 Supabase RLS 權限。\n\n## 7. 本地保存與資料安全\n雲端部署不代表 Python 伺服器磁碟就是使用者電腦。IndexedDB 受瀏覽器與網域限制，清除網站資料可能遺失內容。定期下載獨立備份，並在覆蓋或刪除前確認備份可用。\n\n## 8. 效能與故障排查\nPC 端優先使用本地工作區；大量圖片會增加首次載入時間。進度條顯示載入階段而非精確位元組比例。若停在載入中，檢查瀏覽器是否允許 IndexedDB、可用儲存空間及開發者工具錯誤。\n\n## 9. AI 提示詞\n教學 FOLD 內另有「AI提示詞」圖文文件，可複製給 AI，要求生成單一圖文文件的 AINOTE ZIP。\n'
+AI_PROMPT_GUIDE = '# AI提示詞\n\n請將你接下來的對話文本打包成能載入 ainote 的 ZIP 文件，並且只能由一個圖文文件組成。對話內容需要有圖片說明，減少 SVG 圖的使用，數學公式必須使用 $$數學式$$。\n\n## 輸出要求\n- 保留完整的對話文字、標題、清單、表格與公式，不要自行刪減。\n- 將所有內容整合為一個圖文文件，不要拆成多個文件。\n- 圖片使用實際圖片資源並附上文字說明；盡量避免 SVG。\n- 所有數學公式使用 $$數學式$$ 格式。\n- ZIP 內使用目標 AINOTE 匯入器支援的資料結構，確保可匯入；不確定格式時先索取範例 ZIP，不要虛構格式。\n- 完成後提供 ZIP 檔案。\n'
 
 if not selected:
     st.title('歡迎使用 BV-Text')
@@ -1932,6 +1913,7 @@ if not selected:
                 if creation_type=='教學 FOLD':
                     op(65,'建立教學 FILE')
                     insert_note('COMPOSITE','使用說明書',root['id'],content=DEMO_GUIDE,position=1)
+                    insert_note('COMPOSITE','AI提示詞',root['id'],content=AI_PROMPT_GUIDE,position=2)
                 op(100,'建立完成')
                 st.session_state.selected=root['id']
                 st.rerun()

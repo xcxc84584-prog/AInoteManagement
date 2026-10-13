@@ -38,7 +38,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_check_unique ON daily_task_checks(ow
 CREATE TABLE IF NOT EXISTS media(path TEXT PRIMARY KEY,content BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS sync_state(key TEXT PRIMARY KEY,value TEXT);
 CREATE INDEX IF NOT EXISTS idx_notes_owner ON notes(owner_id,position);
-CREATE INDEX IF NOT EXISTS idx_schedule_owner ON schedule_cards(owner_id,schedule_date);''')
+CREATE INDEX IF NOT EXISTS idx_schedule_owner ON schedule_cards(owner_id,schedule_date);
+CREATE INDEX IF NOT EXISTS idx_notes_tree ON notes(owner_id,parent_id,is_deleted,position);
+CREATE INDEX IF NOT EXISTS idx_assets_note ON assets(owner_id,note_id);
+CREATE INDEX IF NOT EXISTS idx_daily_tasks_owner ON daily_tasks(owner_id);
+CREATE INDEX IF NOT EXISTS idx_daily_checks_owner ON daily_task_checks(owner_id,task_date);''')
    existing={r[1] for r in self.conn.execute('PRAGMA table_info(schedule_cards)')}
    for col in ('batch_tag','batch_id'):
     if col not in existing:self.conn.execute('ALTER TABLE schedule_cards ADD COLUMN '+col+' TEXT')
