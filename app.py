@@ -756,8 +756,16 @@ html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{max-width:100
 [data-testid="stSidebar"]{width:min(310px,85vw)!important;min-width:0!important}
 [data-testid="stSidebar"] iframe{width:100%!important;max-width:100%!important}
 [data-testid="stSidebarContent"]{overflow-x:hidden!important}
-/* Keep popovers/dialogs above schedule-card frames. */
-[data-testid="stPopoverBody"], [data-testid="stDialog"], [role="dialog"]{z-index:100000!important}
+/* Dialogs must outrank Streamlit's mobile sidebar and its backdrop. */
+[data-testid="stPopoverBody"]{z-index:100001!important}
+[data-testid="stDialog"], [data-testid="stDialog"] > div,
+[data-testid="stDialog"] [role="dialog"], div[role="dialog"],
+[data-radix-portal], [data-state="open"][data-radix-dialog-overlay]{z-index:2147483000!important}
+[data-testid="stDialog"]{position:fixed!important;inset:0!important;isolation:isolate!important}
+[data-testid="stDialog"] [role="dialog"]{position:relative!important}
+/* Keep sidebar below the dialog portal on mobile. */
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"]{z-index:100!important}
+
 [data-testid="stExpander"]{isolation:auto}
 /* Use an inline expander instead of a floating popover inside the sidebar.
    The sidebar scroll container clips portal/popover content regardless of z-index. */
@@ -1082,6 +1090,7 @@ with st.sidebar:
             elif action=='new_file_dialog' and (nid in byid or event.get('root')):
                 st.session_state.new_file_parent=(nid if nid in byid and byid[nid]['kind'] in CONTAINERS else byid[nid]['parent_id'] if nid in byid else None)
                 st.session_state['_new_file_dialog_open']=True
+                st.session_state['_hide_sidebar_for_new_file']=True
             elif action=='quick_nav' and nid in byid:
                 st.session_state.quick_nav_root=nid
                 st.session_state.selected=nid
@@ -1174,7 +1183,8 @@ with st.sidebar:
                     apply_priority_order(a['parent_id'],ids)
             if op_progress:
                 op_progress(100,'操作完成')
-                st.session_state['operation_notice']='操作完成：'+str(action)
+                if action not in ('new_file_dialog','open_functions','close_sidebar'):
+                    st.session_state['operation_notice']='操作完成：'+str(action)
             st.rerun()
         except Exception as exc:
             logging.getLogger(__name__).exception('Explorer action failed')
@@ -1217,6 +1227,16 @@ with st.sidebar:
 # v4.6: modal ROOT backup; Explorer removal only after confirmed local save.
 if st.session_state.get('_explorer_show_functions_dialog'):
     explorer_functions_dialog()
+if st.session_state.pop('_hide_sidebar_for_new_file',False):
+    components.html("""<script>
+    try {
+      const d=window.parent.document;
+      const sidebar=d.querySelector('[data-testid="stSidebar"]');
+      const close=sidebar?.querySelector('[data-testid="stSidebarCollapseButton"] button')
+        || sidebar?.querySelector('button[aria-label*="Close sidebar"]');
+      if(close)close.click();
+    } catch(e) {console.warn('Could not collapse sidebar before modal',e)}
+    </script>""",height=0)
 if st.session_state.pop('_new_file_dialog_open',False):
     # Consume the one-shot request before opening: dismissing the modal by X,
     # Escape, or clicking outside must never reopen it on a later rerun.
