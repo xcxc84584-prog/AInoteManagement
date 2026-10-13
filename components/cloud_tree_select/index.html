@@ -1,16 +1,32 @@
-<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;overflow:hidden}#tree{height:455px;overflow:auto} .tree-node.selected{background:#354354!important;outline:1px solid #6783a4}</style></head><body><div id="tree"></div><script>
-let currentSelection='', lastMarkup='';
-function emit(id){window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:setComponentValue',value:id},'*');}
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>
+html,body{margin:0;padding:0;overflow:hidden;font-family:system-ui,sans-serif}#host{max-height:460px;overflow:auto}.tree-node.selected{background:#354354!important;outline:1px solid #6783a4}
+</style></head><body><div id="host"></div><script>
+(function(){
+let lastMarkup=null,selected='';
+const host=document.getElementById('host');
+function send(type,extra){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:type},extra||{}),'*');}
+function height(){send('streamlit:setFrameHeight',{height:470});}
+function mark(){host.querySelectorAll('.tree-node').forEach(n=>n.classList.toggle('selected',n.dataset.id===selected));}
 function render(args){
- const markup=args.markup||''; currentSelection=args.selected||'';
- if(markup!==lastMarkup){lastMarkup=markup;const host=document.getElementById('tree');const doc=host.contentDocument; /* unused */
- const frame=document.getElementById('inner');if(frame)frame.remove();
- const iframe=document.createElement('iframe');iframe.id='inner';iframe.style.cssText='width:100%;height:455px;border:0';iframe.setAttribute('sandbox','allow-scripts allow-same-origin');document.getElementById('tree').appendChild(iframe);
- iframe.srcdoc=markup.replace('</script></body></html>',`document.querySelectorAll('.tree-node').forEach(n=>{n.addEventListener('click',e=>{if(e.target.closest('.toggle'))return;document.querySelectorAll('.tree-node.selected').forEach(x=>x.classList.remove('selected'));n.classList.add('selected');window.parent.parent.postMessage({isStreamlitMessage:true,type:'streamlit:setComponentValue',value:n.dataset.id},'*');});});</script></body></html>`);
- }
- const inner=document.getElementById('inner');try{inner.contentDocument.querySelectorAll('.tree-node').forEach(n=>n.classList.toggle('selected',n.dataset.id===currentSelection));}catch(e){}
- window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:setFrameHeight',height:460},'*');
+  const markup=String(args.markup||'');selected=String(args.selected||'');
+  if(markup!==lastMarkup){
+    lastMarkup=markup;
+    const parsed=new DOMParser().parseFromString(markup,'text/html');
+    host.innerHTML='';
+    for(const style of parsed.querySelectorAll('style')){const el=document.createElement('style');el.textContent=style.textContent;host.appendChild(el);}
+    const content=document.createElement('div');content.innerHTML=parsed.body.innerHTML;
+    content.querySelectorAll('script').forEach(s=>s.remove());host.appendChild(content);
+    host.querySelectorAll('.tree-node').forEach(node=>{
+      const toggle=node.querySelector('.toggle');
+      function expand(){const child=node.parentElement.querySelector(':scope > .children');if(!child)return;child.hidden=!child.hidden;if(toggle)toggle.textContent=child.hidden?'▸':'▾';height();}
+      if(toggle)toggle.addEventListener('click',e=>{e.stopPropagation();expand();});
+      node.addEventListener('click',e=>{if(e.target.closest('.toggle'))return;selected=node.dataset.id;mark();send('streamlit:setComponentValue',{value:selected});});
+      node.addEventListener('dblclick',expand);
+    });
+  }
+  mark();height();
 }
 window.addEventListener('message',e=>{if(e.data&&e.data.type==='streamlit:render')render(e.data.args||{});});
-window.parent.postMessage({isStreamlitMessage:true,type:'streamlit:componentReady',apiVersion:1},'*');
+send('streamlit:componentReady',{apiVersion:1});height();
+})();
 </script></body></html>

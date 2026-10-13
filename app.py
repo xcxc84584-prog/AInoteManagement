@@ -1395,7 +1395,7 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
         
         </script></body></html>"""
         # Bidirectional Streamlit component: a click emits the selected ID to Python.
-        cloud_tree_component=components.declare_component('bv_cloud_tree_select_v618',path=str(Path(__file__).parent/'components'/'cloud_tree_select'))
+        cloud_tree_component=components.declare_component('bv_cloud_tree_select_v619',path=str(Path(__file__).parent/'components'/'cloud_tree_select'))
         clicked_cloud_id=cloud_tree_component(markup=markup,selected=st.session_state.get('cloud_tree_selected',''),key='cloud_tree_selection_bridge',default=None)
         if isinstance(clicked_cloud_id,str) and clicked_cloud_id in by_cloud_id and clicked_cloud_id!=st.session_state.get('_cloud_tree_last_click'):
             # Process each click once, before constructing the selectbox widget.
