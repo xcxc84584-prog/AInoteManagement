@@ -183,7 +183,8 @@ else:
         elif not result.get('ok'):
             st.error('IndexedDB 寫入失敗：'+str(result.get('error')))
         elif st.session_state.pop('_cloud_reload_pending',False):
-            st.session_state['_browser_loaded_uid']=None
+            # The in-memory database already contains the downloaded notes.
+            # Re-reading IndexedDB immediately can resurrect a stale snapshot.
             st.session_state['_browser_revision']=0
             st.rerun()
 if STORAGE_MODE=='sqlite' and st.session_state.pop('_cloud_reload_pending',False):
@@ -1060,6 +1061,16 @@ def explorer_functions_dialog():
         st.session_state.pop('_explorer_show_functions_dialog',None)
         st.rerun()
 
+# Reopen the sidebar after a cloud import, including on mobile.
+if st.session_state.pop('_cloud_show_sidebar',False):
+    components.html('''<script>
+    try { const d=window.parent.document; const sidebar=d.querySelector('[data-testid="stSidebar"]');
+      if(sidebar && sidebar.getAttribute('aria-expanded')==='false'){
+        const b=d.querySelector('[data-testid="stSidebarCollapsedControl"] button,button[aria-label*="Open sidebar"],button[aria-label*="開啟側邊欄"]');
+        if(b)b.click();
+      }
+    }catch(e){}
+    </script>''',height=0)
 with st.sidebar:
     _explorer_header_left,_explorer_header_right=st.columns([3,2],vertical_alignment='center')
     with _explorer_header_left:st.subheader('EXPLORER')
@@ -1459,10 +1470,16 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
                     st.session_state['_cloud_navigate_workspace']=True
                     st.session_state.pop('full_read_id',None)
                     st.session_state.pop('full_edit_id',None)
+                    # Verify the imported records before claiming success.
+                    imported_ids=set(requested_ids)
+                    verified={r['id'] for r in local_db.table('notes').select('*').eq('owner_id',uid).execute().data or []}
+                    if not imported_ids.issubset(verified):
+                        raise RuntimeError('下載後本地資料驗證失敗：缺少 '+str(len(imported_ids-verified))+' 個節點')
+                    st.session_state['_cloud_show_sidebar']=True
                     mark_local_change()
                     st.session_state['_sync_pending']=False
                     st.session_state['_cloud_reload_pending']=False
-                    st.session_state['_cloud_reload_notice']='局部載入完成：'+str(result)
+                    st.session_state['_cloud_reload_notice']='已載入 '+str(len(imported_ids))+' 個節點至左側 Explorer。'+str(result)
                 else:
                     from manual_sync import delete_cloud_note_subtree
                     result=delete_cloud_note_subtree(cloud_client,uid,pending,progress)
