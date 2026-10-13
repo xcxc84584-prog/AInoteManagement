@@ -923,6 +923,12 @@ def v431_change_page():
         st.session_state['main_page']='📝 筆記工作區'
 
 
+if st.session_state.get('_bv_sidebar_hidden'):
+    st.markdown('<style>[data-testid="stSidebar"]{display:none!important}[data-testid="stSidebarCollapsedControl"]{display:flex!important}</style>',unsafe_allow_html=True)
+if st.session_state.get('_bv_sidebar_hidden'):
+    if st.button('☰ OpenSidebar',key='bv_sidebar_open'):
+        st.session_state['_bv_sidebar_hidden']=False
+        st.rerun()
 with st.sidebar:
     st.title('📚 BV-Text')
     with st.popover('☰ 功能選單',width='stretch'):
@@ -966,7 +972,7 @@ with st.sidebar:
             nav_history.append(st.session_state['_nav_last'])
             if len(nav_history)>50:del nav_history[:-50]
         st.session_state['_nav_last']=nav_now
-    heading_col,previous_col=st.columns([3,2],vertical_alignment='center')
+    heading_col,previous_col,close_sidebar_col=st.columns([3,2,2],vertical_alignment='center')
     with heading_col:st.subheader('EXPLORER')
     with previous_col:
         if st.button('← Previous',disabled=not bool(nav_history),key='nav_previous'):
@@ -976,6 +982,10 @@ with st.sidebar:
                 if value is None:st.session_state.pop(field,None)
                 else:st.session_state[field]=value
             st.session_state['_nav_last']=previous
+            st.rerun()
+    with close_sidebar_col:
+        if st.button('CloseSidebar',key='nav_close_sidebar',help='收合左側功能欄（手機適用）',width='stretch'):
+            st.session_state['_bv_sidebar_hidden']=True
             st.rerun()
     # Keep last active document and workspace mode in the URL across browser refreshes.
     try:
@@ -1786,59 +1796,13 @@ def save_composite_event(note_id,event):
     update_note(note_id,content=converted)
     return converted
 
-def bv62_range_operation(note,event):
-    """Apply source-verified manual correction or three-part replacement."""
-    action=event.get('action')
-    if action not in ('correct_range','replace_range'):return False
-    text=str(note.get('content') or '')
-    try:a=int(event['start']);b=int(event['end'])
-    except (KeyError,TypeError,ValueError):raise ValueError('修正區間不正確')
-    if not (0<=a<b<=len(text)) or text[a:b]!=event.get('selection'):
-        raise ValueError('原始文件已變更，請重新選取修正區間')
-    if action=='correct_range':
-        replacement=str(event.get('replacement') or '')
-        if not replacement:raise ValueError('修正內容不可為空')
-        update_note(note['id'],content=text[:a]+replacement+text[b:])
-        return True
-    before,after=text[:a],text[b:]
-    if not before.strip() or not after.strip():raise ValueError('三段分割需要選取區間前後都有內容')
-    kind={'COMPOSITE':'COMPOSITE','IMAGE':'GRAPH','HANDWRITING':'HANDWRITE'}.get(event.get('kind'))
-    if not kind:raise ValueError('不支援的替代文件類型')
-    import json
-    siblings=priority_siblings(note['parent_id']);ids=[n['id'] for n in siblings]
-    if note['id'] not in ids:raise ValueError('原文件已不在目前位置')
-    original_title=note['title']
-    # Preserve the removed text as an audit snapshot in session and a JSON-safe
-    # metadata comment on the first segment (recoverable without a new table).
-    import base64
-    backup=base64.urlsafe_b64encode(json.dumps({'title':original_title,'content':text},ensure_ascii=False).encode()).decode()
-    created=[]
-    try:
-        middle=insert_note(kind,original_title+'-2',note['parent_id'],content='',position=len(ids)+1);created.append(middle)
-        tail=insert_note('COMPOSITE',original_title+'-3',note['parent_id'],content=after,position=len(ids)+2);created.append(tail)
-        update_note(note['id'],title=original_title+'-1',content='<!-- bv62-original:'+backup+' -->\n'+before)
-        ids[ids.index(note['id'])+1:ids.index(note['id'])+1]=[middle['id'],tail['id']]
-        apply_priority_order(note['parent_id'],ids)
-    except Exception:
-        for row in created:
-            try:delete_note(row['id'])
-            except Exception:pass
-        raise
-    return True
 
 def reader_operation(note,event):
-    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit','correct_range','replace_range'):return
+    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit'):return
     nonce_key='_reader_nonce_'+note['id']
     if event.get('nonce')==st.session_state.get(nonce_key):return
     st.session_state[nonce_key]=event.get('nonce')
     content=note.get('content') or ''
-    if event['action'] in ('correct_range','replace_range'):
-        try:
-            bv62_range_operation(note,event)
-            st.success('修正已提交')
-            st.rerun()
-        except Exception as exc:st.error('修正失敗：'+str(exc))
-        return
     if event['action']=='insert_image':
         st.session_state['_reader_insert_image_'+note['id']]=str(event.get('selection') or '')
         st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{})
@@ -2007,12 +1971,6 @@ if full_id and full_id in byid:
         event=composite_component(documentId=full_id,content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+full_id,0),tocTargetId=st.session_state.get('_composite_toc_target_'+full_id),editorMode=editor_mode(current),submitRequest=st.session_state.get('_submit_request_'+full_id,0),key='focus_composite_'+full_id,default=None)
         if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_focus_composite_nonce_'+full_id):
             st.session_state['_focus_composite_nonce_'+full_id]=event.get('nonce')
-            if event.get('action')=='replace_range':
-                try:
-                    bv62_range_operation(full_note,event)
-                    st.success('替代文件已分割')
-                    st.rerun()
-                except Exception as exc:st.error('分割失敗：'+str(exc))
             if event.get('action')=='headings':
                 st.session_state[text_key]=str(event.get('markdown',current))
                 st.rerun()
@@ -2117,12 +2075,6 @@ else:
             event=composite_component(documentId=block['id'],content=current,assetUrls=composite_asset_urls(current),revision=st.session_state.get('_composite_rev_'+block['id'],0),editorMode=editor_mode(current),key='composite_'+block['id'],default=None)
             if isinstance(event,dict) and event.get('nonce')!=st.session_state.get('_composite_nonce_'+block['id']):
                 st.session_state['_composite_nonce_'+block['id']]=event.get('nonce')
-                if event.get('action')=='replace_range':
-                    try:
-                        bv62_range_operation(block,event)
-                        st.success('替代文件已分割')
-                        st.rerun()
-                    except Exception as exc:st.error('分割失敗：'+str(exc))
                 if event.get('action') in ('save','save_close'):
                     try:
                         converted=save_composite_event(block['id'],event)

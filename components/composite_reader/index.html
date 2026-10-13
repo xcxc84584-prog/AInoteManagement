@@ -2,7 +2,7 @@
 #editor table{display:table;border-collapse:collapse}#editor td,#editor th{border:1px solid #64748b;padding:6px 10px;white-space:normal}#editor img{max-width:100%;height:auto;object-fit:contain;display:block}#editor{overflow-wrap:anywhere;word-break:normal}
  .missing-media{display:inline-block;color:#ff7474;background:#3b1720;padding:5px 9px;border:1px solid #e35a69;border-radius:5px;overflow-wrap:anywhere} @media(max-width:650px){#editor{min-width:0;width:100%;overflow-wrap:anywhere}#editor table{display:table;max-width:none;width:max-content}#editor .math-render{max-width:100%;overflow-x:auto}#editor img{display:block;max-width:100%;height:auto}} .table-scroll{display:block;width:100%;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;margin:12px 0}.table-scroll table{display:table!important;width:max-content;min-width:100%;max-width:none!important;overflow:visible!important;border-collapse:collapse}.table-scroll th,.table-scroll td{white-space:normal;overflow-wrap:normal;word-break:normal}.math-render{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch} 
 html,body{min-width:0;max-width:100%;overflow-x:hidden}body{padding-bottom:110px!important}#editor{padding-bottom:90px;min-height:80px;overflow-wrap:anywhere}#bvDiagnostics{position:relative!important;inset:auto!important;z-index:1!important;max-width:100%;clear:both}#bvDiagnostics pre{max-width:100%;overflow:auto}#menu{max-height:65vh;overflow-y:auto}#editor .katex-display{max-width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}#editor .math-block{max-width:100%;overflow-x:auto;overflow-y:hidden}#status{display:block;position:relative!important;clear:both}
-</style><style>#bv62-menu{display:none;position:fixed;z-index:99998;background:#202b3b;border:1px solid #71829c;border-radius:8px;padding:6px}#bv62-menu button{display:block;width:100%;text-align:left;color:white;background:transparent;border:0;padding:10px}#bv62-overlay{display:flex;position:fixed;inset:0;background:#0009;z-index:99999;align-items:center;justify-content:center;padding:12px}#bv62-dialog{background:#192438;border:1px solid #667c9a;border-radius:12px;color:#f3f6ff;padding:20px;width:min(650px,96vw);max-height:90vh;overflow:auto}#bv62-dialog label{display:block;margin:12px 0}#bv62-dialog textarea{display:block;width:100%;min-height:130px;background:#101a2b;color:white;padding:10px;box-sizing:border-box}#bv62-dialog .bv62-actions{display:flex;justify-content:flex-end;gap:12px;margin-top:12px}#bv62-result img{max-height:170px}#editor::selection,#editor *::selection{background:#ffe15a77}</style></head><body><details id="bvDiagnostics"><summary>閱讀器診斷紀錄</summary><button id="bvCopyLog" type="button">複製診斷報告</button><pre id="bvLog" style="white-space:pre-wrap;max-height:160px;overflow:auto"></pre></details><div id="editor"></div><div id="menu"><button data-action="correction_start">標註起始修正點</button><button data-action="correction_end">標註末尾修正點</button><button data-action="toc">目錄化（點擊確認）</button><button data-action="split">以此行分割</button><button data-action="unsplit" id="undoSplit">還原分割</button></div><span id="status"></span><script>
+</style></head><body><details id="bvDiagnostics"><summary>閱讀器診斷紀錄</summary><button id="bvCopyLog" type="button">複製診斷報告</button><pre id="bvLog" style="white-space:pre-wrap;max-height:160px;overflow:auto"></pre></details><div id="editor"></div><div id="menu"><button data-action="toc">目錄化（點擊確認）</button><button data-action="split">以此行分割</button><button data-action="unsplit" id="undoSplit">還原分割</button></div><span id="status"></span><script>
 /* v6.1: browser-local TOC. IndexedDB is scoped to the browser origin. */
 const BV61TOC=(()=>{
  const dbName='bvtext-v61-toc',store='entries';let dbPromise;
@@ -308,10 +308,10 @@ let browseTargetSeen=null;let menuAnchor=null;let chosen='',menu=document.getEle
   });
  });
  renderMath();hrcAudit(content,editor);
- if(window.BVMedia626)BVMedia626.scan(editor,assetUrls);
+ if(window.BVMedia627)BVMedia627.scan(editor,assetUrls);
  requestAnimationFrame(resize)
 }
-editor.addEventListener('contextmenu',e=>{let s=window.getSelection();if(!s||s.isCollapsed||!editor.contains(s.anchorNode)){if(!splitUndo)return;chosen='';}else chosen=s.toString().trim();if(!chosen){let target=e.target.closest('#editor > *');if(target)chosen=(target.innerText||target.textContent||'').trim().split('\n')[0].trim()}if(!chosen&&!splitUndo)return;e.preventDefault();BV62.rememberSelection();menuAnchor=anchor();menu.style.display='block';menu.style.left=Math.min(e.clientX,innerWidth-210)+'px';menu.style.top=Math.min(e.clientY,innerHeight-110)+'px'});document.addEventListener('click',e=>{if(!menu.contains(e.target))menu.style.display='none'});menu.querySelectorAll('button').forEach(b=>b.onclick=()=>{menu.style.display='none';if(b.dataset.action==='correction_start'||b.dataset.action==='correction_end'){BV62.markSelected(b.dataset.action==='correction_start'?'start':'end');return}if(b.dataset.action==='toc'){bv61Add();return}send('streamlit:setComponentValue',{value:{action:b.dataset.action,selection:chosen,anchor:menuAnchor||anchor(),nonce:String(Date.now())+Math.random()}})});window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let a=e.data.args||{};if(a.documentId&&a.documentId!==bv61Doc){bv61Doc=a.documentId;bv61Refresh()}if(a.content!==content||a.revision!==revision||JSON.stringify(a.assetUrls||{})!==JSON.stringify(assetUrls)){content=a.content||'';assetUrls=a.assetUrls||{};revision=a.revision;BV61TOC.prune(bv61Doc,content);render()}if(a.restore&&JSON.stringify(a.restore)!==lastRestore){lastRestore=JSON.stringify(a.restore);restore(a.restore)}if(a.tocTargetId&&a.tocTargetId!==browseTargetSeen){browseTargetSeen=a.tocTargetId;BV61TOC.list(bv61Doc).then(entries=>{const item=entries.find(x=>x.id===a.tocTargetId);if(item)bv61BrowseJump(item)})}splitUndo=!!a.splitUndo;document.getElementById('undoSplit').style.display=splitUndo?'block':'none';});
+editor.addEventListener('contextmenu',e=>{let s=window.getSelection();if(!s||s.isCollapsed||!editor.contains(s.anchorNode)){if(!splitUndo)return;chosen='';}else chosen=s.toString().trim();if(!chosen){let target=e.target.closest('#editor > *');if(target)chosen=(target.innerText||target.textContent||'').trim().split('\n')[0].trim()}if(!chosen&&!splitUndo)return;e.preventDefault();menuAnchor=anchor();menu.style.display='block';menu.style.left=Math.min(e.clientX,innerWidth-210)+'px';menu.style.top=Math.min(e.clientY,innerHeight-110)+'px'});document.addEventListener('click',e=>{if(!menu.contains(e.target))menu.style.display='none'});menu.querySelectorAll('button').forEach(b=>b.onclick=()=>{menu.style.display='none';if(b.dataset.action==='toc'){bv61Add();return}send('streamlit:setComponentValue',{value:{action:b.dataset.action,selection:chosen,anchor:menuAnchor||anchor(),nonce:String(Date.now())+Math.random()}})});window.addEventListener('message',e=>{if(e.data?.type!=='streamlit:render')return;let a=e.data.args||{};if(a.documentId&&a.documentId!==bv61Doc){bv61Doc=a.documentId;bv61Refresh()}if(a.content!==content||a.revision!==revision||JSON.stringify(a.assetUrls||{})!==JSON.stringify(assetUrls)){content=a.content||'';assetUrls=a.assetUrls||{};revision=a.revision;BV61TOC.prune(bv61Doc,content);render()}if(a.restore&&JSON.stringify(a.restore)!==lastRestore){lastRestore=JSON.stringify(a.restore);restore(a.restore)}if(a.tocTargetId&&a.tocTargetId!==browseTargetSeen){browseTargetSeen=a.tocTargetId;BV61TOC.list(bv61Doc).then(entries=>{const item=entries.find(x=>x.id===a.tocTargetId);if(item)bv61BrowseJump(item)})}splitUndo=!!a.splitUndo;document.getElementById('undoSplit').style.display=splitUndo?'block':'none';});
 function bv61BrowseJump(entry){
  const pos=BV61TOC.locate(content,entry);
  if(!pos){status.textContent='目錄位置已變更，無法唯一定位';return}
@@ -325,195 +325,40 @@ function bv61BrowseJump(entry){
 BV61TOC.channel?.addEventListener('message',()=>bv61Refresh());
 send('streamlit:componentReady',{apiVersion:1});loadKatex();resize();
 
-/* BV-Text 6.2.3: direct selection correction, no persistent endpoints. */
-const BV62=(()=>{
- let selected=null,dialog=null,startPoint=null,endPoint=null;
- const isEditor=!!document.getElementById('raw');
- const getText=()=>isEditor?(source?raw.value:syncMarkdown()):content;
- function selectionRange(){
-  const text=getText();
-  if(isEditor&&source){const a=raw.selectionStart,b=raw.selectionEnd;return a<b?{a,b,selected:text.slice(a,b)}:null}
-  const s=window.getSelection();
-  if(!s||s.isCollapsed||!editor.contains(s.anchorNode)||!editor.contains(s.focusNode))return null;
-  const val=s.toString();if(!val)return null;
-  // Refuse ambiguous source mapping rather than modifying a different occurrence.
-  let a=text.indexOf(val);
-  if(a<0||text.indexOf(val,a+1)!==-1)return null;
-  return {a,b:a+val.length,selected:val};
- }
- function showMessage(msg){const el=document.getElementById('status');if(el)el.textContent=msg}
- function clearSelection(){selected=null;startPoint=null;endPoint=null;document.querySelectorAll('.bv624-marker,.bv624-band').forEach(x=>x.remove())}
- function rememberSelection(){const r=selectionRange();if(r)selected=r;return !!r}
- function markSelected(which){
-  const r=selected||selectionRange();if(!r){showMessage('請先框選文字；重複文字請在原始碼模式選取');return}
-  if(which==='start')startPoint=r.a;else endPoint=r.b;
-  selected=null;drawMarks();
-  if(startPoint!==null&&endPoint!==null){
-   if(startPoint>=endPoint){showMessage('起點必須在終點之前');return}
-   const text=getText();selected={a:startPoint,b:endPoint,selected:text.slice(startPoint,endPoint)};openSelected();
-  }
- }
- function drawMarks(){
-  document.querySelectorAll('.bv624-marker,.bv624-band').forEach(x=>x.remove());
-  const parent=document.body;
-  // These are UI markers, not changes to the source document.
-  [['start',startPoint,'➜ 起點'],['end',endPoint,'➜ 終點']].forEach(([type,pos,label])=>{
-   if(pos===null)return;
-   const m=document.createElement('div');m.className='bv624-marker '+type;m.textContent=label;
-   m.style.position='fixed';m.style.zIndex='9990';m.style.pointerEvents='none';
-   m.style.color=type==='start'?'#21d67a':'#ff5965';m.style.fontWeight='bold';
-   const rect=selectionRect(pos);m.style.left=Math.max(0,rect.left)+'px';m.style.top=Math.max(0,rect.top-22)+'px';parent.append(m);
-  });
-  if(startPoint!==null&&endPoint!==null&&startPoint<endPoint){
-   const a=selectionRect(startPoint),b=selectionRect(endPoint);const band=document.createElement('div');band.className='bv624-band';
-   band.style.cssText='position:fixed;z-index:9988;pointer-events:none;border-bottom:3px solid #ffd833;opacity:.9';
-   band.style.left=Math.max(0,a.left)+'px';band.style.top=Math.max(0,a.bottom-3)+'px';band.style.width=Math.max(12,b.left-a.left)+'px';parent.append(band);
-  }
- }
- function selectionRect(pos){
-  if(isEditor&&source){const r=raw.getBoundingClientRect();return {left:r.left+12,top:r.top+16,bottom:r.top+35}}
-  const r=editor.getBoundingClientRect();return {left:r.left+10,top:r.top+10,bottom:r.top+30};
- }
- function openSelected(){
-  const r=selected;
-  if(!r||r.a>=r.b){showMessage('請框選一段文字；如文字重複或包含渲染圖片，請在 Markdown 原始碼模式框選');return}
-  if(getText().slice(r.a,r.b)!==r.selected){showMessage('文件內容已變動，請重新框選');clearSelection();return}
-  selected=r;dialog=dialog||makeDialog();
-  dialog.querySelector('#bv62-preview').textContent='已框選 '+(r.b-r.a)+' 字：'+r.selected.slice(0,120);
-  dialog.style.display='flex';preview();
- }
- function makeDialog(){const el=document.createElement('div');el.id='bv62-overlay';el.innerHTML=`<div id="bv62-dialog" role="dialog" aria-modal="true"><h3>手動文本修正</h3><p id="bv62-preview"></p><label><input type="radio" name="bv62mode" value="math" checked> 數學式修正</label><label><input type="radio" name="bv62mode" value="svg"> SVG 修正（含 lazy 圖片）</label><label><input type="radio" name="bv62mode" value="replace"> 替代文本／分割文件</label><label><input type="radio" name="bv62mode" value="delete"> 區塊刪除</label><div id="bv62-replace" hidden><select id="bv62-kind"><option value="COMPOSITE">圖文文件</option><option value="IMAGE">圖片</option><option value="HANDWRITING">手寫稿</option></select></div><textarea id="bv62-output" aria-label="修正後文本" spellcheck="false"></textarea><div id="bv62-result"></div><div class="bv62-actions"><button id="bv62-cancel">取消</button><button id="bv62-confirm">確認套用</button></div></div>`;document.body.append(el);el.querySelector('#bv62-cancel').onclick=()=>{el.style.display='none';clearSelection()};el.querySelectorAll('input[name=bv62mode]').forEach(x=>x.onchange=()=>preview());el.querySelector('#bv62-confirm').onclick=confirm;return el}
- function fixMath(s){return s.replace(/\\\[\s*\$\$([\s\S]*?)\$\$\s*\\\]/g,'\\[$1\\]').replace(/^\s*\$\$([\s\S]*?)\$\$\s*$/,'\\[$1\\]')}
- function svgFix(s){let v=s.trim();const doc=new DOMParser().parseFromString(v,'text/html');const im=doc.querySelector('img[src]');if(im){v=im.getAttribute('src')||''}else{let m=v.match(/^!\[[^\]]*\]\(([\s\S]*)\)$/);if(m)v=m[1]}
-  v=v.replace(/^data\\:/i,'data:').replace(/&amp;/g,'&');if(/^data:image\/svg\+xml/i.test(v)){let idx=v.indexOf(',');if(idx<0)throw Error('Data URI 缺少逗號');let meta=v.slice(0,idx),payload=v.slice(idx+1);let xml=/;base64/i.test(meta)?atob(payload):decodeURIComponent(payload);const parsed=new DOMParser().parseFromString(xml,'image/svg+xml');if(parsed.querySelector('parsererror')||parsed.documentElement.localName!=='svg')throw Error('SVG XML 無效');const bad=parsed.querySelectorAll('script,foreignObject,iframe,object,embed');bad.forEach(n=>n.remove());parsed.querySelectorAll('*').forEach(n=>{for(const a of [...n.attributes]){if(/^on/i.test(a.name)||(/^(href|xlink:href)$/i.test(a.name)&&!a.value.startsWith('#'))||(/url\s*\(/i.test(a.value)&&!/url\s*\(\s*#/.test(a.value)))n.removeAttribute(a.name)}});const safe=new XMLSerializer().serializeToString(parsed.documentElement);return '<img loading="eager" alt="SVG" src="data:image/svg+xml,'+encodeURIComponent(safe)+'">'}
-  if(/^<svg[\s>]/i.test(v)){return svgFix('data:image/svg+xml,'+encodeURIComponent(v))}throw Error('選取區間沒有可識別的 SVG')}
 
- function preview(){
-  if(!dialog||!selected)return;
-  const mode=dialog.querySelector('input[name=bv62mode]:checked').value;
-  dialog.querySelector('#bv62-replace').hidden=mode!=='replace';
-  const output=dialog.querySelector('#bv62-output'),result=dialog.querySelector('#bv62-result');
-  result.textContent='';output.hidden=mode==='replace'||mode==='delete';
-  try{
-   output.value=mode==='math'?fixMath(selected.selected):mode==='svg'?svgFix(selected.selected):'';if(mode==='delete')result.textContent='將刪除 '+selected.selected.length+' 字，無法直接復原；請先確認備份。';
-   if(mode==='svg'){
-    const p=document.createElement('div');p.innerHTML=output.value;
-    const im=p.querySelector('img');if(im){im.style.maxWidth='100%';im.loading='eager';result.append(im)}
-   }
-  }catch(err){output.value='';result.textContent='修復失敗：'+err.message}
- }
- function confirm(){
-  if(!selected)return;
-  const {a,b,selected:original}=selected,text=getText();
-  if(text.slice(a,b)!==original){showMessage('來源已變更，請重新選取');dialog.style.display='none';clearSelection();return}
-  const mode=dialog.querySelector('input[name=bv62mode]:checked').value;
-  if(mode==='delete'){if(!window.confirm('確定刪除選取的 '+original.length+' 字？'))return;const replacement='';if(!isEditor)send('streamlit:setComponentValue',{value:{action:'correct_range',start:a,end:b,replacement,selection:original,nonce:String(Date.now())+Math.random()}});else{const updated=text.slice(0,a)+text.slice(b);raw.value=updated;editor.innerHTML=renderMarkdown(updated);resolveAssetImages();renderMath();showMessage('區塊已刪除，請儲存文件')}}else if(mode==='replace'){
-   send('streamlit:setComponentValue',{value:{action:'replace_range',start:a,end:b,kind:dialog.querySelector('#bv62-kind').value,selection:original,nonce:String(Date.now())+Math.random()}});
-  }else{
-   const value=dialog.querySelector('#bv62-output').value;
-   if(!value){showMessage('修正結果為空，未套用');return}
-   if(!isEditor){
-    send('streamlit:setComponentValue',{value:{action:'correct_range',start:a,end:b,replacement:value,selection:original,nonce:String(Date.now())+Math.random()}});
-   }else{
-    const updated=text.slice(0,a)+value+text.slice(b);
-    raw.value=updated;editor.innerHTML=renderMarkdown(updated);resolveAssetImages();renderMath();
-    if(!source){editor.style.display='block';raw.style.display='none'}
-    showMessage('修正已套用到編輯內容，請按儲存提交');
-   }
-  }
-  dialog.style.display='none';clearSelection();
- }
- function init(){
-  // The reader's existing context menu owns the correction command.
-  // In the editor use a single contextual action for any selected text.
-  if(isEditor){
-   const menu=document.createElement('div');menu.id='bv62-menu';
-   menu.innerHTML='<button type="button" data-kind="start">標註起始修正點</button><button type="button" data-kind="end">標註末尾修正點</button>';document.body.append(menu);
-   menu.querySelectorAll('button').forEach(b=>b.onclick=()=>{menu.style.display='none';markSelected(b.dataset.kind)});
-   document.addEventListener('click',e=>{if(!menu.contains(e.target))menu.style.display='none'});
-   [editor,raw].forEach(t=>t.addEventListener('contextmenu',e=>{
-    const r=selectionRange();if(!r)return;
-    selected=r;e.preventDefault();e.stopImmediatePropagation();
-    menu.style.display='block';
-    menu.style.left=Math.max(0,Math.min(e.clientX,innerWidth-220))+'px';
-    menu.style.top=Math.max(0,Math.min(e.clientY,innerHeight-55))+'px';
-   },true));
-  }
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&dialog?.style.display==='flex'){dialog.style.display='none';clearSelection()}});
- }
- return {init,rememberSelection,openSelected,markSelected};
-})();
-BV62.init();
 
 </script>
+
 <script>
-/* BV-Text 6.2.6 persistent media recovery */
+/* BV-Text v6.2.7 automatic image/SVG local persistence */
 (()=>{
 'use strict';
-const DB='bv-text-media-v626',STORE='images';
-let folder=null;
-const pending=new Map(),shown=new WeakMap();
-function openDB(){return new Promise((ok,no)=>{const r=indexedDB.open(DB,1);r.onupgradeneeded=()=>r.result.createObjectStore(STORE,{keyPath:'key'});r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)})}
-async function get(key){const d=await openDB();return new Promise((ok,no)=>{const r=d.transaction(STORE).objectStore(STORE).get(key);r.onsuccess=()=>{ok(r.result);d.close()};r.onerror=()=>{no(r.error);d.close()}})}
-async function put(key,blob){const d=await openDB();return new Promise((ok,no)=>{const t=d.transaction(STORE,'readwrite');t.objectStore(STORE).put({key,blob,time:Date.now()});t.oncomplete=()=>{d.close();ok()};t.onerror=()=>{d.close();no(t.error)}})}
-function valid(blob){return blob&&blob.size>0&&blob.size<=15*1024*1024&&/^image\/(?:png|jpeg|gif|webp|svg\+xml)$/.test(blob.type)}
-async function fetchBlob(url){
- if(!/^(?:data:image\/|https?:\/\/)/i.test(url))return null;
- try{const r=await fetch(url,{mode:'cors',credentials:'omit'});if(!r.ok)return null;const b=await r.blob();return valid(b)?b:null}catch{return null}
+const DB='bv-text-media-v627',STORE='images';
+let directory=null;const tasks=new Map(),objectUrls=new WeakMap();
+function openDB(){return new Promise((ok,no)=>{const r=indexedDB.open(DB,2);r.onupgradeneeded=()=>{const d=r.result;if(!d.objectStoreNames.contains(STORE))d.createObjectStore(STORE,{keyPath:'key'});if(!d.objectStoreNames.contains('settings'))d.createObjectStore('settings')};r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)})}
+async function dbRead(store,key){const d=await openDB();return new Promise((ok,no)=>{const r=d.transaction(store).objectStore(store).get(key);r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error);r.transaction.oncomplete=()=>d.close()})}
+async function dbWrite(store,key,value){const d=await openDB();return new Promise((ok,no)=>{const t=d.transaction(store,'readwrite');if(store===STORE)t.objectStore(store).put(value);else t.objectStore(store).put(value,key);t.oncomplete=()=>{d.close();ok()};t.onerror=()=>{d.close();no(t.error)}})}
+function keyFor(url){const m=url.match(/^asset:\/\/([0-9a-f-]{36})$/i);return m?'asset:'+m[1].toLowerCase():'url:'+url}
+function isImage(b){return b&&b.size>0&&b.size<=20*1024*1024&&/^image\/(?:png|jpeg|webp|gif|svg\+xml)$/.test(b.type)}
+async function download(url){if(!/^(?:data:image\/|https?:\/\/)/i.test(url))return null;try{const r=await fetch(url,{mode:'cors',credentials:'omit'});if(!r.ok)return null;const b=await r.blob();return isImage(b)?b:null}catch{return null}}
+async function sha(key){const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(key));return Array.from(new Uint8Array(hash),x=>x.toString(16).padStart(2,'0')).join('')}
+async function saveFolder(key,blob){if(!directory)return;const ext={'image/svg+xml':'svg','image/png':'png','image/jpeg':'jpg','image/webp':'webp','image/gif':'gif'}[blob.type]||'bin';const file=await directory.getFileHandle((await sha(key))+'.'+ext,{create:true});const writer=await file.createWritable();await writer.write(blob);await writer.close()}
+async function obtain(key,url){if(tasks.has(key))return tasks.get(key);const job=(async()=>{const cached=await dbRead(STORE,key).catch(()=>null);if(cached?.blob)return cached.blob;const blob=await download(url);if(blob){await dbWrite(STORE,key,{key,blob,savedAt:Date.now()}).catch(()=>{});saveFolder(key,blob).catch(()=>{})}return blob})();tasks.set(key,job);try{return await job}finally{tasks.delete(key)}}
+async function apply(im,urls){if(!im.isConnected)return;const ref=im.dataset.ref||im.dataset.bvOriginalSrc||im.getAttribute('src')||'';if(!ref||ref.startsWith('blob:'))return;const key=keyFor(ref);const m=ref.match(/^asset:\/\/([0-9a-f-]{36})$/i);const src=m?(urls?.[m[1]]||urls?.[m[1].toLowerCase()]||''):ref;
+ if(im.dataset.bvLocalKey===key&&objectUrls.has(im))return;
+ const blob=await obtain(key,src);if(!blob||!im.isConnected)return;
+ const prev=objectUrls.get(im);if(prev)URL.revokeObjectURL(prev);
+ const objectUrl=URL.createObjectURL(blob);objectUrls.set(im,objectUrl);im.dataset.bvOriginalSrc=ref;im.dataset.bvLocalKey=key;im.src=objectUrl;im.loading='eager';im.removeAttribute('data-bv-missing');im.classList.remove('missing-image');
 }
-async function acquire(key,url){
- if(pending.has(key))return pending.get(key);
- const promise=(async()=>{
-  const cached=await get(key).catch(()=>null);
-  if(cached?.blob)return cached.blob;
-  const blob=await fetchBlob(url);
-  if(blob)await put(key,blob).catch(()=>{});
-  return blob;
- })();
- pending.set(key,promise);try{return await promise}finally{pending.delete(key)}
+function scan(root=document,urls=typeof assetUrls!=='undefined'?assetUrls:{}){if(root.matches?.('img'))apply(root,urls).catch(()=>{});root.querySelectorAll?.('img').forEach(im=>apply(im,urls).catch(()=>{}))}
+async function connectFolder(){if(!window.showDirectoryPicker){alert('此瀏覽器或嵌入式元件不支援本地資料夾授權。圖片仍會自動儲存在 IndexedDB。');return}
+ try{directory=await showDirectoryPicker({mode:'readwrite',id:'bv-text-images'});await dbWrite('settings','directory',directory);await syncFolder();alert('資料夾已授權；之後成功取得的新圖片與 SVG 會自動存入。')}catch(e){if(e.name!=='AbortError')alert('無法授權資料夾：'+e.message)}
 }
-async function digest(s){const a=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s));return Array.from(new Uint8Array(a),x=>x.toString(16).padStart(2,'0')).join('')}
-async function write(key,blob){if(!folder)return;const ext=blob.type==='image/svg+xml'?'svg':blob.type==='image/jpeg'?'jpg':blob.type.split('/')[1]||'bin';const name=(await digest(key))+'.'+ext;const file=await folder.getFileHandle(name,{create:true});const w=await file.createWritable();await w.write(blob);await w.close()}
-async function recover(im,urls={}){
- if(!im.isConnected)return;
- const original=im.dataset.ref||im.dataset.bvOriginalSrc||im.getAttribute('src')||'';
- if(!original||/^blob:/i.test(original))return;
- const id=original.match(/^asset:\/\/([0-9a-f-]{36})$/i);
- const key=id?'asset:'+id[1].toLowerCase():'url:'+original;
- const resolved=id?(urls[id[1]]||urls[id[1].toLowerCase()]||''):original;
- if(!resolved&&!id)return;
- if(im.dataset.bvCacheKey===key&&shown.has(im))return;
- const blob=await acquire(key,resolved);
- if(!blob||!im.isConnected)return;
- const old=shown.get(im);if(old)URL.revokeObjectURL(old);
- const objectUrl=URL.createObjectURL(blob);
- shown.set(im,objectUrl);im.dataset.bvCacheKey=key;
- im.dataset.bvOriginalSrc=original;im.src=objectUrl;im.loading='eager';
- if(folder)write(key,blob).catch(()=>{});
-}
-function scan(root=document,urls={}){
- if(root.matches?.('img'))recover(root,urls).catch(()=>{});
- root.querySelectorAll?.('img').forEach(im=>recover(im,urls).catch(()=>{}));
-}
-async function choose(){
- if(!window.showDirectoryPicker){alert('此瀏覽器／嵌入框架無法授權資料夾；IndexedDB 快取仍可使用。');return}
- try{
-  folder=await window.showDirectoryPicker({mode:'readwrite',id:'bv-text-media'});
-  const d=await openDB();const items=await new Promise((ok,no)=>{const q=d.transaction(STORE).objectStore(STORE).getAll();q.onsuccess=()=>{ok(q.result);d.close()};q.onerror=()=>{no(q.error);d.close()}});
-  let n=0;for(const it of items){try{await write(it.key,it.blob);n++}catch{}}
-  alert('已將 '+n+' 張快取圖片寫入本地資料夾。');
- }catch(e){if(e.name!=='AbortError')alert('資料夾操作失敗：'+e.message)}
-}
-function init(){
- scan();
- const observer=new MutationObserver(records=>{for(const r of records)for(const n of r.addedNodes){if(n.nodeType===1)scan(n)}});
- observer.observe(document.body,{childList:true,subtree:true});
- const btn=document.createElement('button');btn.type='button';btn.textContent='圖片本地資料夾';
- btn.style.cssText='position:fixed;right:8px;bottom:8px;z-index:99999;padding:6px 9px;border:1px solid #567;background:#243448;color:white;border-radius:6px;cursor:pointer';
- btn.onclick=choose;document.body.append(btn);
-}
-window.BVMedia626={scan,recover};
-if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
+async function syncFolder(){if(!directory)return;const d=await openDB();const all=await new Promise((ok,no)=>{const r=d.transaction(STORE).objectStore(STORE).getAll();r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error);r.transaction.oncomplete=()=>d.close()});for(const item of all){try{await saveFolder(item.key,item.blob)}catch{}}}
+async function restoreFolder(){try{const saved=await dbRead('settings','directory');if(!saved)return;const status=await saved.queryPermission({mode:'readwrite'});if(status==='granted'){directory=saved;await syncFolder()}}catch{}}
+function init(){restoreFolder();scan();const observer=new MutationObserver(changes=>{for(const c of changes)for(const node of c.addedNodes)if(node.nodeType===1)scan(node)});observer.observe(document.body,{subtree:true,childList:true});
+ const btn=document.createElement('button');btn.type='button';btn.textContent='授權圖片資料夾';btn.title='只需授權一次（瀏覽器可能要求重新授權）；之後自動儲存新圖片及 SVG';btn.style.cssText='position:fixed;bottom:8px;right:8px;z-index:99990;padding:6px 9px;background:#24364c;color:white;border:1px solid #5b7899;border-radius:6px;cursor:pointer';btn.onclick=connectFolder;document.body.appendChild(btn)}
+window.BVMedia627={scan,connectFolder};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
 
 </script>
