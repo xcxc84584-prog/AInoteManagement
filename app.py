@@ -1216,6 +1216,41 @@ with st.sidebar:
     st.divider()
     st.divider()
     st.caption('本地優先 · '+('SQLite：'+str(db_root) if STORAGE_MODE=='sqlite' else 'IndexedDB：目前瀏覽器'))
+    if st.session_state.get('cloud_download_notice'):
+        st.success(st.session_state.pop('cloud_download_notice'))
+    with st.expander('🔗 WebRTC P2P｜同帳號裝置交換（免 Supabase 資料庫傳輸）'):
+        st.caption('兩台裝置均須登入相同帳號。資料經瀏覽器 WebRTC DataChannel 交換；登入驗證仍可能使用 Supabase Auth。')
+        st.info('先從來源裝置匯出完整本地快照，再在下方 P2P 視窗傳送；接收端下載收到的檔案後，使用「匯入收到的快照」載入。')
+        snapshot=local_db.export_snapshot(uid)
+        envelope={'format':'bvtext-p2p-snapshot','version':1,'owner_id':uid,'exported_at':datetime.now(timezone.utc).isoformat(),'snapshot':snapshot}
+        st.download_button('① 匯出本帳號完整資料（含圖片）',data=json.dumps(envelope,ensure_ascii=False).encode('utf-8'),file_name='BV-Text-P2P-'+uid[:8]+'.json',mime='application/json',key='p2p_export_snapshot')
+        st.caption('② 在兩台裝置下方的 WebRTC 面板手動交換邀請與回覆，再傳送剛匯出的 JSON。')
+        p2p_html=(Path(__file__).parent/'p2p'/'index.html').read_text(encoding='utf-8')
+        components.html(p2p_html,height=740,scrolling=True)
+        st.caption('③ 在接收裝置匯入 P2P 收到的快照。匯入僅修改本地資料，不會呼叫 Supabase 雲端同步。')
+        incoming=st.file_uploader('選擇 P2P 收到的 BV-Text 快照 JSON',type=['json'],key='p2p_received_snapshot')
+        replace=st.checkbox('以收到的資料取代目前本地資料（取消勾選則按 ID 合併）',value=False,key='p2p_replace_snapshot')
+        confirmed=st.checkbox('我已確認來源裝置可信，且已備份目前資料',key='p2p_import_confirm')
+        if st.button('匯入收到的快照並重新載入',disabled=not (incoming and confirmed),key='p2p_import_snapshot'):
+            try:
+                if incoming.size>150*1024*1024:raise ValueError('快照超過 150 MB，請分批交換')
+                payload=json.loads(incoming.getvalue().decode('utf-8'))
+                if payload.get('format')!='bvtext-p2p-snapshot' or payload.get('version')!=1:raise ValueError('不是受支援的 BV-Text P2P 快照')
+                if payload.get('owner_id')!=uid:raise ValueError('帳號不一致：禁止匯入其他帳號的資料')
+                data=payload.get('snapshot')
+                if not isinstance(data,dict):raise ValueError('快照格式無效')
+                for name in ('notes','assets','schedule_cards','daily_tasks','daily_task_checks'):
+                    rows=data.get(name,[])
+                    if not isinstance(rows,list) or any(not isinstance(r,dict) or r.get('owner_id')!=uid for r in rows):raise ValueError('快照資料擁有者不符：'+name)
+                local_db.import_snapshot(uid,data,replace=replace)
+                st.session_state['_sync_pending']=False
+                st.session_state['sync_live_enabled']=False
+                mark_local_change()
+                st.session_state['p2p_import_notice']='P2P 快照已匯入本地，並重新載入工作區；雲端即時更新已關閉。'
+                st.rerun()
+            except Exception as exc:st.error('P2P 快照匯入失敗：'+str(exc))
+    if st.session_state.get('p2p_import_notice'):
+        st.success(st.session_state.pop('p2p_import_notice'))
     with st.expander('☁️ 雲端操作與同步'):
         st.warning('請先備份。同步需要 Supabase 資料表與 Storage 的 RLS 權限。')
         def sync_progress():
@@ -1233,7 +1268,8 @@ with st.sidebar:
                     st.session_state['sync_live_enabled']=True
                     st.session_state['_sync_pending']=False
                     progress(1,'已完成初始化')
-                    st.success('即時同步已開啟；操作將於下一次頁面執行時上傳。')
+                    st.session_state['cloud_download_notice']='雲端初始化完成，已重新載入工作區。'
+                    st.rerun()
                 except Exception as exc:st.error('初始化失敗，未開啟即時同步：'+str(exc))
         elif not live:
             st.session_state['sync_live_enabled']=False
@@ -1254,7 +1290,8 @@ with st.sidebar:
                 mark_local_change()
                 st.session_state['_sync_pending']=False
                 progress(1,'下載完成')
-                st.success('已下載：'+str(result))
+                st.session_state['cloud_download_notice']='雲端下載完成：'+str(result)+'；工作區已重新載入。'
+                st.rerun()
             except Exception as exc:st.error('雲端下載失敗：'+str(exc))
         st.divider()
         st.caption('危險操作只作用於目前登入帳號的資料，不會刪除其他使用者資料。')
