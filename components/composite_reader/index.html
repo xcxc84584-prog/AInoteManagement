@@ -19,7 +19,18 @@ const BV61TOC=(()=>{
 })();
 ;
 
-const editor=document.getElementById('editor'),status=document.getElementById('status');let content='',assetUrls={},revision=-1;let splitUndo=false;function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')}function resize(){send('streamlit:setFrameHeight',{height:Math.min(16000,document.body.scrollHeight+24)})}
+const editor=document.getElementById('editor'),status=document.getElementById('status');let content='',assetUrls={},revision=-1;let splitUndo=false;function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')}let bvHeightLast=0,bvHeightQueued=false;
+function resize(){
+ if(bvHeightQueued)return;
+ bvHeightQueued=true;
+ requestAnimationFrame(()=>{
+  bvHeightQueued=false;
+  const measured=Math.max(document.documentElement.scrollHeight,document.body.scrollHeight,editor.scrollHeight,editor.getBoundingClientRect().bottom+window.scrollY);
+  const height=Math.ceil(measured+36);
+  if(Math.abs(height-bvHeightLast)>1){bvHeightLast=height;send('streamlit:setFrameHeight',{height})}
+ });
+}
+
 
 const bvErrors=[];
 function bvLog(code,detail){const entry={code,time:new Date().toISOString(),detail:String(detail||'').slice(0,350)};bvErrors.push(entry);if(bvErrors.length>60)bvErrors.shift();const out=document.getElementById('bvLog');if(out)out.textContent=bvErrors.map(x=>`[${x.time}] ${x.code} ${x.detail}`).join('\n');}
@@ -323,6 +334,16 @@ function bv61BrowseJump(entry){
  if(target){target.scrollIntoView({block:'center',behavior:'auto'});target.style.outline='2px solid #6fb4ff';setTimeout(()=>{target.style.outline=''},1400)}
 }
 BV61TOC.channel?.addEventListener('message',()=>bv61Refresh());
+// Track asynchronous table, math, image, font and viewport layout changes.
+const bvResizeObserver=new ResizeObserver(()=>resize());
+bvResizeObserver.observe(document.documentElement);
+bvResizeObserver.observe(document.body);
+bvResizeObserver.observe(editor);
+window.addEventListener('resize',resize,{passive:true});
+window.addEventListener('load',resize,{once:true});
+document.fonts?.ready?.then(resize).catch(()=>{});
+editor.addEventListener('load',resize,true);
+editor.addEventListener('error',resize,true);
 send('streamlit:componentReady',{apiVersion:1});loadKatex();resize();
 
 
