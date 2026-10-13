@@ -1042,6 +1042,13 @@ def explorer_functions_dialog():
             st.rerun()
         except Exception as exc:st.error('匯入失敗：'+str(exc))
     if selected:
+        if st.button('☁️ 雲端化目前選取文件',key='dialog_cloudify_selected',width='stretch'):
+            try:
+                from manual_sync import push_selected_to_cloud
+                if not cloud_client:raise RuntimeError('尚未連線 Supabase')
+                result=push_selected_to_cloud(cloud_client,local_db,uid,selected['id'],sync_progress() if 'sync_progress' in globals() else None)
+                st.success('雲端化完成：'+str(result))
+            except Exception as exc:st.error('雲端化失敗：'+str(exc))
         rootid=get_ancestors(selected['id'],byid)[-1]
         root=byid[rootid]
         if root['kind']=='GROUP':
@@ -1242,6 +1249,9 @@ with st.sidebar:
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
         st.success(st.session_state.pop('operation_notice'))
+    if st.session_state.get('_cloud_navigate_workspace'):
+        st.session_state['main_page']='📝 筆記工作區'
+        st.session_state.pop('_cloud_navigate_workspace',None)
     page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','☁️ 雲端服務','⚙️ 設定'],key='main_page',horizontal=True,on_change=v431_change_page)
     if st.session_state.get('v431_navigation_error'):st.error(st.session_state.pop('v431_navigation_error'))
     if st.session_state.get('_cloud_reload_notice'):
@@ -1411,10 +1421,11 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
             try:
                 progress=sync_progress()
                 if load_clicked:
-                    from manual_sync import pull_selected_from_cloud
-                    result=pull_selected_from_cloud(cloud_client,local_db,uid,[target],progress,include_ancestors=False)
+                    from manual_sync import pull_selected_from_cloud,cloud_selection_ids
+                    requested_ids=cloud_selection_ids(cloud_rows,target)
+                    result=pull_selected_from_cloud(cloud_client,local_db,uid,requested_ids,progress,include_ancestors=False)
                     st.session_state['selected']=target
-                    st.session_state['main_page']='📝 筆記工作區'
+                    st.session_state['_cloud_navigate_workspace']=True
                     st.session_state.pop('full_read_id',None)
                     st.session_state.pop('full_edit_id',None)
                     mark_local_change()

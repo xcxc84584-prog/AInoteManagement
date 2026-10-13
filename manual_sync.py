@@ -166,6 +166,21 @@ def remove_exact_duplicates(cloud,owner,progress=None):
   if progress:progress((i+1)/len(tables),'清理 '+table)
  return removed
 
+def cloud_selection_ids(rows,selected_id):
+ """A file imports only itself; a folder imports its complete descendant tree."""
+ byid={str(r['id']):r for r in rows}
+ if str(selected_id) not in byid:raise ValueError('雲端節點不存在')
+ folder_kinds={'GROUP','SUBFILE','FOLD','FOLDER'}
+ if str(byid[str(selected_id)].get('kind','')).upper() not in folder_kinds:return [selected_id]
+ children={}
+ for row in rows:children.setdefault(str(row.get('parent_id')),[]).append(str(row['id']))
+ result=[];pending=[str(selected_id)];seen=set()
+ while pending:
+  nid=pending.pop(0)
+  if nid in seen:continue
+  seen.add(nid);result.append(nid);pending.extend(children.get(nid,[]))
+ return result
+
 def pull_selected_from_cloud(cloud,local,owner,selected_ids,progress=None,include_ancestors=False):
  """Import ONLY explicitly selected notes by default, retaining unrelated local records.
  A missing parent is detached locally (parent_id=None); the cloud hierarchy stays intact.
