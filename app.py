@@ -1229,7 +1229,8 @@ with st.sidebar:
         st.rerun()
 
 # v4.6: modal ROOT backup; Explorer removal only after confirmed local save.
-if st.session_state.get('_explorer_show_functions_dialog'):
+if st.session_state.pop('_explorer_show_functions_dialog',False):
+    # One-shot modal: dismiss by Escape, X or outside click is cancellation.
     explorer_functions_dialog()
 if st.session_state.pop('_hide_sidebar_for_new_file',False):
     components.html("""<script>
@@ -1352,8 +1353,9 @@ def create_schedule_series(start_day,title,days,no_time,planned,details):
     return len(created)
 
 @st.dialog('快捷建立行程',width='large')
-def schedule_quick_create_dialog():
-    day=st.session_state.get('schedule_quick_day')
+def schedule_quick_create_dialog(day):
+    # The pending request is consumed before this modal opens. Closing the
+    # modal without submitting must not reopen it on a later rerun.
     if not day:return
     st.caption(f'排定日期：{day.isoformat()}（臺灣時間）')
     with st.form('schedule_quick_create_form'):
@@ -1464,8 +1466,9 @@ def restore_schedule_backup(rows,mode):
 # Invoking them inside calendar widgets/containers can raise
 # StreamlitInvalidLayoutContextError on Streamlit Cloud.
 if st.session_state.get('main_page')=='📅 行程表':
-    if st.session_state.get('schedule_quick_day'):
-        schedule_quick_create_dialog()
+    _quick_day=st.session_state.pop('schedule_quick_day',None)
+    if _quick_day:
+        schedule_quick_create_dialog(_quick_day)
     if st.session_state.get('schedule_edit_id'):
         try:
             _dialog_cards=c.table('schedule_cards').select('*').eq('owner_id',uid).eq('id',st.session_state['schedule_edit_id']).execute().data or []
