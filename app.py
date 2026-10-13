@@ -1097,6 +1097,13 @@ with st.sidebar:
             if action=='open_functions':
                 st.session_state['_explorer_show_functions_dialog']=True
                 st.rerun()
+            if action=='cloudify' and nid in byid:
+                from manual_sync import push_selected_to_cloud
+                if not cloud_client:raise RuntimeError('尚未連線雲端，請先設定 Supabase')
+                progress=sync_progress()
+                result=push_selected_to_cloud(cloud_client,local_db,uid,nid,progress)
+                st.session_state['operation_notice']='雲端化完成：'+str(result)
+                st.session_state.pop('_cloud_file_rows',None)
             if action=='close_sidebar':
                 st.session_state['_explorer_close_sidebar']=True
             if action in ('select','full_edit','full_read','quick_nav','toc_nav','toc_edit_nav','toc_browse_nav') and nid in byid:
@@ -1406,9 +1413,13 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
                 if load_clicked:
                     from manual_sync import pull_selected_from_cloud
                     result=pull_selected_from_cloud(cloud_client,local_db,uid,[target],progress)
+                    st.session_state['selected']=target
+                    st.session_state['main_page']='📝 筆記工作區'
+                    st.session_state.pop('full_read_id',None)
+                    st.session_state.pop('full_edit_id',None)
                     mark_local_change()
                     st.session_state['_sync_pending']=False
-                    st.session_state['_cloud_reload_pending']=True
+                    st.session_state['_cloud_reload_pending']=False
                     st.session_state['_cloud_reload_notice']='局部載入完成：'+str(result)
                 else:
                     from manual_sync import delete_cloud_note_subtree

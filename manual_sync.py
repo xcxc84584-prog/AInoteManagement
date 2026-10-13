@@ -1,3 +1,43 @@
+
+# Backward-compatible compressed note content. Legacy plain-text cloud rows remain readable.
+_COMPRESSED_PREFIX='BVZ1:zlib:'
+def _pack_note(row):
+ import zlib,base64
+ r=dict(row);content=r.get('content')
+ if isinstance(content,str) and content and not content.startswith(_COMPRESSED_PREFIX):
+  compressed=base64.b64encode(zlib.compress(content.encode('utf-8'),level=6)).decode('ascii')
+  if len(compressed)+len(_COMPRESSED_PREFIX)<len(content):r['content']=_COMPRESSED_PREFIX+compressed
+ return r
+def _unpack_note(row):
+ import zlib,base64
+ r=dict(row);content=r.get('content')
+ if isinstance(content,str) and content.startswith(_COMPRESSED_PREFIX):
+  try:r['content']=zlib.decompress(base64.b64decode(content[len(_COMPRESSED_PREFIX):],validate=True),max_length=0).decode('utf-8')
+  except TypeError:r['content']=zlib.decompress(base64.b64decode(content[len(_COMPRESSED_PREFIX):],validate=True)).decode('utf-8')
+  except Exception as exc:raise RuntimeError('雲端壓縮內容解碼失敗，已停止載入：'+str(r.get('id'))) from exc
+ return r
+
+def push_selected_to_cloud(cloud,local,owner,note_id,progress=None):
+ """Upload a single note, required ancestors and its assets; no unrelated notes."""
+ import base64
+ snapshot=local.export_snapshot(owner);byid={r['id']:r for r in snapshot.get('notes',[]) if not r.get('is_deleted')}
+ if note_id not in byid:raise ValueError('找不到要雲端化的本地文件')
+ chain=[];cur=note_id;visited=set()
+ while cur and cur in byid:
+  if cur in visited:raise ValueError('父節點循環')
+  visited.add(cur);chain.append(byid[cur]);cur=byid[cur].get('parent_id')
+ for i,row in enumerate(reversed(chain)):
+  cloud.table('notes').upsert(_pack_note(row),on_conflict='id').execute()
+  if progress:progress(.1+.55*(i+1)/len(chain),'上傳文件與必要父節點')
+ assets=[a for a in snapshot.get('assets',[]) if a.get('note_id')==note_id]
+ for i,asset in enumerate(assets):
+  cloud.table('assets').upsert(asset,on_conflict='id').execute()
+  path=asset.get('storage_path');encoded=snapshot.get('media',{}).get(path)
+  if encoded:cloud.storage.from_('note-images').upload(path,base64.b64decode(encoded),{'content-type':asset.get('mime_type') or 'application/octet-stream','upsert':'true'})
+  if progress:progress(.65+.3*(i+1)/len(assets),'上傳文件圖片')
+ if progress:progress(1,'雲端化完成')
+ return {'notes':len(chain),'assets':len(assets)}
+
 """Explicit cloud import/export. All network writes occur inside push_to_cloud()."""
 from pathlib import Path
 from local_backend import FIELDS
@@ -7,6 +47,7 @@ def pull_from_cloud(cloud,local,owner,progress=None):
  for i,table in enumerate(FIELDS):
   if progress:progress((i+1)/(len(FIELDS)+2), '下載 '+table)
   snapshot[table]=cloud.table(table).select('*').eq('owner_id',owner).execute().data or []
+  if table=='notes':snapshot[table]=[_unpack_note(r) for r in snapshot[table]]
  media={}
  for j,a in enumerate(snapshot['assets']):
   if progress:progress((len(FIELDS)+1+j/max(len(snapshot['assets']),1))/(len(FIELDS)+2),'下載圖片')
@@ -33,7 +74,7 @@ def push_to_cloud(cloud,local,owner,progress=None):
  for i,row in enumerate(ordered):
   if progress:progress(.05+.35*(i+1)/max(len(ordered),1),'上傳筆記')
   try:
-   cloud.table('notes').upsert(row,on_conflict='id').execute()
+   cloud.table('notes').upsert(_pack_note(row),on_conflict='id').execute()
   except Exception as exc:
    if 'notes_parent_id_fkey' in str(exc):
     raise RuntimeError('父節點不存在於雲端，文件 '+str(row.get('title'))+' 的 parent_id='+str(row.get('parent_id'))) from exc
@@ -128,7 +169,7 @@ def pull_selected_from_cloud(cloud,local,owner,selected_ids,progress=None):
  selected=set(selected_ids)
  if not selected:return {'notes':0,'assets':0}
  rows=cloud.table('notes').select('*').eq('owner_id',owner).execute().data or []
- byid={r['id']:r for r in rows if not r.get('is_deleted')}
+ byid={r['id']:_unpack_note(r) for r in rows if not r.get('is_deleted')}
  missing=selected-set(byid)
  if missing:raise ValueError('雲端找不到所選文件：'+','.join(sorted(missing)))
  wanted=set(selected)
@@ -201,10 +242,10 @@ def merge_duplicate_named_notes(cloud,owner,progress=None):
    return len(h)==len(set(h))
   if not all(headings(r.get('content')) for r in group):
    result['skipped']+=1;continue
-  combined=group[0].get('content') or ''
-  for r in group[1:]:combined=_merge_sections(combined,r.get('content') or '')
+  combined=_unpack_note(group[0]).get('content') or ''
+  for r in group[1:]:combined=_merge_sections(combined,_unpack_note(r).get('content') or '')
   try:
-   cloud.table('notes').update({'content':combined}).eq('id',survivor['id']).eq('owner_id',owner).execute()
+   cloud.table('notes').update({'content':_pack_note({'content':combined})['content']}).eq('id',survivor['id']).eq('owner_id',owner).execute()
    for old in group[:-1]:
     # Transfer foreign keys before deletion; restrict updates to the current owner.
     for table,col in [('notes','parent_id'),('assets','note_id')]:
