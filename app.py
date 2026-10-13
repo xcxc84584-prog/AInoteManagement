@@ -953,6 +953,7 @@ def v43_new_file_dialog(parent_id):
             new=insert_note(kind,title.strip() or '新文件',parent_id,position=len(children_index.get(parent_id,[]))+1)
             st.session_state.selected=new['id']
         st.session_state.pop('new_file_parent',None)
+        st.session_state.pop('_new_file_dialog_open',None)
         st.rerun()
 
 def v431_commit_focus_before_navigation():
@@ -978,54 +979,30 @@ def v431_change_page():
         st.session_state['main_page']='📝 筆記工作區'
 
 
+@st.dialog('功能',width='large')
+def explorer_functions_dialog():
+    st.caption('檔案匯入與匯出')
+    uploaded=st.file_uploader('開啟本地組別 (.ainote / .zip)',type=['ainote','zip'],key='import')
+    if uploaded and st.button('匯入組別',key='dialog_import_group'):
+        try:
+            st.session_state.selected=import_group(uploaded.getvalue())
+            st.session_state.pop('_explorer_show_functions_dialog',None)
+            st.rerun()
+        except Exception as exc:st.error('匯入失敗：'+str(exc))
+    if selected:
+        rootid=get_ancestors(selected['id'],byid)[-1]
+        root=byid[rootid]
+        if root['kind']=='GROUP':
+            try:
+                st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name=download_filename(root['title']),mime='application/zip',width='stretch')
+            except Exception as exc:st.warning('暫時無法匯出：'+str(exc))
+    st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
+    if st.button('關閉',key='close_functions_dialog',width='stretch'):
+        st.session_state.pop('_explorer_show_functions_dialog',None)
+        st.rerun()
+
 with st.sidebar:
     st.title('📚 BV-Text')
-    if st.session_state.get('_explorer_function_panel',False):
-        with st.expander('功能',expanded=False):
-            st.caption('建立組別／獨立文件')
-            standalone_title=st.text_input('無組別純文件名稱',key='new_standalone_title')
-            if st.button('＋ 建立無組別純文件',key='new_standalone',width='stretch'):
-                if standalone_title.strip():
-                    try:
-                        n=insert_note('MARKDOWN',standalone_title.strip(),None)
-                        st.session_state.selected=n['id'];st.rerun()
-                    except Exception as exc:st.error('建立失敗：'+str(exc))
-    
-            newgroup=st.text_input('組別名稱',key='newgroup')
-            if st.button('＋ 創建新組別',width='stretch'):
-                if newgroup.strip():
-                    try:
-                        progress=operation_progress('建立組別');progress(30,'送出新增請求')
-                        r=insert_note('GROUP',newgroup.strip(),has_page=False)
-                        progress(100,'建立完成')
-                        st.session_state['creation_notice']='已建立組別：'+r['title']
-                        st.session_state.selected=r['id'];st.rerun()
-                    except Exception as exc:st.error('建立失敗：'+str(exc))
-            uploaded=st.file_uploader('開啟本地組別 (.ainote / .zip)',type=['ainote','zip'],key='import')
-            if uploaded and st.button('匯入組別'):
-                try:st.session_state.selected=import_group(uploaded.getvalue());st.rerun()
-                except Exception as e:st.error(f'匯入失敗：{e}')
-            if selected:
-                rootid=get_ancestors(selected['id'],byid)[-1]
-                root=byid[rootid]
-                if root['kind']=='GROUP':
-                    try:st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name=download_filename(root['title']),mime='application/zip',width='stretch')
-                    except Exception:st.warning('暫時無法匯出')
-            with st.expander('v4.3 舊表格清理（不可復原）'):
-                table_notes=[n for n in notes if n.get('kind')=='TABLE' and not n.get('is_deleted')]
-                st.warning(f'目前共有 {len(table_notes)} 個舊 TABLE。清理前請先下載完整備份。')
-                confirm_table=st.checkbox('我已完成備份，確定永久刪除舊 TABLE 文件',key='v43_table_confirm')
-                if st.button('永久清理舊 TABLE',disabled=not confirm_table or not table_notes,key='v43_table_purge'):
-                    try:
-                        for row in table_notes:
-                            c.table('notes').delete().eq('id',row['id']).eq('owner_id',uid).execute()
-                        st.success('舊 TABLE 已清理');st.rerun()
-                    except Exception as exc:st.error('清理失敗：'+str(exc))
-            st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
-            if st.button('收合功能',key='hide_explorer_function_panel'):
-                st.session_state['_explorer_function_panel']=False
-                st.rerun()
-    st.divider()
     st.subheader('EXPLORER')
     # Keep last active document and workspace mode in the URL across browser refreshes.
     try:
@@ -1055,7 +1032,6 @@ with st.sidebar:
           if(btn)btn.click();
         } catch(e) { console.warn('Sidebar close unavailable',e); }
         </script>""",height=0)
-    st.caption('右鍵操作 · 拖曳移動 · F2 · Delete 刪除 · Ctrl+C/V/X · 文件操作→批量選取')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
     payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':[]} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
@@ -1066,7 +1042,7 @@ with st.sidebar:
             op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav','import_child') else None
             if op_progress:op_progress(15,'正在處理 '+str(action))
             if action=='open_functions':
-                st.session_state['_explorer_function_panel']=not st.session_state.get('_explorer_function_panel',False)
+                st.session_state['_explorer_show_functions_dialog']=True
                 st.rerun()
             if action=='close_sidebar':
                 st.session_state['_explorer_close_sidebar']=True
@@ -1099,8 +1075,9 @@ with st.sidebar:
                 st.session_state.workspace_save_requested=True
             elif action=='workspace_close' and nid in byid:
                 st.session_state.workspace_close_requested=nid
-            elif action=='new_file_dialog' and nid in byid:
-                st.session_state.new_file_parent=nid if byid[nid]['kind'] in CONTAINERS else byid[nid]['parent_id']
+            elif action=='new_file_dialog' and (nid in byid or event.get('root')):
+                st.session_state.new_file_parent=(nid if nid in byid and byid[nid]['kind'] in CONTAINERS else byid[nid]['parent_id'] if nid in byid else None)
+                st.session_state['_new_file_dialog_open']=True
             elif action=='quick_nav' and nid in byid:
                 st.session_state.quick_nav_root=nid
                 st.session_state.selected=nid
@@ -1199,8 +1176,6 @@ with st.sidebar:
             logging.getLogger(__name__).exception('Explorer action failed')
             st.error('檔案操作或跳轉前儲存失敗：'+str(exc))
 
-    if st.session_state.get('new_file_parent') in byid:
-        v43_new_file_dialog(st.session_state.new_file_parent)
     if st.session_state.get('creation_notice'):
         st.success(st.session_state.pop('creation_notice'))
     if st.session_state.get('operation_notice'):
@@ -1236,6 +1211,11 @@ with st.sidebar:
         st.rerun()
 
 # v4.6: modal ROOT backup; Explorer removal only after confirmed local save.
+if st.session_state.get('_explorer_show_functions_dialog'):
+    explorer_functions_dialog()
+if st.session_state.get('_new_file_dialog_open'):
+    v43_new_file_dialog(st.session_state.get('new_file_parent'))
+
 @st.dialog('保存並關閉 ROOT',width='large')
 def v46_close_root_dialog(root_id):
     root=byid.get(root_id)
