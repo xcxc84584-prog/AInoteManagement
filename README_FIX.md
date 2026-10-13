@@ -11,3 +11,8 @@
 不需要執行新的修改性 SQL。若仍出現 403，請檢查 Streamlit Logs 與 Supabase Storage Logs。
 
 注意：尚未在使用者的 Streamlit Cloud/Supabase 帳號進行端到端測試。
+
+
+## v6.3.6
+- 提高功能選單 popover 的疊放層級，優先於 Sidebar Explorer，兼容 portal 與 sidebar 內渲染。
+- 手機瀏覽器仍需實際驗證 Streamlit DOM 結構。

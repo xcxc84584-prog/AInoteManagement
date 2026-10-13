@@ -759,6 +759,16 @@ html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{max-width:100
 /* Keep popovers/dialogs above schedule-card frames. */
 [data-testid="stPopoverBody"], [data-testid="stDialog"], [role="dialog"]{z-index:100000!important}
 [data-testid="stExpander"]{isolation:auto}
+/* Sidebar menu must overlay the sidebar Explorer and its scrollable content. */
+[data-testid="stSidebar"]{isolation:isolate!important;overflow:visible!important}
+[data-testid="stSidebarContent"]{overflow-x:hidden!important;overflow-y:auto!important}
+[data-testid="stSidebar"] [data-testid="stPopover"]:has(button[aria-expanded="true"]){position:relative!important;z-index:100001!important}
+[data-testid="stSidebar"] [data-testid="stPopoverBody"],
+[data-testid="stSidebar"] [data-baseweb="popover"],
+[data-testid="stSidebar"] [data-baseweb="popover"]>div{z-index:100002!important}
+/* Streamlit may render the popover in a portal outside the sidebar. */
+[data-baseweb="popover"], [data-baseweb="layer"], [data-testid="stPopoverBody"]{z-index:100002!important}
+
 
 [data-testid="stTextArea"] textarea{width:100%!important;max-width:100%!important;box-sizing:border-box!important}
 .stButton button{border-radius:8px}
