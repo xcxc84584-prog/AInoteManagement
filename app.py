@@ -737,18 +737,32 @@ def import_group(raw, parent=None):
         source=json.loads(z.read('structure.json'))
         if manifest.get('format')!='ainote' or manifest.get('version')!=1 or not isinstance(source,list):raise ValueError('封裝格式不相容')
         if len(source)>1000:raise ValueError('文件數量超過限制')
-        rootid=manifest['root_id'];old={n['id']:n for n in source}
-        if rootid not in old or old[rootid]['kind']!='GROUP':raise ValueError('根節點無效')
-        # Parent-before-child traversal; malformed cycles and disconnected nodes are rejected.
+        # Accept both a GROUP-rooted archive and a standalone root-level document.
+        old={str(n['id']):n for n in source if isinstance(n,dict) and n.get('id')}
+        if len(old)!=len(source) or not old:raise ValueError('文件結構無效或 ID 重複')
+        rootid=str(manifest.get('root_id') or '')
+        if rootid not in old:
+            candidates=[oid for oid,n in old.items() if not n.get('parent_id')]
+            if len(candidates)!=1:raise ValueError('無法判斷唯一根文件')
+            rootid=candidates[0]
+        if old[rootid].get('parent_id') is not None:raise ValueError('根文件不可有父節點')
+        # A root-level COMPOSITE file remains a root-level COMPOSITE file.
         mapping={};remaining=dict(old)
         while remaining:
             progress=False
             for oid,n in list(remaining.items()):
-                p=n.get('parent_id')
-                if oid!=rootid and p not in mapping:continue
+                parent_id=n.get('parent_id')
+                if oid!=rootid and parent_id not in mapping:continue
                 if n.get('kind') not in KINDS:raise ValueError('文件類型無效')
-                if oid==rootid and p is not None:raise ValueError('根節點錯誤')
-                created=insert_note('SUBFILE' if oid==rootid and parent else n['kind'],str(n.get('title','未命名'))[:200],parent if oid==rootid and parent else mapping.get(p),str(n.get('content',''))[:500000],bool(n.get('has_page')) or bool(oid==rootid and parent),int(n.get('position',0)))
+                if oid==rootid and parent is not None:
+                    parent_id=parent
+                else:
+                    parent_id=mapping.get(parent_id)
+                content=str(n.get('content') or '')
+                # Read documents/<id>.md when the structure has no embedded content.
+                docpath='documents/'+oid+'.md'
+                if not content and docpath in names:content=z.read(docpath).decode('utf-8')
+                created=insert_note(n['kind'],str(n.get('title','未命名'))[:200],parent_id,content[:500000],bool(n.get('has_page')) or n['kind']=='COMPOSITE',int(n.get('position') or 0))
                 mapping[oid]=created['id'];del remaining[oid];progress=True
             if not progress:raise ValueError('樹狀結構存在循環或遺失父節點')
         # Rehydrate referenced images and remap asset IDs.
@@ -1896,11 +1910,11 @@ if st.session_state.get('main_page')=='⚙️ 設定':
     st.stop()
 
 DEMO_GUIDE = '# BV-Text v6.7 使用教學\n\n## 1. 登入與工作區\n登入後使用「筆記工作區」、「行程表」、「雲端服務」、「設定」四個頁面。雲端版的工作區主要保存在目前瀏覽器的 IndexedDB；不同瀏覽器與裝置不會自動共享。首次載入時會顯示進度。\n\n## 2. Explorer\n在左側 Explorer 建立組別、資料夾與文件。選擇節點後可瀏覽、編輯、移動或刪除。新增尚未完成前關閉視窗，視為取消。\n\n## 3. 圖文文件\n使用 Markdown 編寫標題、表格、圖片與數學公式。數學公式建議以 $$...$$ 包裹。圖片請使用可匯入的實際圖片資源；不要只依賴遠端圖片連結。\n\n## 4. 單一閱讀與編輯\nExplorer 中選擇文件可進入單一閱讀或編輯；保存後返回工作區。目錄與快速定位在瀏覽器本地保存，跨裝置需另外檢查。\n\n## 5. 行程表\n在「行程表」建立行程卡與每日任務，並可下載 JSON 備份。\n\n## 6. 雲端服務\n「雲端服務」是獨立頁面，提供手動上傳、下載、即時更新、清空個人雲端資料及去重。下載前先備份；下載成功後系統會先寫入本地 IndexedDB，再重新載入工作區。所有雲端操作需要正確的 Supabase RLS 權限。\n\n## 7. 本地保存與資料安全\n雲端部署不代表 Python 伺服器磁碟就是使用者電腦。IndexedDB 受瀏覽器與網域限制，清除網站資料可能遺失內容。定期下載獨立備份，並在覆蓋或刪除前確認備份可用。\n\n## 8. 效能與故障排查\nPC 端優先使用本地工作區；大量圖片會增加首次載入時間。進度條顯示載入階段而非精確位元組比例。若停在載入中，檢查瀏覽器是否允許 IndexedDB、可用儲存空間及開發者工具錯誤。\n\n## 9. AI 提示詞\n教學 FOLD 內另有「AI提示詞」圖文文件，可複製給 AI，要求生成單一圖文文件的 AINOTE ZIP。\n'
-AI_PROMPT_GUIDE = '# AI提示詞\n\n請將你接下來的對話文本打包成能載入 ainote 的 ZIP 文件，並且只能由一個圖文文件組成。對話內容需要有圖片說明，減少 SVG 圖的使用，數學公式必須使用 $$數學式$$。\n\n## 輸出要求\n- 保留完整的對話文字、標題、清單、表格與公式，不要自行刪減。\n- 將所有內容整合為一個圖文文件，不要拆成多個文件。\n- 圖片使用實際圖片資源並附上文字說明；盡量避免 SVG。\n- 所有數學公式使用 $$數學式$$ 格式。\n- ZIP 內使用目標 AINOTE 匯入器支援的資料結構，確保可匯入；不確定格式時先索取範例 ZIP，不要虛構格式。\n- 完成後提供 ZIP 檔案。\n'
+AI_PROMPT_GUIDE = '# AI提示詞｜AINOTE 單一圖文文件封包規格\n\n請將你接下來的對話文本打包成能載入 ainote 的 ZIP 文件，並且只能由一個圖文文件組成。對話內容需要有圖片說明，減少 SVG 圖的使用，數學公式必須使用 $$數學式$$。\n\n## ZIP 結構（版本 1）\n\n```text\nconversation.ainote （ZIP 格式）\n├── manifest.json\n├── structure.json\n├── documents/\n│   └── <document-uuid>.md\n└── assets/               # 有圖片時才需要\n    └── <asset-uuid>.png\n```\n\n`manifest.json` 範例（使用實際 UUID，不可照抄示意值）：\n\n```json\n{"format":"ainote","version":1,"root_id":"<document-uuid>","name":"對話筆記"}\n```\n\n`structure.json` 必須是陣列，而且**只能有一個節點**，例如：\n\n```json\n[{"id":"<document-uuid>","parent_id":null,"kind":"COMPOSITE","title":"對話筆記","content":"# 對話筆記\\n內容…","has_page":true,"position":1}]\n```\n\n根節點就是這個 `COMPOSITE` 文件，不需要建立 GROUP 或 FOLD。`manifest.root_id` 必須與文件 `id` 一致。`documents/<document-uuid>.md` 存放同一份完整 Markdown 內容。所有 JSON 必須是 UTF-8。\n\n## 文字與圖片要求\n- 完整保留對話順序、標題、段落、清單、表格、程式碼及文字說明。\n- 只能有一個圖文文件；不得拆成多份文件或額外建立資料夾節點。\n- 優先使用 PNG、JPG、WebP 圖片；圖片應放在 `assets/`，並在內容以 `asset://<asset-uuid>` 引用。不要僅使用失效的外部圖片 URL。\n- 減少 SVG 圖，盡可能以一般圖片與文字說明呈現。\n- 所有獨立數學公式使用 `$$數學式$$`，例如：\n\n$$E=mc^2$$\n\n- 封包完成後，確認 ZIP 能解壓、UUID 關聯正確、圖片確實存在、文件內容完整，並提供 ZIP。\n'
 
 if not selected:
     st.title('歡迎使用 BV-Text')
-    st.info('目前沒有組別。')
+    st.info('目前沒有文件。可直接透過「功能 → 匯入」載入無根組別的單一圖文文件。')
     creation_type=st.radio('新增文件類型',options=['空 FOLD','教學 FOLD'],horizontal=True,key='empty_workspace_creation_type',help='兩種模式都只建立一個根 FOLD，不會產生子 FOLD。')
     creation_title=st.text_input('FOLD 名稱',value='我的第一份筆記' if creation_type=='教學 FOLD' else '新 FOLD',key='empty_workspace_creation_title')
     if st.button('＋ 新增文件',type='primary',key='empty_workspace_create'):
@@ -1932,6 +1946,29 @@ workspace_blocks=sorted(
     [n for n in children_index.get(workspace_id,[]) if n['kind'] not in CONTAINERS and n['kind']!='TABLE'],
     key=lambda n:(n.get('position',0),n.get('created_at',''))
 )
+# Render only the focused node and its immediate priority neighbors.
+# Navigation changes the window, keeping a stable node id across edits/reordering.
+def windowed_nodes(nodes,namespace):
+    if len(nodes)<=3:return nodes
+    ids=[n['id'] for n in nodes]
+    key='_v68_focus_'+namespace
+    if st.session_state.get(key) not in ids:st.session_state[key]=ids[0]
+    index=ids.index(st.session_state[key])
+    st.caption(f'按優先序分段載入：目前第 {index+1} / {len(nodes)} 節點；僅載入前後各一個節點')
+    left,center,right=st.columns([1,2,1])
+    if left.button('← 前一節點',key=namespace+'_prev',disabled=index==0):
+        st.session_state[key]=ids[index-1];st.rerun()
+    center.selectbox('目前節點',ids,index=index,format_func=lambda nid:next(n['title'] for n in nodes if n['id']==nid),key=namespace+'_choice',on_change=lambda:st.session_state.update({key:st.session_state[namespace+'_choice']}))
+    if right.button('下一節點 →',key=namespace+'_next',disabled=index==len(ids)-1):
+        st.session_state[key]=ids[index+1];st.rerun()
+    progress=st.progress(0,text='載入目前節點與相鄰節點…')
+    start=max(0,index-1);end=min(len(nodes),index+2)
+    visible=nodes[start:end]
+    progress.progress(100,text=f'已載入 {len(visible)} / {len(nodes)} 個節點')
+    progress.empty()
+    return visible
+
+workspace_blocks=windowed_nodes(workspace_blocks,'editor_window_'+workspace_id) if workspace_blocks else []
 assets={}
 # Load asset metadata only if the group/workspace contains image references.
 needs_assets=any('asset://' in (n.get('content') or '') for n in active_notes if n['kind'] in ('GRAPH','HANDWRITE','COMPOSITE','MARKDOWN'))
@@ -2176,6 +2213,11 @@ if mode=='瀏覽模式':
         if node['kind'] in CONTAINERS:
             for child in ordered_children(node['id']):collect_sections(child,depth+1,seen)
     collect_sections(group)
+    if len(sections)>4:
+        documents=[n for n,d in sections if n['id']!=group['id'] and n['kind'] not in CONTAINERS]
+        if documents:
+            visible_ids={n['id'] for n in windowed_nodes(documents,'reader_window_'+group['id'])}
+            sections=[(n,d) for n,d in sections if n['id']==group['id'] or n['kind'] in CONTAINERS or n['id'] in visible_ids]
     # Anchor IDs are derived only from UUIDs, never from untrusted titles.
     def section_anchor(note):return 'ainote-'+re.sub(r'[^a-zA-Z0-9-]','',str(note['id']))
     toc=[(node,depth) for node,depth in sections if node['kind'] in CONTAINERS]
