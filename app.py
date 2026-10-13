@@ -756,9 +756,29 @@ html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{max-width:100
 [data-testid="stSidebar"]{width:min(310px,85vw)!important;min-width:0!important}
 [data-testid="stSidebar"] iframe{width:100%!important;max-width:100%!important}
 [data-testid="stSidebarContent"]{overflow-x:hidden!important}
+/* Keep popovers/dialogs above schedule-card frames. */
+[data-testid="stPopoverBody"], [data-testid="stDialog"], [role="dialog"]{z-index:100000!important}
+[data-testid="stExpander"]{isolation:auto}
+
 [data-testid="stTextArea"] textarea{width:100%!important;max-width:100%!important;box-sizing:border-box!important}
 .stButton button{border-radius:8px}
 </style>''',unsafe_allow_html=True)
+
+# Sidebar dismiss: attach a document-level outside-click handler when component
+# iframe and host share origin. Streamlit's native sidebar toggle remains available.
+components.html("""<script>
+try {
+ const d=window.parent.document;
+ if(!d.__bvSidebarDismiss){d.__bvSidebarDismiss=true;
+ d.addEventListener('pointerdown',function(e){
+   const sidebar=d.querySelector('[data-testid="stSidebar"]');
+   if(!sidebar||sidebar.contains(e.target))return;
+   const collapse=sidebar.querySelector('[data-testid="stSidebarCollapseButton"] button,button[aria-label*="Close sidebar"],button[aria-label*="關閉側邊欄"]');
+   const expanded=sidebar.getAttribute('aria-expanded');
+   if(collapse && expanded!=='false')collapse.click();
+ },true);}
+} catch(e) { /* Cross-origin host: retain Streamlit native behavior. */ }
+</script>""",height=0)
 
 try:
     with st.status('正在讀取工作區…',expanded=False) as load_status:
