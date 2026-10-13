@@ -1320,11 +1320,17 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
 if st.session_state.get('main_page')=='☁️ 雲端服務':
     st.header('☁️ 雲端服務')
     st.warning('請先備份。同步需要 Supabase 資料表與 Storage 的 RLS 權限。')
+    def sync_progress():
+        bar=st.progress(0,text='準備中…')
+        def report(fraction,message):bar.progress(min(1,max(0,float(fraction))),text=message)
+        return report
     st.subheader('雲端 Explorer（只載入文件結構）')
     if st.button('查看當前在雲端的文件',key='cloud_list_refresh'):
         try:
+            listing_progress=st.progress(0,text='正在取得雲端文件結構…')
             rows=cloud_client.table('notes').select('id,parent_id,title,kind,position,is_deleted').eq('owner_id',uid).execute().data or []
             st.session_state['_cloud_file_rows']=[r for r in rows if not r.get('is_deleted')]
+            listing_progress.progress(1,text='雲端文件結構載入完成')
         except Exception as exc:st.error('讀取雲端文件清單失敗：'+str(exc))
     cloud_rows=st.session_state.get('_cloud_file_rows',[])
     if cloud_rows:
@@ -1339,16 +1345,36 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
         def build_tree(pid='',visited=None):
             visited=set(visited or ())
             result=[]
-            for r in children.get(pid,[]):
+            for index,r in enumerate(children.get(pid,[])):
                 rid=str(r['id'])
                 if rid in visited:continue
-                result.append('<li><span class="node" data-id="'+html.escape(rid,quote=True)+'">📄 '+html.escape(str(r.get('title') or '未命名'))+' ['+html.escape(str(r.get('kind') or ''))+']</span>')
+                kind=str(r.get('kind') or '').upper()
+                icon={'GROUP':'📁','FOLD':'📁','FOLDER':'📁','FILE':'📄','MARKDOWN':'📄','COMPOSITE':'📝','GRAPH':'🖼️','HANDWRITE':'✍️','TABLE':'▦'}.get(kind,'📄')
                 nested=build_tree(rid,visited|{rid})
-                if nested:result.append('<ul>'+nested+'</ul>')
+                expandable=bool(nested)
+                label=html.escape(str(r.get('title') or '未命名'))
+                result.append('<li class="tree-item"><div class="tree-node" data-id="'+html.escape(rid,quote=True)+'" tabindex="0"><span class="toggle" aria-label="展開或收合">'+('▸' if expandable else ' ')+'</span><span class="node-icon">'+icon+'</span><span class="node-name">'+label+'</span><span class="node-kind">'+html.escape(kind)+'</span></div>')
+                if expandable:result.append('<ul class="children" hidden>'+nested+'</ul>')
                 result.append('</li>')
             return ''.join(result)
-        markup="""<style>body{background:#111827;color:#eee;font:14px sans-serif}ul{list-style:none;padding-left:18px}.node{display:inline-block;padding:5px;cursor:context-menu}.node:hover{background:#334155}#menu{display:none;position:fixed;background:#334155;padding:8px;z-index:10}button{padding:8px}</style><p>右鍵文件以選擇載入或刪除</p><ul>"""+build_tree()+"""</ul><div id="menu"><button id="load">載入</button><button id="delete">刪除</button></div><script>let id='';document.querySelectorAll('.node').forEach(n=>n.addEventListener('contextmenu',e=>{e.preventDefault();id=n.dataset.id;let m=document.getElementById('menu');m.style.display='block';m.style.left=Math.min(e.clientX,innerWidth-140)+'px';m.style.top=Math.min(e.clientY,innerHeight-60)+'px'}));for(let action of ['load','delete'])document.getElementById(action).onclick=()=>{let url=new URL(window.parent.location.href);url.searchParams.set('cloud_action',action);url.searchParams.set('cloud_note',id);window.parent.location.href=url.toString()};</script>"""
-        components.html(markup,height=360,scrolling=True)
+        markup="""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>
+        *{box-sizing:border-box}body{margin:0;padding:10px;background:#1e222a;color:#e3e8f1;font:13px system-ui,sans-serif}
+        .tree,.children{list-style:none;margin:0;padding-left:0}.children{margin-left:13px;padding-left:12px;border-left:1px solid #59677c}
+        .tree-item{position:relative}.children>.tree-item:before{content:'';position:absolute;top:16px;left:-12px;width:11px;border-top:1px solid #59677c}
+        .tree-node{display:flex;align-items:center;gap:7px;min-height:32px;padding:4px 7px;border-radius:5px;cursor:context-menu;user-select:none}
+        .tree-node:hover,.tree-node:focus{background:#354354;outline:none}.toggle{width:13px;flex:none;cursor:pointer;color:#cbd5e1}
+        .node-icon{width:19px;text-align:center}.node-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-kind{font-size:10px;color:#a4b0c2}
+        #menu{display:none;position:fixed;z-index:50;background:#2b3545;border:1px solid #718096;border-radius:7px;padding:5px;box-shadow:0 8px 25px #0008}
+        #menu button{display:block;width:100%;background:transparent;border:0;color:white;text-align:left;padding:9px 24px;cursor:pointer}#menu button:hover{background:#43546b}
+        </style></head><body><p>展開 ROOT 查看子節點；右鍵或長按節點進行操作。</p><ul class="tree">"""+build_tree()+"""</ul><div id="menu"><button id="load">⬇ 載入</button><button id="delete">🗑 刪除</button></div><script>
+        let selected='';const menu=document.getElementById('menu');
+        function toggle(node){const child=node.parentElement.querySelector(':scope > .children');if(!child)return;child.hidden=!child.hidden;node.querySelector('.toggle').textContent=child.hidden?'▸':'▾'}
+        function showMenu(e,node){e.preventDefault();selected=node.dataset.id;menu.style.display='block';menu.style.left=Math.max(0,Math.min(e.clientX,innerWidth-150))+'px';menu.style.top=Math.max(0,Math.min(e.clientY,innerHeight-100))+'px'}
+        document.querySelectorAll('.tree-node').forEach(node=>{node.querySelector('.toggle').onclick=e=>{e.stopPropagation();toggle(node)};node.ondblclick=()=>toggle(node);node.oncontextmenu=e=>showMenu(e,node);let timer;node.addEventListener('touchstart',e=>{timer=setTimeout(()=>showMenu({preventDefault(){},clientX:e.touches[0].clientX,clientY:e.touches[0].clientY},node),600)},{passive:true});for(let ev of ['touchend','touchmove','touchcancel'])node.addEventListener(ev,()=>clearTimeout(timer));});
+        document.addEventListener('click',e=>{if(!menu.contains(e.target))menu.style.display='none'});
+        for(const action of ['load','delete'])document.getElementById(action).onclick=()=>{if(!selected)return;let url=new URL(window.parent.location.href);url.searchParams.set('cloud_action',action);url.searchParams.set('cloud_note',selected);window.parent.location.href=url.toString()};
+        </script></body></html>"""
+        components.html(markup,height=460,scrolling=True)
         action=st.query_params.get('cloud_action')
         target=st.query_params.get('cloud_note')
         if action in ('load','delete') and target in by_cloud_id:
@@ -1372,10 +1398,6 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
                     st.rerun()
                 except Exception as exc:st.error('操作失敗：'+str(exc))
     else:st.info('請按「查看當前在雲端的文件」載入樹狀結構。')
-    def sync_progress():
-        bar=st.progress(0,text='準備中…')
-        def report(fraction,message):bar.progress(min(1,max(0,float(fraction))),text=message)
-        return report
     live=st.checkbox('即時更新（本地操作同步到雲端）',value=bool(st.session_state.get('sync_live_enabled')),key='sync_live_checkbox')
     if live and not st.session_state.get('sync_live_enabled'):
         st.info('首次開啟需先下載雲端資料；下載會覆蓋本地資料，請先備份。')
