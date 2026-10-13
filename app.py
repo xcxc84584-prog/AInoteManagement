@@ -825,6 +825,7 @@ try {
  d.addEventListener('pointerdown',function(e){
    const sidebar=d.querySelector('[data-testid="stSidebar"]');
    if(!sidebar||sidebar.contains(e.target))return;
+   if(d.querySelector('[data-testid="stSidebar"] input[aria-label="AutoClose"]')?.checked===false)return;
    const collapse=sidebar.querySelector('[data-testid="stSidebarCollapseButton"] button,button[aria-label*="Close sidebar"],button[aria-label*="關閉側邊欄"]');
    const expanded=sidebar.getAttribute('aria-expanded');
    if(collapse && expanded!=='false')collapse.click();
@@ -1053,7 +1054,9 @@ def explorer_functions_dialog():
         st.rerun()
 
 with st.sidebar:
-    st.subheader('EXPLORER')
+    _explorer_header_left,_explorer_header_right=st.columns([3,2],vertical_alignment='center')
+    with _explorer_header_left:st.subheader('EXPLORER')
+    with _explorer_header_right:st.checkbox('AutoClose',value=True,key='explorer_auto_close',help='取消勾選後，點擊側邊欄以外不會自動收合')
     # Keep last active document and workspace mode in the URL across browser refreshes.
     try:
         if not st.session_state.get('_nav_url_restored'):
@@ -1366,37 +1369,56 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
         .node-icon{width:19px;text-align:center}.node-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-kind{font-size:10px;color:#a4b0c2}
         #menu{display:none;position:fixed;z-index:50;background:#2b3545;border:1px solid #718096;border-radius:7px;padding:5px;box-shadow:0 8px 25px #0008}
         #menu button{display:block;width:100%;background:transparent;border:0;color:white;text-align:left;padding:9px 24px;cursor:pointer}#menu button:hover{background:#43546b}
-        </style></head><body><p>展開 ROOT 查看子節點；右鍵或長按節點進行操作。</p><ul class="tree">"""+build_tree()+"""</ul><div id="menu"><button id="load">⬇ 載入</button><button id="delete">🗑 刪除</button></div><script>
+        </style></head><body><p>展開 ROOT 查看子節點；使用下方載入／刪除操作。</p><ul class="tree">"""+build_tree()+"""</ul><script>
         let selected='';const menu=document.getElementById('menu');
         function toggle(node){const child=node.parentElement.querySelector(':scope > .children');if(!child)return;child.hidden=!child.hidden;node.querySelector('.toggle').textContent=child.hidden?'▸':'▾'}
         function showMenu(e,node){e.preventDefault();selected=node.dataset.id;menu.style.display='block';menu.style.left=Math.max(0,Math.min(e.clientX,innerWidth-150))+'px';menu.style.top=Math.max(0,Math.min(e.clientY,innerHeight-100))+'px'}
         document.querySelectorAll('.tree-node').forEach(node=>{node.querySelector('.toggle').onclick=e=>{e.stopPropagation();toggle(node)};node.ondblclick=()=>toggle(node);node.oncontextmenu=e=>showMenu(e,node);let timer;node.addEventListener('touchstart',e=>{timer=setTimeout(()=>showMenu({preventDefault(){},clientX:e.touches[0].clientX,clientY:e.touches[0].clientY},node),600)},{passive:true});for(let ev of ['touchend','touchmove','touchcancel'])node.addEventListener(ev,()=>clearTimeout(timer));});
         document.addEventListener('click',e=>{if(!menu.contains(e.target))menu.style.display='none'});
-        for(const action of ['load','delete'])document.getElementById(action).onclick=()=>{if(!selected)return;let url=new URL(window.parent.location.href);url.searchParams.set('cloud_action',action);url.searchParams.set('cloud_note',selected);window.parent.location.href=url.toString()};
+        
         </script></body></html>"""
         components.html(markup,height=460,scrolling=True)
-        action=st.query_params.get('cloud_action')
-        target=st.query_params.get('cloud_note')
-        if action in ('load','delete') and target in by_cloud_id:
-            st.info(('載入：' if action=='load' else '刪除：')+str(by_cloud_id[target].get('title')))
-            confirmed=True if action=='load' else st.checkbox('我確認刪除雲端文件及其子文件',key='cloud_delete_confirm')
-            if st.button('確認'+('載入' if action=='load' else '刪除'),disabled=not confirmed,key='cloud_tree_confirm'):
-                try:
-                    if action=='load':
-                        from manual_sync import pull_selected_from_cloud
-                        result=pull_selected_from_cloud(cloud_client,local_db,uid,[target],sync_progress())
-                        mark_local_change()
-                        st.session_state['_sync_pending']=False
-                        st.session_state['_cloud_reload_pending']=True
-                        st.session_state['_cloud_reload_notice']='局部載入完成：'+str(result)
-                    else:
-                        from manual_sync import delete_cloud_note_subtree
-                        result=delete_cloud_note_subtree(cloud_client,uid,target,sync_progress())
-                        st.session_state.pop('_cloud_file_rows',None)
-                        st.session_state['_cloud_reload_notice']='刪除完成：'+str(result)
-                    st.query_params.clear()
-                    st.rerun()
-                except Exception as exc:st.error('操作失敗：'+str(exc))
+        # Native Streamlit actions: iframe navigation was blocked in hosted browsers.
+        # The tree remains a lightweight, expandable structural preview.
+        st.caption('上方為雲端 Explorer 結構預覽；從下方選擇節點後，使用原生按鈕執行載入或刪除。')
+        def cloud_node_label(nid):
+            r=by_cloud_id[nid]
+            return str(r.get('title') or '未命名')+'  ['+str(r.get('kind') or 'FILE')+']'
+        target=st.selectbox('選擇雲端 Explorer 節點',options=list(by_cloud_id),format_func=cloud_node_label,key='cloud_tree_selected')
+        cloud_load_col,cloud_delete_col=st.columns(2)
+        with cloud_load_col:load_clicked=st.button('⬇ 載入',key='cloud_tree_load',use_container_width=True)
+        with cloud_delete_col:delete_clicked=st.button('🗑 刪除',key='cloud_tree_delete',use_container_width=True)
+        if delete_clicked:
+            st.session_state['_cloud_pending_delete']=target
+        if st.session_state.get('_cloud_pending_delete'):
+            pending=st.session_state['_cloud_pending_delete']
+            st.warning('即將永久刪除：'+cloud_node_label(pending)+' 及其子節點')
+            confirm_col,cancel_col=st.columns(2)
+            with confirm_col:confirmed=st.button('確認永久刪除',type='primary',key='cloud_delete_execute',use_container_width=True)
+            with cancel_col:cancelled=st.button('取消',key='cloud_delete_cancel',use_container_width=True)
+            if cancelled:
+                st.session_state.pop('_cloud_pending_delete',None)
+                st.rerun()
+        else:confirmed=False
+        if load_clicked or confirmed:
+            try:
+                progress=sync_progress()
+                if load_clicked:
+                    from manual_sync import pull_selected_from_cloud
+                    result=pull_selected_from_cloud(cloud_client,local_db,uid,[target],progress)
+                    mark_local_change()
+                    st.session_state['_sync_pending']=False
+                    st.session_state['_cloud_reload_pending']=True
+                    st.session_state['_cloud_reload_notice']='局部載入完成：'+str(result)
+                else:
+                    from manual_sync import delete_cloud_note_subtree
+                    result=delete_cloud_note_subtree(cloud_client,uid,pending,progress)
+                    st.session_state.pop('_cloud_file_rows',None)
+                    st.session_state.pop('_cloud_pending_delete',None)
+                    st.session_state['_cloud_reload_notice']='刪除完成：'+str(result)
+                progress(1,'操作完成，正在重新整理')
+                st.rerun()
+            except Exception as exc:st.error('雲端 Explorer 操作失敗：'+str(exc))
     else:st.info('請按「查看當前在雲端的文件」載入樹狀結構。')
     live=st.checkbox('即時更新（本地操作同步到雲端）',value=bool(st.session_state.get('sync_live_enabled')),key='sync_live_checkbox')
     if live and not st.session_state.get('sync_live_enabled'):
