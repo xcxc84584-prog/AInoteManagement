@@ -1394,13 +1394,21 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
         document.addEventListener('click',e=>{if(!menu.contains(e.target))menu.style.display='none'});
         
         </script></body></html>"""
-        components.html(markup,height=460,scrolling=True)
+        # Bidirectional Streamlit component: a click emits the selected ID to Python.
+        cloud_tree_component=components.declare_component('bv_cloud_tree_select_v618',path=str(Path(__file__).parent/'components'/'cloud_tree_select'))
+        clicked_cloud_id=cloud_tree_component(markup=markup,selected=st.session_state.get('cloud_tree_selected',''),key='cloud_tree_selection_bridge',default=None)
+        if isinstance(clicked_cloud_id,str) and clicked_cloud_id in by_cloud_id and clicked_cloud_id!=st.session_state.get('_cloud_tree_last_click'):
+            # Process each click once, before constructing the selectbox widget.
+            st.session_state['_cloud_tree_last_click']=clicked_cloud_id
+            st.session_state['cloud_tree_selected']=clicked_cloud_id
         # Native Streamlit actions: iframe navigation was blocked in hosted browsers.
         # The tree remains a lightweight, expandable structural preview.
         st.caption('選擇節點後可只載入該文件，不會自動下載整個 ROOT；載入及刪除均顯示進度。')
         def cloud_node_label(nid):
             r=by_cloud_id[nid]
             return str(r.get('title') or '未命名')+'  ['+str(r.get('kind') or 'FILE')+']'
+        if st.session_state.get('cloud_tree_selected') not in by_cloud_id:
+            st.session_state['cloud_tree_selected']=next(iter(by_cloud_id))
         target=st.selectbox('選擇雲端 Explorer 節點',options=list(by_cloud_id),format_func=cloud_node_label,key='cloud_tree_selected')
         cloud_load_col,cloud_delete_col=st.columns(2)
         with cloud_load_col:load_clicked=st.button('⬇ 載入',key='cloud_tree_load',use_container_width=True)
@@ -1421,8 +1429,31 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
             try:
                 progress=sync_progress()
                 if load_clicked:
-                    from manual_sync import pull_selected_from_cloud,cloud_selection_ids
-                    requested_ids=cloud_selection_ids(cloud_rows,target)
+                    from manual_sync import pull_selected_from_cloud
+                    # Compute the selection locally: avoids runtime imports of a helper
+                    # absent from older deployed manual_sync.py versions.
+                    def _selected_cloud_ids(rows, selected_id):
+                        by_id={str(row['id']):row for row in rows}
+                        selected_id=str(selected_id)
+                        if selected_id not in by_id:
+                            raise ValueError('雲端節點不存在，請重新整理雲端 Explorer')
+                        if str(by_id[selected_id].get('kind') or '').upper() not in {'GROUP','SUBFILE','FOLD','FOLDER'}:
+                            return [selected_id]
+                        children={}
+                        for row in rows:
+                            children.setdefault(str(row.get('parent_id')),[]).append(str(row['id']))
+                        queue=[selected_id]
+                        result=[]
+                        seen=set()
+                        while queue:
+                            node_id=queue.pop(0)
+                            if node_id in seen:
+                                continue
+                            seen.add(node_id)
+                            result.append(node_id)
+                            queue.extend(children.get(node_id,[]))
+                        return result
+                    requested_ids=_selected_cloud_ids(cloud_rows,target)
                     result=pull_selected_from_cloud(cloud_client,local_db,uid,requested_ids,progress,include_ancestors=False)
                     st.session_state['selected']=target
                     st.session_state['_cloud_navigate_workspace']=True
