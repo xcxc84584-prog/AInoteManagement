@@ -18,7 +18,7 @@
 /* v5.0.7 mobile layout: diagnostics must stay in normal flow and final line visible */
 html,body{min-width:0;max-width:100%;overflow-x:hidden}#bvDiagnostics{position:relative!important;inset:auto!important;z-index:1!important;max-width:100%;overflow-wrap:anywhere;clear:both}#bvDiagnostics pre{max-width:100%;overflow:auto}#editor{padding-bottom:76px!important;min-height:360px;scroll-padding-bottom:76px}#editor .math-block{overflow-x:auto;overflow-y:hidden;max-width:100%;-webkit-overflow-scrolling:touch}#editor .katex-display{margin:0.75em 0;overflow-x:auto;overflow-y:hidden;max-width:100%}#status{position:relative!important;clear:both;display:block;overflow-wrap:anywhere}body{padding-bottom:64px!important}
 </style><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css"></head><body>
-<div class="toolbar"><button id="rich">圖文編輯</button><button id="source">Markdown 原始碼</button><button id="bv61toc">目錄化（點擊確認）</button><button id="uploadImage">插入圖片／圖表</button><input id="imageFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none"><button id="save" class="primary">💾 儲存圖文文件</button><span id="status">可直接貼上 ChatGPT 文字、表格及圖片</span></div>
+<div class="toolbar"><button id="rich">圖文編輯</button><button id="source">Markdown 原始碼</button><button id="bv61toc">目錄化（點擊確認）</button><button id="uploadImage">插入圖片／圖表</button><input id="imageFile" type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" style="display:none"><button id="save" class="primary">💾 儲存圖文文件</button><span id="status">可直接貼上 ChatGPT 文字、表格及圖片</span></div>
 <details id="bvDiagnostics" style="margin:8px 0"><summary>HRC 診斷與錯誤紀錄</summary><button id="bvCopyLog" type="button">複製診斷報告</button><pre id="bvLog" style="white-space:pre-wrap;max-height:180px;overflow:auto"></pre><div id="svgClipboardNotice" role="status" style="display:none;margin:10px 0;padding:10px;border-left:3px solid #eab308;color:#fde68a;white-space:normal">此文本可能缺少SVG訊息，請安裝相關插件修復。</div></details>
 <div class="hint">框選文字後點擊「目錄化」建立獨立本地目錄，不會改寫文件；Ctrl+V 可貼上圖文。</div><div id="bv61toclist" aria-label="本地目錄"></div>
 <div class="split"><div id="main"><div id="editor" contenteditable="true" spellcheck="false"></div><textarea id="raw" aria-label="Markdown 原始碼"></textarea></div></div>
@@ -486,7 +486,24 @@ raw.addEventListener('paste',async e=>{
  e.preventDefault();try{await pasteGPT503(e.clipboardData)}catch(err){bvLog('HRC-CLIP-001',err);status.textContent='❗ 貼上失敗：'+String(err)}
 });
 document.getElementById('uploadImage').onclick=()=>document.getElementById('imageFile').click();
-document.getElementById('imageFile').onchange=async e=>{const f=e.target.files?.[0];if(!f)return;if(f.size>10*1024*1024){status.textContent='圖片不得超過 10 MB';return}const data=await fileData(f),i=images.length;images.push({data});const img=document.createElement('img');img.src=data;img.alt=f.name||'圖片';img.dataset.ref='clipboard-image://'+i;if(source){raw.value+='\n\n!['+(f.name||'圖片').replace(/[\[\]]/g,'')+'](clipboard-image://'+i+')\n';}else insertAtCaret(img);e.target.value='';updateToc();status.textContent='圖片已插入，請儲存圖文文件'};
+document.getElementById('imageFile').onchange=async event=>{
+ const files=Array.from(event.target.files||[]);
+ if(files.length>30){status.textContent='一次最多插入 30 張圖片';event.target.value='';return}
+ let success=0,failed=0;
+ for(const f of files){
+  if(f.size>10*1024*1024){failed++;continue}
+  try{
+   const data=await fileData(f),i=images.length;
+   images.push({data});const img=document.createElement('img');
+   img.src=data;img.alt=f.name||'圖片';img.dataset.ref='clipboard-image://'+i;
+   if(source){raw.value+='\n\n!['+(f.name||'圖片').replace(/[\[\]]/g,'')+'](clipboard-image://'+i+')\n'}
+   else {insertAtCaret(img);insertAtCaret(document.createElement('p'))}
+   success++;
+  }catch(error){failed++;bvLog('HRC-UPLOAD-001',error)}
+ }
+ event.target.value='';updateToc();
+ status.textContent='已插入 '+success+' 張圖片'+(failed?'，失敗 '+failed+' 張':'')+'；請儲存圖文文件';
+};
 function resolveAssetImages(){editor.querySelectorAll('img').forEach(im=>{let ref=im.dataset.ref||im.getAttribute('src')||'';let m=ref.match(/^asset:\/\/([0-9a-f-]{36})$/i);if(m){im.dataset.ref=ref;if(assetUrls[m[1]])im.src=assetUrls[m[1]];}})}
 function restore(md){images=[];md=String(md||'').replace(/^<!-- bv-editor-mode:(?:HRC|COM|MD) -->\n?/,'');editor.innerHTML=renderMarkdown(md);
  editor.querySelectorAll('img').forEach(im=>{const src=im.getAttribute('src')||'';const match=src.match(/^asset:\/\/([0-9a-f-]{36})$/i);if(match){im.dataset.ref=src;if(assetUrls[match[1]])im.src=assetUrls[match[1]];if(!assetUrls[match[1]]){im.alt='❗ 圖片資源缺失：'+match[1];im.classList.add('missing-image')}}});

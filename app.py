@@ -31,6 +31,7 @@ KINDS=['GROUP','SUBFILE','GRAPH','HANDWRITE','COMPOSITE']
 CONTAINERS=['GROUP','SUBFILE']
 MAX_IMAGE=10*1024*1024
 local_component=components.declare_component('ainote_local_save',path=str(Path(__file__).parent/'components'/'local_save'))
+auto_load_component=components.declare_component('bv_auto_load_v630',path=str(Path(__file__).parent/'components'/'auto_load'))
 matrix_component=components.declare_component('ainote_matrix_table',path=str(Path(__file__).parent/'components'/'matrix_table'))
 paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
 composite_component=components.declare_component('bv_composite_editor',path=str(Path(__file__).parent/'components'/'composite_editor'))
@@ -772,7 +773,34 @@ active_notes=[n for n in notes if not n.get('is_deleted')]
 children_index=defaultdict(list)
 for _node in active_notes:children_index[_node.get('parent_id')].append(_node)
 for _siblings in children_index.values():_siblings.sort(key=lambda x:(x.get('position',0),x.get('created_at') or ''))
-roots=[n for n in active_notes if n['kind']=='GROUP' and not n['parent_id']]
+# Background autoload mounts on every workspace page, not only the Settings screen.
+_auto_event=auto_load_component(mode='background',ack=st.session_state.get('_auto_load_ack',[]),key='auto_load_background_v630',default=None)
+if isinstance(_auto_event,dict) and _auto_event.get('nonce')!=st.session_state.get('_auto_load_nonce'):
+    st.session_state['_auto_load_nonce']=_auto_event.get('nonce')
+    if _auto_event.get('action')=='batch':
+        reports=[];acks=[]
+        for f in _auto_event.get('files',[])[:30]:
+            try:
+                name=str(f.get('name',''))
+                payload=base64.b64decode(f['data'],validate=True)
+                if len(payload)>15*1024*1024:raise ValueError('超過 15 MB')
+                ext=Path(name).suffix.lower()
+                if name.endswith('.bvcalendar.json'):
+                    rows=read_schedule_backup(payload)
+                    restore_schedule_backup(rows,'合併行程（相同 ID 更新）')
+                elif ext in ('.ainote','.zip'):import_group(payload)
+                elif ext in ('.md','.txt','.markdown'):
+                    text_data=payload.decode('utf-8-sig')
+                    if len(text_data)>500000:raise ValueError('文本過長')
+                    insert_note('MARKDOWN',Path(name).name,None,content=text_data)
+                else:continue
+                reports.append(name+'：載入成功')
+                acks.append({'name':name,'digest':f.get('digest')})
+            except Exception as exc:reports.append(str(f.get('name'))+'：'+str(exc)[:120])
+        st.session_state['_auto_load_report']=reports
+        st.session_state['_auto_load_ack']=acks
+        st.rerun()
+roots=[n for n in active_notes if not n['parent_id']]
 if st.session_state.get('selected') not in {n['id'] for n in active_notes}:st.session_state['selected']=roots[0]['id'] if roots else None
 selected=byid.get(st.session_state['selected'])
 
@@ -932,7 +960,15 @@ if st.session_state.get('_bv_sidebar_hidden'):
 with st.sidebar:
     st.title('📚 BV-Text')
     with st.popover('☰ 功能選單',width='stretch'):
-        st.caption('建立組別')
+        st.caption('建立組別／獨立文件')
+        standalone_title=st.text_input('無組別純文件名稱',key='new_standalone_title')
+        if st.button('＋ 建立無組別純文件',key='new_standalone',width='stretch'):
+            if standalone_title.strip():
+                try:
+                    n=insert_note('MARKDOWN',standalone_title.strip(),None)
+                    st.session_state.selected=n['id'];st.rerun()
+                except Exception as exc:st.error('建立失敗：'+str(exc))
+
         newgroup=st.text_input('組別名稱',key='newgroup')
         if st.button('＋ 創建新組別',width='stretch'):
             if newgroup.strip():
@@ -1066,7 +1102,7 @@ with st.sidebar:
                     st.session_state.pending_table={'title':title,'parent':parent,'after':after}
                     st.session_state.selected=parent
                     st.rerun()
-                if kind in KINDS and title and (kind=='GROUP' or parent):
+                if kind in KINDS and title and (kind=='GROUP' or parent or kind in ('MARKDOWN','COMPOSITE')):
                     new=insert_note(kind,title,parent,has_page=kind=='SUBFILE',position=len([x for x in active_notes if x['parent_id']==parent])+1)
                     if after:place_new_after(new['id'],after)
                     st.session_state.selected=new['id']
@@ -1638,6 +1674,13 @@ if st.session_state.get('main_page')=='⚙️ 設定':
         else:
             st.caption('IndexedDB 位於瀏覽器內，沒有可由網站直接開啟的 Windows 固定路徑。下方按鈕可開啟瀏覽器資料夾選擇器。')
         local_component(mode='settings',key='local_save_settings_v1',default=None)
+    with st.container():
+        st.markdown('#### 自動 Load 路徑（與儲存路徑分開）')
+        st.caption('選擇包含 .ainote、.zip、.md、.txt 或 .bvcalendar.json 的本機資料夾。重新開啟時，瀏覽器若保留讀取權限便自動載入有變動的檔案；否則請點「重新授權並載入」。僅匯入，不覆蓋原文件。')
+        auto_load_component(mode='settings',key='auto_load_settings_v630',default=None)
+        if st.session_state.get('_auto_load_report'):
+            st.caption('最近一次自動載入：')
+            for report in st.session_state['_auto_load_report'][:30]:st.caption(report)
     with st.container():
         st.markdown('#### 帳號註銷')
         st.warning('此操作不可復原：永久刪除帳號、筆記、資料夾、圖片與附件。請先下載 .ainote 備份。')

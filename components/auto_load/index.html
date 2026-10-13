@@ -1,0 +1,55 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>body{margin:0;font:13px system-ui;color:#dbe4f0}button{border:1px solid #60738d;border-radius:6px;padding:8px;background:#22364d;color:white}#state{margin:7px 0;color:#aab9c9;overflow-wrap:anywhere}</style></head><body><button id="pick">選擇／重新授權自動 Load 資料夾</button><div id="state">尚未選擇自動 Load 路徑</div><script>
+const button=document.getElementById('pick'),state=document.getElementById('state');let running=false,initialized=false;
+function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')}
+function height(){send('streamlit:setFrameHeight',{height:document.body.scrollHeight+12})}
+function db(){return new Promise((ok,no)=>{const r=indexedDB.open('bv-auto-load-settings-v630',1);r.onupgradeneeded=()=>r.result.createObjectStore('settings');r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)})}
+async function get(k){const d=await db();return new Promise((ok,no)=>{const r=d.transaction('settings').objectStore('settings').get(k);r.onsuccess=()=>{ok(r.result);d.close()};r.onerror=()=>no(r.error)})}
+async function set(k,v){const d=await db();return new Promise((ok,no)=>{const t=d.transaction('settings','readwrite');t.objectStore('settings').put(v,k);t.oncomplete=()=>{d.close();ok()};t.onerror=()=>{d.close();no(t.error)}})}
+function base64(bytes){let str='';for(let i=0;i<bytes.length;i+=8192)str+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(str)}
+async function hash(bytes){const digest=await crypto.subtle.digest('SHA-256',bytes);return Array.from(new Uint8Array(digest),x=>x.toString(16).padStart(2,'0')).join('')}
+async function collect(dir,prefix='',depth=0,files=[]){
+ if(depth>5||files.length>=30)return files;
+ for await(const [name,entry] of dir.entries()){
+  if(files.length>=30)break;
+  if(entry.kind==='directory'){await collect(entry,prefix+name+'/',depth+1,files);continue}
+  if(!/\.(?:ainote|zip|md|markdown|txt|bvcalendar\.json)$/i.test(name))continue;
+  const f=await entry.getFile();if(f.size>15*1024*1024||!f.size)continue;
+  const bytes=new Uint8Array(await f.arrayBuffer());const key=prefix+name;
+  const digest=await hash(bytes);const old=await get('digest:'+key);
+  if(old===digest)continue;
+  files.push({name:key,data:base64(bytes),digest});
+ }
+ return files;
+}
+async function run(handle){
+ if(running)return;running=true;
+ try{
+  const permission=await handle.queryPermission({mode:'read'});
+  if(permission!=='granted'){state.textContent='已設定 '+handle.name+'，但需要點擊按鈕重新授權才能載入';return}
+  state.textContent='正在檢查 '+handle.name+' 的新檔案…';height();
+  const files=await collect(handle);
+  if(files.length){
+   // Remember checksums only after the host acknowledges import, not at scan time.
+   const nonce=crypto.randomUUID();await set('pending:'+nonce,files.map(f=>({name:f.name,digest:f.digest})));
+   send('streamlit:setComponentValue',{value:{action:'batch',files,nonce}});
+   state.textContent='發現 '+files.length+' 份新／更新檔案，正在匯入';
+  }else state.textContent='自動 Load：'+handle.name+'（沒有新檔案）';
+ }catch(e){state.textContent='自動載入失敗：'+e.message}finally{running=false;height()}
+}
+button.onclick=async()=>{
+ if(!window.showDirectoryPicker){state.textContent='目前瀏覽器不支援資料夾讀取；請使用匯入功能';height();return}
+ try{
+  let handle=await get('load-folder');
+  if(!handle||button.textContent.includes('更換')){handle=await showDirectoryPicker({mode:'read'});await set('load-folder',handle)}
+  else if(await handle.queryPermission({mode:'read'})!=='granted'){
+   if(await handle.requestPermission({mode:'read'})!=='granted')return;
+  }
+  await run(handle)
+ }catch(e){if(e.name!=='AbortError')state.textContent='授權失敗：'+e.message}height()
+};
+window.addEventListener('message',async e=>{
+ if(e.data?.type!=='streamlit:render')return;const mode=e.data.args?.mode||'settings';button.style.display=mode==='background'?'none':'';state.style.display=mode==='background'?'none':'';height();for(const item of e.data.args?.ack||[]){if(item.name&&item.digest)await set('digest:'+item.name,item.digest)}if(initialized)return;initialized=true;
+ try{const h=await get('load-folder');if(h){button.textContent='更換／重新授權自動 Load 資料夾';await run(h)}}catch(e){state.textContent='無法讀取自動 Load 設定：'+e.message}
+});
+send('streamlit:componentReady',{apiVersion:1});height();
+</script></body></html>
