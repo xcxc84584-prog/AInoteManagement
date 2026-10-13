@@ -1043,7 +1043,7 @@ with st.sidebar:
                 st.query_params['area']=area
     except Exception:pass
 
-    st.caption('右鍵操作 · 拖曳移動 · F2 · Delete / Ctrl+D 刪除 · Ctrl+C/V/X')
+    st.caption('右鍵操作 · 拖曳移動 · F2 · Delete 刪除 · Ctrl+C/V/X · 文件操作→批量選取')
     explorer=components.declare_component('ainote_explorer',path=str(Path(__file__).parent/'components'/'explorer'))
     payload=[{'id':n['id'],'parent_id':n['parent_id'],'kind':n['kind'],'title':n['title'],'position':n['position'],'headings':[]} for n in active_notes if n['kind']!='TABLE']
     event=explorer(nodes=payload,selected=st.session_state.get('selected'),key='explorer_v11',default=None,height=385)
@@ -1138,6 +1138,29 @@ with st.sidebar:
             elif action=='import_child':
                 if target not in byid or byid[target]['kind'] not in CONTAINERS:raise ValueError('請選擇組別或子文件')
                 st.session_state.import_child_target=target
+            elif action=='batch_delete':
+                ids=event.get('ids') or []
+                if not isinstance(ids,list) or len(ids)>200 or not ids or len(set(ids))!=len(ids):raise ValueError('批量選取數量無效')
+                if any(x not in byid for x in ids):raise ValueError('部分選取文件不存在')
+                for x in ids:delete_note(x)
+            elif action=='batch_paste':
+                ids=event.get('ids') or []
+                dest=event.get('target');is_cut=bool(event.get('cut'))
+                if not isinstance(ids,list) or len(ids)>100 or not ids or len(set(ids))!=len(ids):raise ValueError('批量貼上數量無效')
+                if dest not in byid or byid[dest]['kind'] not in CONTAINERS:raise ValueError('目標必須為資料夾')
+                if any(x not in byid for x in ids):raise ValueError('來源不存在')
+                if any(any(x!=y and x in subtree(y,notes) for y in ids) for x in ids):raise ValueError('不能同時操作父節點與其子節點')
+                if is_cut:
+                    for x in ids:
+                        source=byid[x]
+                        if dest in subtree(x,notes):raise ValueError('不能移入自身子節點')
+                        if source['kind']=='GROUP' and source['parent_id'] is None:raise ValueError('根組別不支援剪下到其他組別')
+                        if get_ancestors(dest,byid)[-1]!=get_ancestors(x,byid)[-1]:raise ValueError('跨組別請使用複製')
+                    for x in ids:
+                        source=byid[x]
+                        if source['parent_id']!=dest:update_note(x,parent_id=dest,position=len(priority_siblings(dest))+1)
+                else:
+                    for x in ids:clone_note(x,dest)
             elif action=='delete' and nid in byid:delete_note(nid)
             elif action=='delete_forever' and nid in byid:
                 ids=list(subtree(nid,notes))
@@ -1514,21 +1537,47 @@ if st.session_state.get('main_page')=='📅 行程表':
             daily_templates=[];daily_checks=[]
             st.error('每日任務資料無法載入，請確認已完成 v4.1 資料表升級：'+str(exc))
         checked_ids={x['task_id'] for x in daily_checks if x.get('is_completed')}
-        for task in sorted(daily_templates,key=lambda x:(not bool(x.get('no_time')),x.get('task_time') or '',x.get('created_at') or '',x['id'])):
-            with st.container(border=True):
-                done=st.checkbox(task['title'],value=task['id'] in checked_ids,key='daily_check_'+daily_day+'_'+task['id'])
-                if done!=(task['id'] in checked_ids):
+        daily_order=sorted(daily_templates,key=lambda x:(not bool(x.get('no_time')),x.get('task_time') or '',x.get('created_at') or '',x['id']))
+        daily_payload=[{'id':x['id'],'title':x['title'],'details':x.get('details') or '',
+                        'day':daily_day,'clock':'無指定時間' if x.get('no_time') else str(x.get('task_time') or '09:00'),
+                        'completed':x['id'] in checked_ids,'tag':''} for x in daily_order]
+        daily_event=schedule_cards_component(cards=daily_payload,key='daily_compact_cards_v632',default=None)
+        if isinstance(daily_event,dict) and daily_event.get('nonce')!=st.session_state.get('_daily_card_event_nonce'):
+            st.session_state['_daily_card_event_nonce']=daily_event.get('nonce')
+            task=next((x for x in daily_templates if x['id']==daily_event.get('id')),None)
+            if task:
+                action=daily_event.get('action')
+                if action=='edit':
+                    st.session_state['daily_task_choice']=task['title']+' · '+task['id'][:8];st.rerun()
+                elif action=='delete':
+                    st.session_state['_daily_delete_target']=task['id'];st.rerun()
+                elif action=='complete':
+                    done=bool(daily_event.get('value'))
                     try:
                         old=next((x for x in daily_checks if x['task_id']==task['id']),None)
                         if old:c.table('daily_task_checks').update({'is_completed':done}).eq('id',old['id']).eq('owner_id',uid).execute()
                         else:c.table('daily_task_checks').insert({'owner_id':uid,'task_id':task['id'],'task_date':daily_day,'is_completed':done}).execute()
                         st.rerun()
                     except Exception as exc:st.error('儲存每日完成狀態失敗：'+str(exc))
-                st.caption('無指定時間' if task.get('no_time') else '時間：'+str(task.get('task_time') or '09:00'))
-                if task.get('details'):st.write(task['details'])
+        if st.session_state.get('_daily_delete_target'):
+            target=st.session_state['_daily_delete_target']
+            if any(x['id']==target for x in daily_templates):
+                st.warning('確定刪除此每日任務？')
+                dc1,dc2=st.columns(2)
+                if dc1.button('確認刪除每日任務',key='daily_delete_confirm_v632'):
+                    c.table('daily_task_checks').delete().eq('task_id',target).eq('owner_id',uid).execute()
+                    c.table('daily_tasks').delete().eq('id',target).eq('owner_id',uid).execute()
+                    st.session_state.pop('_daily_delete_target',None);st.rerun()
+                if dc2.button('取消刪除',key='daily_delete_cancel_v632'):
+                    st.session_state.pop('_daily_delete_target',None);st.rerun()
         with st.expander('⚙️ 每日任務設定／新增／編輯／刪除',expanded=False):
             choices={'＋ 新增每日任務':None,**{x['title']+' · '+x['id'][:8]:x for x in daily_templates}}
             choice=st.selectbox('選擇每日任務',list(choices),key='daily_task_choice')
+            target_edit=st.session_state.pop('_daily_edit_target',None)
+            if target_edit:
+                for option,item in choices.items():
+                    if item and item['id']==target_edit:
+                        choice=option;break
             editing_task=choices[choice]
             with st.form('daily_task_form_'+(editing_task['id'] if editing_task else 'new')):
                 task_title=st.text_input('任務標題',value=(editing_task or {}).get('title') or '',max_chars=200)
