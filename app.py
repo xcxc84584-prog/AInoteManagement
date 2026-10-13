@@ -1358,6 +1358,21 @@ if st.session_state.get('main_page')=='☁️ 雲端服務':
 if st.session_state.get('main_page')=='☁️ 雲端服務':
     st.header('☁️ 雲端服務')
     st.warning('請先備份。同步需要 Supabase 資料表與 Storage 的 RLS 權限。')
+    st.subheader('📅 行程表雲端同步')
+    schedule_replace=st.checkbox('完全覆蓋（不勾選則依 ID 合併；相同 ID 以較新修改時間為準）',value=False,key='schedule_cloud_replace')
+    st.caption('目前行程表資料表沒有 updated_at 欄位，暫以 created_at 比較；同時間而內容不同時保留目標版本並計入衝突。完全覆蓋將刪除目標端未包含的行程及每日任務。')
+    schedule_upload_col,schedule_download_col=st.columns(2)
+    with schedule_upload_col: schedule_upload=st.button('⬆ 上傳行程表',key='schedule_cloud_upload',use_container_width=True)
+    with schedule_download_col: schedule_download=st.button('⬇ 下載行程表',key='schedule_cloud_download',use_container_width=True)
+    if schedule_upload or schedule_download:
+        try:
+            if not cloud_client:raise RuntimeError('尚未連線 Supabase')
+            from schedule_cloud import transfer_schedule
+            result=transfer_schedule(cloud_client,local_db,uid,'upload' if schedule_upload else 'download',replace=schedule_replace,progress=sync_progress())
+            if schedule_download:mark_local_change()
+            st.success('行程表同步完成：'+str(result))
+        except Exception as exc:st.error('行程表同步失敗：'+str(exc))
+
     st.subheader('雲端 Explorer（只載入文件結構）')
     if st.button('查看當前在雲端的文件',key='cloud_list_refresh'):
         try:
