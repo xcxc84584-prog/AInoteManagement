@@ -390,6 +390,10 @@ def image_bytes(raw):
     return buf.getvalue(),'image/webp','webp'
 
 def upload_image(raw,note_id):
+    if note_id:
+        existing=c.table('notes').select('id').eq('owner_id',uid).eq('id',note_id).limit(1).execute().data or []
+        if not existing:
+            raise RuntimeError('HRC-ASSET-23503: 圖片所屬筆記不存在，請先儲存筆記（note_id='+str(note_id)+'）')
     data,mime,ext=image_bytes(raw)
     path=f'{uid}/{uuid.uuid4().hex}.{ext}'
     try:
