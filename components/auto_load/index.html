@@ -41,7 +41,7 @@ button.onclick=async()=>{
  if(!window.showDirectoryPicker){state.textContent='目前瀏覽器不支援資料夾讀取；請使用匯入功能';height();return}
  try{
   let handle=await get('load-folder');
-  if(!handle||button.textContent.includes('更換')){handle=await showDirectoryPicker({mode:'read'});await set('load-folder',handle)}
+  if(!handle||button.textContent.includes('更換')){handle=await showDirectoryPicker();await set('load-folder',handle)}
   else if(await handle.queryPermission({mode:'read'})!=='granted'){
    if(await handle.requestPermission({mode:'read'})!=='granted')return;
   }

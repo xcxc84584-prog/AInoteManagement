@@ -379,7 +379,7 @@ async function apply(im,urls){if(!im.isConnected)return;const ref=im.dataset.ref
 }
 function scan(root=document,urls=typeof assetUrls!=='undefined'?assetUrls:{}){if(root.matches?.('img'))apply(root,urls).catch(()=>{});root.querySelectorAll?.('img').forEach(im=>apply(im,urls).catch(()=>{}))}
 async function connectFolder(){if(!window.showDirectoryPicker){alert('此瀏覽器或嵌入式元件不支援本地資料夾授權。圖片仍會自動儲存在 IndexedDB。');return}
- try{directory=await showDirectoryPicker({mode:'readwrite',id:'bv-text-images'});await dbWrite('settings','directory',directory);await syncFolder();alert('資料夾已授權；之後成功取得的新圖片與 SVG 會自動存入。')}catch(e){if(e.name!=='AbortError')alert('無法授權資料夾：'+e.message)}
+ try{directory=await showDirectoryPicker({id:'bv-text-images'});await dbWrite('settings','directory',directory);await syncFolder();alert('資料夾已授權；之後成功取得的新圖片與 SVG 會自動存入。')}catch(e){if(e.name!=='AbortError')alert('無法授權資料夾：'+e.message)}
 }
 async function syncFolder(){if(!directory)return;const d=await openDB();const all=await new Promise((ok,no)=>{const r=d.transaction(STORE).objectStore(STORE).getAll();r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error);r.transaction.oncomplete=()=>d.close()});for(const item of all){try{await saveFolder(item.key,item.blob)}catch{}}}
 async function restoreFolder(){try{const saved=await dbRead('settings','directory');if(!saved)return;const status=await saved.queryPermission({mode:'readwrite'});if(status==='granted'){directory=saved;await syncFolder()}}catch{}}

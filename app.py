@@ -952,12 +952,6 @@ def v431_change_page():
         st.session_state['main_page']='📝 筆記工作區'
 
 
-if st.session_state.get('_bv_sidebar_hidden'):
-    st.markdown('<style>[data-testid="stSidebar"]{display:none!important}[data-testid="stSidebarCollapsedControl"]{display:flex!important}</style>',unsafe_allow_html=True)
-if st.session_state.get('_bv_sidebar_hidden'):
-    if st.button('☰ OpenSidebar',key='bv_sidebar_open'):
-        st.session_state['_bv_sidebar_hidden']=False
-        st.rerun()
 with st.sidebar:
     st.title('📚 BV-Text')
     with st.popover('☰ 功能選單',width='stretch'):
@@ -1009,7 +1003,7 @@ with st.sidebar:
             nav_history.append(st.session_state['_nav_last'])
             if len(nav_history)>50:del nav_history[:-50]
         st.session_state['_nav_last']=nav_now
-    heading_col,previous_col,close_sidebar_col=st.columns([3,2,2],vertical_alignment='center')
+    heading_col,previous_col=st.columns([3,2],vertical_alignment='center')
     with heading_col:st.subheader('EXPLORER')
     with previous_col:
         if st.button('← Previous',disabled=not bool(nav_history),key='nav_previous'):
@@ -1019,10 +1013,6 @@ with st.sidebar:
                 if value is None:st.session_state.pop(field,None)
                 else:st.session_state[field]=value
             st.session_state['_nav_last']=previous
-            st.rerun()
-    with close_sidebar_col:
-        if st.button('CloseSidebar',key='nav_close_sidebar',help='收合左側功能欄（手機適用）',width='stretch'):
-            st.session_state['_bv_sidebar_hidden']=True
             st.rerun()
     # Keep last active document and workspace mode in the URL across browser refreshes.
     try:
@@ -1054,6 +1044,7 @@ with st.sidebar:
             op_progress=operation_progress('檔案操作') if action not in ('select','quick_nav','import_child') else None
             if op_progress:op_progress(15,'正在處理 '+str(action))
             if action in ('select','full_edit','full_read','quick_nav','toc_nav','toc_edit_nav','toc_browse_nav') and nid in byid:
+                st.session_state['main_page']='📝 筆記工作區'
                 # Every Explorer navigation commits the current focused draft, even
                 # when navigating to the same node or changing reading mode.
                 v431_commit_focus_before_navigation()
