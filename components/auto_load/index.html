@@ -1,5 +1,5 @@
-<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>body{margin:0;font:13px system-ui;color:#dbe4f0}button{border:1px solid #60738d;border-radius:6px;padding:8px;background:#22364d;color:white}#state{margin:7px 0;color:#aab9c9;overflow-wrap:anywhere}</style></head><body><button id="pick">選擇／重新授權自動 Load 資料夾</button><div id="state">尚未選擇自動 Load 路徑</div><script>
-const button=document.getElementById('pick'),state=document.getElementById('state');let running=false,initialized=false;
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>body{margin:0;font:13px system-ui;color:#dbe4f0}button{border:1px solid #60738d;border-radius:6px;padding:8px;background:#22364d;color:white}#state{margin:7px 0;color:#aab9c9;overflow-wrap:anywhere}</style></head><body><label id="toggleWrap" style="display:block;margin:4px 0"><input type="checkbox" id="autoEnabled" checked> 重新整理後自動載入文件至 Explorer</label><button id="pick">選擇／重新授權自動 Load 資料夾</button><div id="state">尚未選擇自動 Load 路徑</div><script>
+const button=document.getElementById('pick'),state=document.getElementById('state'),toggle=document.getElementById('autoEnabled'),toggleWrap=document.getElementById('toggleWrap');let running=false,initialized=false;
 function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')}
 function height(){send('streamlit:setFrameHeight',{height:document.body.scrollHeight+12})}
 function db(){return new Promise((ok,no)=>{const r=indexedDB.open('bv-auto-load-settings-v630',1);r.onupgradeneeded=()=>r.result.createObjectStore('settings');r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)})}
@@ -36,6 +36,7 @@ async function run(handle){
   }else state.textContent='自動 Load：'+handle.name+'（沒有新檔案）';
  }catch(e){state.textContent='自動載入失敗：'+e.message}finally{running=false;height()}
 }
+toggle.onchange=async()=>{await set('enabled',toggle.checked);state.textContent=toggle.checked?'已啟用自動載入':'已停用自動載入';height()};
 button.onclick=async()=>{
  if(!window.showDirectoryPicker){state.textContent='目前瀏覽器不支援資料夾讀取；請使用匯入功能';height();return}
  try{
@@ -48,8 +49,8 @@ button.onclick=async()=>{
  }catch(e){if(e.name!=='AbortError')state.textContent='授權失敗：'+e.message}height()
 };
 window.addEventListener('message',async e=>{
- if(e.data?.type!=='streamlit:render')return;const mode=e.data.args?.mode||'settings';button.style.display=mode==='background'?'none':'';state.style.display=mode==='background'?'none':'';height();for(const item of e.data.args?.ack||[]){if(item.name&&item.digest)await set('digest:'+item.name,item.digest)}if(initialized)return;initialized=true;
- try{const h=await get('load-folder');if(h){button.textContent='更換／重新授權自動 Load 資料夾';await run(h)}}catch(e){state.textContent='無法讀取自動 Load 設定：'+e.message}
+ if(e.data?.type!=='streamlit:render')return;const mode=e.data.args?.mode||'settings';button.style.display=mode==='background'?'none':'';state.style.display=mode==='background'?'none':'';toggleWrap.style.display=mode==='background'?'none':'block';height();for(const item of e.data.args?.ack||[]){if(item.name&&item.digest)await set('digest:'+item.name,item.digest)}if(initialized)return;initialized=true;
+ try{const enabled=(await get('enabled'))!==false;toggle.checked=enabled;const h=await get('load-folder');if(h){button.textContent='更換／重新授權自動 Load 資料夾';if(enabled)await run(h)}else if(!enabled)state.textContent='已停用自動載入'}catch(e){state.textContent='無法讀取自動 Load 設定：'+e.message}
 });
 send('streamlit:componentReady',{apiVersion:1});height();
 </script></body></html>

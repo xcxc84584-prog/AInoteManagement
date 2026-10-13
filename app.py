@@ -39,6 +39,7 @@ composite_reader_component=components.declare_component('bv_composite_reader',pa
 reader_paste_component=components.declare_component('bv_reader_paste',path=str(Path(__file__).parent/'components'/'reader_paste'))
 rich_paste_component=components.declare_component('bv_rich_paste',path=str(Path(__file__).parent/'components'/'rich_paste'))
 schedule_calendar_component=components.declare_component('bv_schedule_calendar',path=str(Path(__file__).parent/'components'/'schedule_calendar'))
+schedule_cards_component=components.declare_component('bv_schedule_cards_v631',path=str(Path(__file__).parent/'components'/'schedule_cards'))
 section_scroll_component=components.declare_component('bv_section_scroll',path=str(Path(__file__).parent/'components'/'section_scroll'))
 
 def config(key):
@@ -774,7 +775,7 @@ children_index=defaultdict(list)
 for _node in active_notes:children_index[_node.get('parent_id')].append(_node)
 for _siblings in children_index.values():_siblings.sort(key=lambda x:(x.get('position',0),x.get('created_at') or ''))
 # Background autoload mounts on every workspace page, not only the Settings screen.
-_auto_event=auto_load_component(mode='background',ack=st.session_state.get('_auto_load_ack',[]),key='auto_load_background_v630',default=None)
+_auto_event=auto_load_component(mode='background',ack=st.session_state.get('_auto_load_ack',[]),key='auto_load_background_v631',default=None)
 if isinstance(_auto_event,dict) and _auto_event.get('nonce')!=st.session_state.get('_auto_load_nonce'):
     st.session_state['_auto_load_nonce']=_auto_event.get('nonce')
     if _auto_event.get('action')=='batch':
@@ -1591,28 +1592,37 @@ if st.session_state.get('main_page')=='📅 行程表':
             return (abs((moment-now_tw).total_seconds()),0 if not item.get('scheduled_at') else 1,day.isoformat(),item.get('created_at') or '',item['id'])
         today_cards=sorted(cards,key=upcoming_sort_key)
         st.caption(f'所有日期共 {len(today_cards)} 張，依與現在時間的距離排序，顯示 {min(len(today_cards),int(top_n))} 張；無時間者視為當天 00:00')
-        with st.container(height=410,border=True):
-            for item in today_cards[:int(top_n)]:
-                with st.container(border=True):
-                    st.markdown('**'+item['title'].replace('*',r'\*')+'**')
-                    st.caption('日期：'+str(item.get('schedule_date') or '')+' · 排定時間：'+parse_card_clock(item))
-                    if item.get('batch_tag'):st.caption('批量標籤：'+item['batch_tag'])
-                    completed=st.checkbox('已完成',value=bool(item.get('is_completed')),key='schedule_completed_'+item['id'])
-                    if completed!=bool(item.get('is_completed')):
-                        try:
-                            c.table('schedule_cards').update({'is_completed':completed}).eq('id',item['id']).eq('owner_id',uid).execute()
-                            st.rerun()
-                        except Exception as exc:st.error('更新狀態失敗：'+str(exc))
-                    if item.get('details'):st.write(item['details'])
-                    if st.button('✏️ 編輯',key='schedule_edit_'+item['id']):
-                        st.session_state.schedule_edit_id=item['id']
+        schedule_card_payload=[{'id':item['id'],'title':item['title'],'details':item.get('details') or '',
+                                'day':str(item.get('schedule_date') or ''),'clock':parse_card_clock(item),
+                                'completed':bool(item.get('is_completed')),'tag':item.get('batch_tag') or ''}
+                               for item in today_cards[:int(top_n)]]
+        card_event=schedule_cards_component(cards=schedule_card_payload,key='schedule_compact_cards_v631',default=None)
+        if isinstance(card_event,dict) and card_event.get('nonce')!=st.session_state.get('_schedule_card_event_nonce'):
+            st.session_state['_schedule_card_event_nonce']=card_event.get('nonce')
+            target=next((item for item in cards if item['id']==card_event.get('id')),None)
+            if target:
+                action=card_event.get('action')
+                if action=='edit':
+                    st.session_state.schedule_edit_id=target['id'];st.rerun()
+                elif action=='complete':
+                    try:
+                        c.table('schedule_cards').update({'is_completed':bool(card_event.get('value'))}).eq('id',target['id']).eq('owner_id',uid).execute()
                         st.rerun()
-                    if st.button('刪除',key='schedule_delete_'+item['id']):
-                        try:
-                            c.table('schedule_cards').delete().eq('id',item['id']).eq('owner_id',uid).execute()
-                            st.rerun()
-                        except Exception as exc:st.error('刪除失敗：'+str(exc))
-            if not today_cards:st.info('尚無行程卡。')
+                    except Exception as exc:st.error('更新狀態失敗：'+str(exc))
+                elif action=='delete':
+                    st.session_state['_schedule_delete_pending']=target['id'];st.rerun()
+        pending_delete=st.session_state.get('_schedule_delete_pending')
+        if pending_delete and any(x['id']==pending_delete for x in cards):
+            with st.container(border=True):
+                st.warning('確定刪除此行程卡？')
+                dc1,dc2=st.columns(2)
+                if dc1.button('確認刪除',key='schedule_delete_confirm_v631'):
+                    try:
+                        c.table('schedule_cards').delete().eq('id',pending_delete).eq('owner_id',uid).execute()
+                        st.session_state.pop('_schedule_delete_pending',None);st.rerun()
+                    except Exception as exc:st.error('刪除失敗：'+str(exc))
+                if dc2.button('取消',key='schedule_delete_cancel_v631'):
+                    st.session_state.pop('_schedule_delete_pending',None);st.rerun()
         with st.expander('＋ 建立新行程',expanded=False):
             with st.form('schedule_create',clear_on_submit=True):
                 title=st.text_input('標題',max_chars=200)
@@ -1676,8 +1686,8 @@ if st.session_state.get('main_page')=='⚙️ 設定':
         local_component(mode='settings',key='local_save_settings_v1',default=None)
     with st.container():
         st.markdown('#### 自動 Load 路徑（與儲存路徑分開）')
-        st.caption('選擇包含 .ainote、.zip、.md、.txt 或 .bvcalendar.json 的本機資料夾。重新開啟時，瀏覽器若保留讀取權限便自動載入有變動的檔案；否則請點「重新授權並載入」。僅匯入，不覆蓋原文件。')
-        auto_load_component(mode='settings',key='auto_load_settings_v630',default=None)
+        st.caption('可在下方關閉自動載入。啟用後重新整理頁面會掃描指定資料夾中的 FOLD 備份、文件與行程表；需保留瀏覽器資料夾讀取權限。')
+        auto_load_component(mode='settings',key='auto_load_settings_v631',default=None)
         if st.session_state.get('_auto_load_report'):
             st.caption('最近一次自動載入：')
             for report in st.session_state['_auto_load_report'][:30]:st.caption(report)
@@ -1841,101 +1851,12 @@ def save_composite_event(note_id,event):
 
 
 def reader_operation(note,event):
-    if not isinstance(event,dict) or event.get('action') not in ('toc','untoc','split','unsplit'):return
-    nonce_key='_reader_nonce_'+note['id']
-    if event.get('nonce')==st.session_state.get(nonce_key):return
-    st.session_state[nonce_key]=event.get('nonce')
-    content=note.get('content') or ''
-    if event['action']=='insert_image':
-        st.session_state['_reader_insert_image_'+note['id']]=str(event.get('selection') or '')
-        st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{})
-        st.rerun()
-        return
-    if event['action']=='unsplit':
-        meta=split_meta(content)
-        if not meta:
-            st.error('此文件沒有可還原的分割紀錄');return
-        role,upper_id,lower_id,original_name=meta
-        siblings=priority_siblings(note['parent_id'])
-        lookup={n['id']:n for n in siblings}
-        upper=lookup.get(upper_id);lower=lookup.get(lower_id)
-        if not upper or not lower or split_meta(upper.get('content'))!=meta[:0]+('upper',upper_id,lower_id,original_name) or split_meta(lower.get('content'))!=('lower',upper_id,lower_id,original_name):
-            st.error('分割的兩份文件已移動或關聯資料不一致，無法安全還原');return
-        ids=[n['id'] for n in siblings]
-        if ids.index(lower_id)!=ids.index(upper_id)+1:
-            st.error('兩份文件不再相鄰，請先恢復原順序');return
-        merged=SPLIT_META_RE.sub('',upper['content'])+SPLIT_META_RE.sub('',lower['content'])
-        update_note(upper_id,title=original_name,content=merged)
-        delete_note(lower_id)
-        apply_priority_order(note['parent_id'],[i for i in ids if i!=lower_id])
-        st.success('已還原分割');st.rerun()
-        return
-    index=selected_source_line(content,event.get('selection'))
-    if index is None:
-        st.error('無法唯一定位選取文字所在的原始行，請選取該行較長且唯一的文字');return
-    lines=content.splitlines(keepends=True)
-    if event['action']=='toc':
-        st.warning('v6.1 目錄已改由瀏覽器 IndexedDB 管理，不會修改 Markdown');return
-        selected=str(event.get('selection') or '').strip()
-        if not selected or '\\n' in selected or '\\r' in selected:
-            st.error('請選取同一行內的文字');return
-        original=lines[index]
-        if selected not in original:
-            st.error('選取內容與編輯文本不一致');return
-        if re.search(r'//\[[^\]\n]+\]//',original):
-            st.error('該行已包含目錄標記，請先取消');return
-        # Preserve surrounding text and mark ONLY the selected substring.
-        pos=original.index(selected)
-        lines[index]=original[:pos]+'//['+selected+']//'+original[pos+len(selected):]
-        if re.match(r'^\s*#{1,6}\s+',lines[index]):
-            lines[index]=re.sub(r'^\s*#{1,6}\s+','',lines[index],count=1)
-        updated=''.join(lines)
-        update_note(note['id'],content=updated)
-        st.session_state['block_content_'+note['id']]=updated
-        st.session_state['v43_draft_'+note['id']]=updated
-        st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{})
-        st.rerun()
-    elif event['action']=='untoc':
-        st.warning('v6.1 請從本地目錄列表刪除');return
-        original=lines[index]
-        matches=list(re.finditer(r'//\[([^\]\n]+)\]//',original))
-        selected=str(event.get('selection') or '').strip()
-        matching=[m for m in matches if selected in m.group(1) or m.group(1) in selected]
-        if len(matching)!=1:
-            st.error('無法唯一找到選取的目錄');return
-        m=matching[0]
-        lines[index]=original[:m.start()]+m.group(1)+original[m.end():]
-        updated=''.join(lines)
-        update_note(note['id'],content=updated)
-        st.session_state['block_content_'+note['id']]=updated
-        st.session_state['v43_draft_'+note['id']]=updated
-        st.session_state['_reader_restore_'+note['id']]=event.get('anchor',{})
-        st.rerun()
-    else:
-        if split_meta(content):st.error('此文件已有未還原的分割紀錄，請先還原');return
-        upper=''.join(lines[:index+1]);lower=''.join(lines[index+1:])
-        if not upper.strip() or not lower.strip():st.error('分割位置下方沒有內容');return
-        import base64
-        siblings=priority_siblings(note['parent_id']);ids=[x['id'] for x in siblings]
-        if note['id'] not in ids:raise ValueError('找不到原文件優先權')
-        base=note['title'];encoded=base64.urlsafe_b64encode(base.encode()).decode().rstrip('=')
-        created=None
-        try:
-            created=insert_note('COMPOSITE',base+'-2',note['parent_id'],content=lower,position=len(ids)+1)
-            suffix=f':{note["id"]}:{created["id"]}:{encoded} -->\n'
-            update_note(note['id'],title=(base+'-1')[:200],content='<!-- bv-split:upper'+suffix+upper)
-            update_note(created['id'],content='<!-- bv-split:lower'+suffix+lower)
-            ids.insert(ids.index(note['id'])+1,created['id']);apply_priority_order(note['parent_id'],ids)
-        except Exception:
-            if created:
-                try:c.table('notes').delete().eq('id',created['id']).eq('owner_id',uid).execute()
-                except Exception:pass
-            raise
-        st.success('分割完成：'+base+'-1、'+base+'-2');st.rerun()
+    # TOC entries are maintained by the reader's IndexedDB; no server-side split actions.
+    return
 
 def show_composite_reader(note):
     content=note.get('content') or ''
-    event=composite_reader_component(documentId=note['id'],content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',splitUndo=bool(split_meta(content)),tocTargetId=st.session_state.pop('_composite_browse_target_'+note['id'],None),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
+    event=composite_reader_component(documentId=note['id'],content=content,assetUrls=composite_asset_urls(content),revision=note.get('updated_at') or '',tocTargetId=st.session_state.pop('_composite_browse_target_'+note['id'],None),restore=st.session_state.get('_reader_restore_'+note['id']),key='reader_'+note['id'],default=None)
     reader_operation(note,event)
 
 read_id=st.session_state.get('full_read_id')
