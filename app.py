@@ -945,7 +945,12 @@ def v43_new_file_dialog(parent_id):
     st.caption('請選擇文件類型')
     choice=st.radio('文件類型',['圖文文件','圖片','手寫稿'],horizontal=True)
     title=st.text_input('文件名稱',value='新'+choice)
-    if st.button('建立',type='primary',use_container_width=True):
+    create_col,cancel_col=st.columns(2)
+    if cancel_col.button('取消',key='cancel_new_file_dialog',use_container_width=True):
+        st.session_state.pop('new_file_parent',None)
+        st.session_state.pop('_new_file_dialog_open',None)
+        st.rerun()
+    if create_col.button('建立',type='primary',key='confirm_new_file_dialog',use_container_width=True):
         kind={'圖文文件':'COMPOSITE','圖片':'GRAPH','手寫稿':'HANDWRITE'}[choice]
         if kind=='HANDWRITE':
             st.session_state.pending_handwrite={'title':title.strip(),'parent':parent_id,'after':None}
@@ -1002,7 +1007,6 @@ def explorer_functions_dialog():
         st.rerun()
 
 with st.sidebar:
-    st.title('📚 BV-Text')
     st.subheader('EXPLORER')
     # Keep last active document and workspace mode in the URL across browser refreshes.
     try:
@@ -1213,8 +1217,10 @@ with st.sidebar:
 # v4.6: modal ROOT backup; Explorer removal only after confirmed local save.
 if st.session_state.get('_explorer_show_functions_dialog'):
     explorer_functions_dialog()
-if st.session_state.get('_new_file_dialog_open'):
-    v43_new_file_dialog(st.session_state.get('new_file_parent'))
+if st.session_state.pop('_new_file_dialog_open',False):
+    # Consume the one-shot request before opening: dismissing the modal by X,
+    # Escape, or clicking outside must never reopen it on a later rerun.
+    v43_new_file_dialog(st.session_state.pop('new_file_parent',None))
 
 @st.dialog('保存並關閉 ROOT',width='large')
 def v46_close_root_dialog(root_id):
