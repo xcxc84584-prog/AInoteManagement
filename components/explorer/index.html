@@ -31,6 +31,7 @@ function act(action,id){const n=get(id);if(!n)return;
 
  if(action==='full_edit')return send('full_edit',{id});
  if(action==='full_read')return send('full_read',{id});
+ if(action==='localize')return send('localize',{id});
  if(action==='cloudify')return send('cloudify',{id});
  if(action==='workspace_save')return send('workspace_save',{id});
  if(action==='workspace_close')return send('workspace_close',{id});
@@ -51,8 +52,8 @@ function showMenu(e,n,group=null){
  const m=document.getElementById('menu');m.replaceChildren();
  let actions;
  if(group==='new')actions=[['圖文文件','COMPOSITE'],['圖片','GRAPH'],['手寫稿','HANDWRITE']];
- else if(group==='ops')actions=[['批量選取','batch_select'],['節點優先權','priority'],['複製','copy'],['批量貼上','batch_paste'],['剪下','cut'],['移動','move'],['貼上','paste'],['永久刪除','delete_forever'],['移動回收桶','delete'],['雲端化','cloudify']];
- else actions=[['開啟','select'],['完全單一編輯','full_edit'],['完全單一閱讀','full_read'],['新增文件 ▸','new_file_dialog'],['文件操作 ▸','ops_menu'],['重新命名','rename'],['快速定位','quick_nav'],['雲端化','cloudify'],['儲存增量更新','workspace_save'],['關閉','workspace_close']];
+ else if(group==='ops')actions=[['批量選取','batch_select'],['節點優先權','priority'],['複製','copy'],['批量貼上','batch_paste'],['剪下','cut'],['移動','move'],['貼上','paste'],['永久刪除','delete_forever'],['移動回收桶','delete'],['雲端化','cloudify'],['本地化','localize']];
+ else actions=[['開啟','select'],['完全單一編輯','full_edit'],['完全單一閱讀','full_read'],['新增文件 ▸','new_file_dialog'],['文件操作 ▸','ops_menu'],['重新命名','rename'],['快速定位','quick_nav'],['雲端化','cloudify'],['本地化','localize'],['儲存增量更新','workspace_save'],['關閉','workspace_close']];
  for(const [label,action] of actions){
   const d=document.createElement('div');d.className='option';d.textContent=label;
   d.onclick=()=>{m.style.display='none';if(action==='ops_menu')return showMenu(e,n,'ops');act(action,n.id)};

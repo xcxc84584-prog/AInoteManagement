@@ -1050,6 +1050,12 @@ def explorer_functions_dialog():
             st.rerun()
         except Exception as exc:st.error('匯入失敗：'+str(exc))
     if selected:
+        if st.button('📂 本地化目前選取文件',key='dialog_localize_selected',width='stretch'):
+            try:
+                from local_repository import repository,transfer
+                target=repository(st.session_state,STORAGE_MODE,db_root,uid)
+                st.success('本地化完成：'+str(transfer(local_db,target,uid,selected['id'])))
+            except Exception as exc:st.error('本地化失敗：'+str(exc))
         if st.button('☁️ 雲端化目前選取文件',key='dialog_cloudify_selected',width='stretch'):
             try:
                 from manual_sync import push_selected_to_cloud
@@ -1122,6 +1128,11 @@ with st.sidebar:
             if action=='open_functions':
                 st.session_state['_explorer_show_functions_dialog']=True
                 st.rerun()
+            if action=='localize' and nid in byid:
+                from local_repository import repository,transfer
+                target=repository(st.session_state,STORAGE_MODE,db_root,uid)
+                result=transfer(local_db,target,uid,nid)
+                st.session_state['operation_notice']='本地化完成：'+str(result)
             if action=='cloudify' and nid in byid:
                 from manual_sync import push_selected_to_cloud
                 if not cloud_client:raise RuntimeError('尚未連線雲端，請先設定 Supabase')
@@ -2046,39 +2057,54 @@ if st.session_state.get('main_page')=='💾 本地服務':
             local_component(mode='settings',key='local_service_folder_permission',default=None)
             auto_load_component(mode='settings',key='local_service_autoload',default=None)
             for report in st.session_state.get('_auto_load_report',[])[:10]:st.caption(str(report))
-    st.subheader('🗂️ 本地 Explorer 預覽')
-    if st.button('重新整理文件結構',key='local_service_refresh'):
-        progress=sync_progress()
-        progress(0.2,'正在讀取本地文件…')
-        st.session_state['_local_service_tree']=tree(local_db.export_snapshot(uid)['notes'])
-        progress(1,'本地文件清單已更新')
-    st.code(st.session_state.get('_local_service_tree','點擊「重新整理文件結構」以查看本地文件。'),language=None)
-    st.subheader('📦 文件備份與還原')
-    scope=st.selectbox('資料範圍',['all','notes','schedule'],format_func=lambda x:{'all':'全部資料','notes':'文件與圖片','schedule':'行程表與每日任務'}[x],key='local_service_scope')
-    replace=st.checkbox('完全覆蓋（未勾選則按 UUID/ID 合併，時間較新的資料優先）',key='local_service_replace',value=False)
-    progress=sync_progress()
-    progress(0.2,'正在準備本地備份…')
-    try:
-        local_bytes=pack(local_db,uid,scope)
-        progress(1,'備份已準備完成')
-        st.download_button('⬇ 下載本地'+{'all':'完整備份','notes':'文件','schedule':'行程表'}[scope],data=local_bytes,file_name='BV-Text_'+scope+'.zip',mime='application/zip',key='local_service_download',use_container_width=True)
-    except Exception as exc:st.error('備份準備失敗：'+str(exc))
-    uploaded=st.file_uploader('⬆ 上傳本地備份（BV-Text ZIP）',type=['zip'],key='local_service_upload')
-    if uploaded is not None:
-        st.warning('匯入前請先下載一份完整備份。完全覆蓋會移除目標範圍內未包含的資料。')
-        confirm=st.checkbox('我已確認匯入範圍與覆蓋方式',key='local_service_confirm')
-        if st.button('開始匯入',disabled=not confirm,key='local_service_restore',type='primary'):
-            bar=sync_progress()
+    from local_repository import repository,transfer
+    repo=repository(st.session_state,STORAGE_MODE,db_root,uid)
+    st.subheader('🗂️ Explorer-Local（獨立資料庫）')
+    st.caption('此區與工作區完全獨立。只有按下上傳或下載才會傳輸文件，不會自動同步。')
+    if STORAGE_MODE!='sqlite':
+        st.warning('瀏覽器模式目前的獨立庫僅保留於伺服器工作階段，重新啟動或工作階段結束後可能遺失。請下載備份；此處不是裝置端的永久資料夾。')
+    local_rows=repo.export_snapshot(uid)['notes']
+    st.code(tree(local_rows),language=None)
+    available=[r for r in local_rows if not r.get('is_deleted')]
+    if available:
+        names={str(r['id']):str(r.get('title') or '未命名')+' ('+str(r.get('kind'))+')' for r in available}
+        chosen=st.selectbox('Explorer-Local 文件',list(names),format_func=lambda x:names[x],key='local_repo_selected')
+        with st.expander('預覽選取文件',expanded=True):
+            item=next(r for r in available if str(r['id'])==chosen)
+            st.caption('類型：'+str(item.get('kind')))
+            st.text_area('內容（唯讀）',value=str(item.get('content') or ''),height=180,disabled=True,key='local_repo_preview')
+        if st.button('⬇ 從 Explorer-Local 下載至工作區',key='local_repo_pull',width='stretch'):
             try:
-                bar(0.15,'正在檢查備份檔案…')
-                result=restore(local_db,uid,uploaded.getvalue(),scope,replace)
-                bar(0.9,'正在更新工作區…')
+                result=transfer(repo,local_db,uid,chosen)
                 mark_local_change()
-                st.session_state.pop('_local_service_tree',None)
-                bar(1,'本地匯入完成')
-                st.success('匯入完成：'+str(result))
-            except Exception as exc:st.error('匯入失敗：'+str(exc))
-    st.caption('行程表操作：選擇「行程表與每日任務」，下載為匯出，上傳並確認為匯入。')
+                st.success('下載完成：'+str(result))
+                st.rerun()
+            except Exception as exc:st.error('下載失敗：'+str(exc))
+    active_workspace=[r for r in local_db.export_snapshot(uid)['notes'] if not r.get('is_deleted')]
+    if active_workspace:
+        wnames={str(r['id']):str(r.get('title') or '未命名') for r in active_workspace}
+        wid=st.selectbox('工作區文件',list(wnames),format_func=lambda x:wnames[x],key='local_repo_upload_id')
+        if st.button('⬆ 上傳單一文件至 Explorer-Local',key='local_repo_push',width='stretch'):
+            try:
+                st.success('上傳完成：'+str(transfer(local_db,repo,uid,wid)))
+                st.rerun()
+            except Exception as exc:st.error('上傳失敗：'+str(exc))
+    st.subheader('📦 獨立本地庫備份及行程表上下傳')
+    scope=st.selectbox('資料範圍',['all','notes','schedule'],format_func=lambda x:{'all':'全部資料','notes':'文件與圖片','schedule':'行程表與每日任務'}[x],key='local_service_scope')
+    replace=st.checkbox('完全覆蓋目標資料',key='local_service_replace',value=False)
+    st.download_button('⬇ 匯出 Explorer-Local ZIP',data=pack(repo,uid,scope),file_name='BV-Text-Explorer-Local-'+scope+'.zip',mime='application/zip',key='local_repo_export')
+    uploaded=st.file_uploader('匯入 ZIP 至 Explorer-Local',type=['zip'],key='local_service_upload')
+    if uploaded and st.button('匯入 Explorer-Local',key='local_repo_import'):
+        try:st.success(str(restore(repo,uid,uploaded.getvalue(),scope,replace)));st.rerun()
+        except Exception as exc:st.error(str(exc))
+    if scope=='schedule':
+        a,b=st.columns(2)
+        if a.button('⬆ 工作區行程表上傳',key='local_schedule_push'):
+            try:st.success(str(restore(repo,uid,pack(local_db,uid,'schedule'),'schedule',replace)))
+            except Exception as exc:st.error(str(exc))
+        if b.button('⬇ 本地庫行程表下載',key='local_schedule_pull'):
+            try:st.success(str(restore(local_db,uid,pack(repo,uid,'schedule'),'schedule',replace)));mark_local_change()
+            except Exception as exc:st.error(str(exc))
     with st.container():
         st.markdown('#### 帳號註銷')
         st.warning('此操作不可復原：永久刪除帳號、筆記、資料夾、圖片與附件。請先下載 .ainote 備份。')
