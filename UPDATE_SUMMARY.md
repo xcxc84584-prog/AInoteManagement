@@ -1495,3 +1495,7 @@ Note: Existing stored duplicate math text may need source-level correction; this
 - 修正 Supabase note-images bucket 缺少 image/svg+xml 白名單造成的 HTTP 415。
 - 更新新專案 SQL schema，並新增既有專案 migration `sql/migrations/20261014_allow_svg_storage.sql`。
 - 既有 Supabase 專案需由管理者在 SQL Editor 執行 migration；部署 Python 程式本身不會變更 bucket 設定。
+
+## v6.25.7 — Storage RLS migration
+- Added `sql/migrations/20261014_storage_rls_fix.sql` to provide authenticated user-scoped SELECT, INSERT, UPDATE and DELETE policies for private `note-images` storage.
+- Existing deployments must run the migration in Supabase SQL Editor. Missing SVG objects are not restored by this policy change.
