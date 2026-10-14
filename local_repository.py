@@ -66,3 +66,20 @@ def delete_subtree(db,owner,nid):
             for path in removed_paths:
                 db.conn.execute('DELETE FROM media WHERE path=?',(path,))
     return {'files':len(ids),'assets':len(removed_assets)}
+
+
+def delete_subtree(db,owner,nid):
+    """Permanently remove a selected local node and descendants, not workspace data."""
+    snapshot=db.export_snapshot(owner)
+    ids=selected_ids(snapshot['notes'],nid)
+    removed_assets=[a for a in snapshot['assets'] if str(a.get('note_id')) in ids]
+    with db.lock,db.conn:
+        for ident in ids:
+            db.conn.execute('DELETE FROM assets WHERE owner_id=? AND note_id=?',(owner,ident))
+            db.conn.execute('DELETE FROM notes WHERE owner_id=? AND id=?',(owner,ident))
+        remaining={r[0] for r in db.conn.execute('SELECT storage_path FROM assets')}
+        for a in removed_assets:
+            path=a.get('storage_path')
+            if path and path not in remaining:
+                db.conn.execute('DELETE FROM media WHERE path=?',(path,))
+    return {'files':len(ids),'assets':len(removed_assets)}

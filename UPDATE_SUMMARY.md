@@ -1479,3 +1479,8 @@ BV-Text v5.0.7: mobile math recovery in editor and reader. Restores TeX-looking 
 - Limit delimiter-less TeX recovery to standalone formula lines.
 
 Note: Existing stored duplicate math text may need source-level correction; this patch does not silently erase saved content. Device testing has not been performed.
+
+
+## v6.25.4
+- 修復 Local Explorer 刪除時缺少 delete_subtree 匯出導致整頁 ImportError。
+- 刪除選取文件及其子樹，清理無引用的本地附件，其他工作區不受影響。
