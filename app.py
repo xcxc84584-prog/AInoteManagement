@@ -2064,11 +2064,36 @@ if st.session_state.get('main_page')=='💾 本地服務':
     if STORAGE_MODE!='sqlite':
         st.warning('瀏覽器模式目前的獨立庫僅保留於伺服器工作階段，重新啟動或工作階段結束後可能遺失。請下載備份；此處不是裝置端的永久資料夾。')
     local_rows=repo.export_snapshot(uid)['notes']
-    st.code(tree(local_rows),language=None)
     available=[r for r in local_rows if not r.get('is_deleted')]
     if available:
         names={str(r['id']):str(r.get('title') or '未命名')+' ('+str(r.get('kind'))+')' for r in available}
-        chosen=st.selectbox('Explorer-Local 文件',list(names),format_func=lambda x:names[x],key='local_repo_selected')
+        st.markdown('##### Explorer-Local 文件樹（點擊選取）')
+        by_local_id={str(r['id']):r for r in available}
+        local_children={}
+        for local_item in available:
+            local_parent=str(local_item.get('parent_id') or '')
+            local_children.setdefault(local_parent if local_parent in by_local_id else '',[]).append(local_item)
+        for local_group in local_children.values():
+            local_group.sort(key=lambda r:(r.get('position') or 0,str(r.get('title') or '')))
+        local_tree_order=[]
+        def walk_local(parent='',depth=0,visited=None):
+            visited=set() if visited is None else visited
+            for entry in local_children.get(parent,[]):
+                entry_id=str(entry['id'])
+                if entry_id in visited:continue
+                local_tree_order.append((entry_id,depth))
+                walk_local(entry_id,depth+1,visited|{entry_id})
+        walk_local()
+        if st.session_state.get('local_repo_selected') not in names:
+            st.session_state['local_repo_selected']=next(iter(names))
+        for local_id,local_depth in local_tree_order:
+            local_entry=by_local_id[local_id]
+            local_icon='📁' if local_entry.get('kind') in ('GROUP','FOLD','SUBFILE') else '📄'
+            local_title=str(local_entry.get('title') or '未命名')
+            if st.button(('　'*min(local_depth,12))+local_icon+' '+local_title, key='local_tree_'+local_id, use_container_width=True, type='primary' if st.session_state['local_repo_selected']==local_id else 'secondary'):
+                st.session_state['local_repo_selected']=local_id
+                st.rerun()
+        chosen=st.selectbox('下載 Explorer-Local 文件',list(names),format_func=lambda x:names[x],key='local_repo_selected')
         with st.expander('預覽選取文件',expanded=True):
             item=next(r for r in available if str(r['id'])==chosen)
             st.caption('類型：'+str(item.get('kind')))
@@ -2080,6 +2105,18 @@ if st.session_state.get('main_page')=='💾 本地服務':
                 st.success('下載完成：'+str(result))
                 st.rerun()
             except Exception as exc:st.error('下載失敗：'+str(exc))
+        with st.expander('🗑️ 刪除 Explorer-Local 選取文件',expanded=False):
+            st.warning('僅刪除獨立 Explorer-Local 中的文件；工作區與雲端資料不受影響。資料夾刪除會包含其所有子文件。')
+            confirm_local=st.checkbox('確認刪除選取文件及其子文件',key='local_repo_delete_confirm')
+            if st.button('永久刪除 Explorer-Local 文件',key='local_repo_delete',disabled=not confirm_local,type='secondary'):
+                try:
+                    from local_repository import delete_subtree
+                    result=delete_subtree(repo,uid,chosen)
+                    st.session_state.pop('local_repo_selected',None)
+                    st.session_state['local_repo_delete_confirm']=False
+                    st.success('已從 Explorer-Local 刪除：'+str(result))
+                    st.rerun()
+                except Exception as exc:st.error('刪除失敗：'+str(exc))
     active_workspace=[r for r in local_db.export_snapshot(uid)['notes'] if not r.get('is_deleted')]
     if active_workspace:
         wnames={str(r['id']):str(r.get('title') or '未命名') for r in active_workspace}

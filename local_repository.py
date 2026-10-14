@@ -47,3 +47,19 @@ def transfer(source,target,owner,nid):
         if p in src.get('media',{}):merged['media'][p]=src['media'][p]
     target.import_snapshot(owner,merged,replace=True)
     return {'files':len(incoming['notes']),'assets':len(incoming['assets'])}
+
+
+def delete_subtree(db,owner,nid):
+    """Delete only from the isolated repository, including descendants and orphaned media."""
+    snap=db.export_snapshot(owner)
+    ids=selected_ids(snap['notes'],nid)
+    snap['notes']=[r for r in snap['notes'] if str(r['id']) not in ids]
+    removed_assets=[a for a in snap['assets'] if str(a.get('note_id')) in ids]
+    snap['assets']=[a for a in snap['assets'] if str(a.get('note_id')) not in ids]
+    used_paths={a.get('storage_path') for a in snap['assets']}
+    removed_paths={a.get('storage_path') for a in removed_assets}-used_paths
+    for path in removed_paths:snap['media'].pop(path,None)
+    db.import_snapshot(owner,snap,replace=True)
+    if removed_paths:
+        db.storage.from_('note-images').remove([x for x in removed_paths if x])
+    return {'files':len(ids),'assets':len(removed_assets)}
