@@ -1484,3 +1484,8 @@ Note: Existing stored duplicate math text may need source-level correction; this
 ## v6.25.4
 - 修復 Local Explorer 刪除時缺少 delete_subtree 匯出導致整頁 ImportError。
 - 刪除選取文件及其子樹，清理無引用的本地附件，其他工作區不受影響。
+
+## v6.25.5 — Local Explorer 展開與刪除修正
+- Explorer-Local 樹狀節點可直接點擊箭頭展開或收合，無須先上傳文件。
+- 元件重繪時保留目前已展開的節點，避免點選文件後樹狀結構自動收合。
+- 修復刪除時對已建立的 Streamlit checkbox session_state 進行寫入所造成的 StreamlitAPIException。

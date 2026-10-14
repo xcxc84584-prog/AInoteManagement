@@ -2127,7 +2127,6 @@ if st.session_state.get('main_page')=='💾 本地服務':
                 try:
                     result=delete_subtree(repo,uid,chosen)
                     st.session_state.pop('local_repo_selected',None)
-                    st.session_state['local_repo_delete_confirm']=False
                     st.success('已從 Explorer-Local 刪除：'+str(result))
                     st.rerun()
                 except Exception as exc:st.error('刪除失敗：'+str(exc))

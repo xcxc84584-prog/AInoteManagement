@@ -2,7 +2,7 @@
 html,body{margin:0;padding:0;overflow:hidden;font-family:system-ui,sans-serif}#host{max-height:460px;overflow:auto}.tree-node.selected{background:#354354!important;outline:1px solid #6783a4}
 </style></head><body><div id="host"></div><script>
 (function(){
-let lastMarkup=null,selected='';
+let lastMarkup=null,selected='';const expanded=new Set();
 const host=document.getElementById('host');
 function send(type,extra){window.parent.postMessage(Object.assign({isStreamlitMessage:true,type:type},extra||{}),'*');}
 function height(){send('streamlit:setFrameHeight',{height:470});}
@@ -18,7 +18,8 @@ function render(args){
     content.querySelectorAll('script').forEach(s=>s.remove());host.appendChild(content);
     host.querySelectorAll('.tree-node').forEach(node=>{
       const toggle=node.querySelector('.toggle');
-      function expand(){const child=node.parentElement.querySelector(':scope > .children');if(!child)return;child.hidden=!child.hidden;if(toggle)toggle.textContent=child.hidden?'▸':'▾';height();}
+      function expand(){const child=node.parentElement.querySelector(':scope > .children');if(!child)return;child.hidden=!child.hidden;const id=node.dataset.id;if(child.hidden)expanded.delete(id);else expanded.add(id);if(toggle)toggle.textContent=child.hidden?'▸':'▾';height();}
+      const child=node.parentElement.querySelector(':scope > .children');if(child){child.hidden=!expanded.has(node.dataset.id);if(toggle)toggle.textContent=child.hidden?'▸':'▾';}
       if(toggle)toggle.addEventListener('click',e=>{e.stopPropagation();expand();});
       node.addEventListener('click',e=>{if(e.target.closest('.toggle'))return;selected=node.dataset.id;mark();send('streamlit:setComponentValue',{value:selected});});
       node.addEventListener('dblclick',expand);
