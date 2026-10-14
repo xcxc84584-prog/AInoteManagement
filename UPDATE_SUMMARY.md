@@ -1489,3 +1489,9 @@ Note: Existing stored duplicate math text may need source-level correction; this
 - Explorer-Local 樹狀節點可直接點擊箭頭展開或收合，無須先上傳文件。
 - 元件重繪時保留目前已展開的節點，避免點選文件後樹狀結構自動收合。
 - 修復刪除時對已建立的 Streamlit checkbox session_state 進行寫入所造成的 StreamlitAPIException。
+
+
+## v6.25.6 — SVG Storage MIME 修正
+- 修正 Supabase note-images bucket 缺少 image/svg+xml 白名單造成的 HTTP 415。
+- 更新新專案 SQL schema，並新增既有專案 migration `sql/migrations/20261014_allow_svg_storage.sql`。
+- 既有 Supabase 專案需由管理者在 SQL Editor 執行 migration；部署 Python 程式本身不會變更 bucket 設定。
