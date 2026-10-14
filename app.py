@@ -152,9 +152,9 @@ uid=current_user()
 STORAGE_MODE=(config('BV_TEXT_STORAGE_MODE') or ('browser' if os.getenv('STREAMLIT_SHARING_MODE') else 'sqlite')).lower()
 if STORAGE_MODE not in ('browser','sqlite'):
     st.error('BV_TEXT_STORAGE_MODE 必須為 browser 或 sqlite');st.stop()
+db_root=Path(config('BV_TEXT_DATA_DIR') or (Path.home()/ 'BV-Text-Data')).expanduser().resolve()
 if STORAGE_MODE=='sqlite':
     # This directory is on the machine RUNNING Streamlit, not necessarily the viewer's computer.
-    db_root=Path(config('BV_TEXT_DATA_DIR') or (Path.home()/ 'BV-Text-Data')).expanduser().resolve()
     local_db=st.session_state.get('_local_db')
     if local_db is None or local_db.path!=str(db_root/'bvtext.sqlite3'):
         local_db=LocalDB(db_root/'bvtext.sqlite3')
