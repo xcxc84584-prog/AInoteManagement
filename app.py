@@ -31,7 +31,6 @@ KINDS=['GROUP','SUBFILE','GRAPH','HANDWRITE','COMPOSITE']
 CONTAINERS=['GROUP','SUBFILE']
 MAX_IMAGE=10*1024*1024
 local_component=components.declare_component('ainote_local_save',path=str(Path(__file__).parent/'components'/'local_save'))
-local_explorer_component=components.declare_component('bv_local_explorer_v624',path=str(Path(__file__).parent/'components'/'local_explorer'))
 auto_load_component=components.declare_component('bv_auto_load_v630',path=str(Path(__file__).parent/'components'/'auto_load'))
 matrix_component=components.declare_component('ainote_matrix_table',path=str(Path(__file__).parent/'components'/'matrix_table'))
 paste_component=components.declare_component('paste_image',path=str(Path(__file__).parent/'components'/'paste_widget'))
@@ -1042,7 +1041,7 @@ def v431_change_page():
 
 @st.dialog('功能',width='large')
 def explorer_functions_dialog():
-    st.caption('在這裡管理本地化及雲端化文件。')
+    st.caption('檔案匯入與匯出')
     uploaded=st.file_uploader('開啟本地組別 (.ainote / .zip)',type=['ainote','zip'],key='import')
     if uploaded and st.button('匯入組別',key='dialog_import_group'):
         try:
@@ -1064,27 +1063,7 @@ def explorer_functions_dialog():
             try:
                 st.download_button('↓ 下載當前組別',data=export_group(root,notes),file_name=download_filename(root['title']),mime='application/zip',width='stretch')
             except Exception as exc:st.warning('暫時無法匯出：'+str(exc))
-    st.markdown('##### 📂 Local Explorer')
-    st.caption('查看已授權資料夾中的備份；點選檔案可下載副本。手機若不支援資料夾授權，可使用下方匯入功能。')
-    local_explorer_component(key='local_explorer_dialog_v624',default=None)
-    local_upload=st.file_uploader('從裝置選擇文件並加入工作區',type=['ainote','zip'],key='local_explorer_upload')
-    if local_upload is not None and st.button('⬆ 匯入選取文件',key='local_explorer_import'):
-        try:
-            st.session_state.selected=import_group(local_upload.getvalue())
-            st.success('文件已加入工作區。')
-            st.rerun()
-        except Exception as exc:st.error('無法匯入文件：'+str(exc))
-    if selected:
-        try:
-            local_bytes=export_group(selected,notes)
-            local_name=download_filename(selected['title'])
-            st.download_button('⬇ 下載選取文件',data=local_bytes,file_name=local_name,mime='application/zip',key='local_selected_download')
-            local_component(mode='continue',data=base64.b64encode(local_bytes).decode('ascii'),filename=local_name,key='local_selected_save_v624',default=None)
-        except Exception as exc:st.error('無法準備文件備份：'+str(exc))
-    st.markdown('##### 📂 本地化')
-    st.caption('下載選取組別備份，或匯入本地文件。下載位置依瀏覽器設定；已授權的資料夾可在「設定 → 本地化」管理。')
-    st.markdown('##### 📅 行程表備份')
-    st.caption('行程表的匯入及匯出可在「行程表」頁面操作。')
+    st.caption('本地儲存路徑由瀏覽器下載設定決定；雲端網頁不能直接設定任意本地磁碟路徑。')
     if st.button('關閉',key='close_functions_dialog',width='stretch'):
         st.session_state.pop('_explorer_show_functions_dialog',None)
         st.rerun()
@@ -1143,12 +1122,6 @@ with st.sidebar:
             if action=='open_functions':
                 st.session_state['_explorer_show_functions_dialog']=True
                 st.rerun()
-            if action=='localize' and nid in byid:
-                rootid=get_ancestors(nid,byid)[-1]
-                root=byid[rootid]
-                if root['kind']!='GROUP':raise ValueError('請選擇組別中的文件')
-                st.session_state['operation_notice']='請在「功能 → 本地化」下載目前組別備份。'
-                st.session_state['_explorer_show_functions_dialog']=True
             if action=='cloudify' and nid in byid:
                 from manual_sync import push_selected_to_cloud
                 if not cloud_client:raise RuntimeError('尚未連線雲端，請先設定 Supabase')
@@ -1297,7 +1270,7 @@ with st.sidebar:
     if st.session_state.get('_cloud_navigate_workspace'):
         st.session_state['main_page']='📝 筆記工作區'
         st.session_state.pop('_cloud_navigate_workspace',None)
-    page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','☁️ 雲端服務','⚙️ 設定'],key='main_page',horizontal=True,on_change=v431_change_page)
+    page_choice=st.radio('頁面', ['📝 筆記工作區','📅 行程表','☁️ 雲端服務','💾 本地服務'],key='main_page',horizontal=True,on_change=v431_change_page)
     if st.session_state.get('v431_navigation_error'):st.error(st.session_state.pop('v431_navigation_error'))
     if st.session_state.get('_cloud_reload_notice'):
         st.success(st.session_state.pop('_cloud_reload_notice'))
@@ -1777,48 +1750,8 @@ if st.session_state.get('main_page')=='📅 行程表':
         except Exception as _dialog_exc:
             st.error('無法載入行程編輯視窗：'+str(_dialog_exc))
 
-def unified_schedule_sync_panel():
-    st.subheader('🔄 行程表同步中心｜本地與雲端')
-    destination=st.radio('同步位置',['📂 本地化','☁️ 雲端化'],horizontal=True,key='unified_schedule_target')
-    overwrite=st.checkbox('完全覆蓋（取消勾選則合併相同 ID 的資料）',key='unified_schedule_replace')
-    st.caption('完全覆蓋會取代目標端現有的行程與每日任務。建議先下載備份。')
-    if destination=='☁️ 雲端化':
-        a,b=st.columns(2)
-        upload=a.button('⬆ 上傳行程表到雲端',key='unified_cloud_up',use_container_width=True)
-        download=b.button('⬇ 從雲端下載行程表',key='unified_cloud_down',use_container_width=True)
-        if upload or download:
-            try:
-                if not cloud_client:raise RuntimeError('尚未連線 Supabase')
-                from schedule_cloud import transfer_schedule
-                result=transfer_schedule(cloud_client,local_db,uid,'upload' if upload else 'download',replace=overwrite,progress=sync_progress())
-                if download:mark_local_change()
-                st.success('同步完成：'+str(result))
-            except Exception as exc:st.error('行程表同步失敗：'+str(exc))
-    else:
-        try:
-            cards=c.table('schedule_cards').select('*').eq('owner_id',uid).execute().data or []
-            tasks=c.table('daily_tasks').select('*').eq('owner_id',uid).execute().data or []
-            checks=c.table('daily_task_checks').select('*').eq('owner_id',uid).execute().data or []
-            payload=make_schedule_backup(cards,tasks,checks)
-            filename='BV-Text-Schedule-'+date.today().isoformat()+'.bvcalendar.json'
-            local_component(mode='schedule',data=base64.b64encode(payload).decode('ascii'),filename=filename,key='unified_schedule_local_save',default=None)
-            st.download_button('⬇ 下載行程表備份',data=payload,file_name=filename,mime='application/json',key='unified_schedule_download')
-        except Exception as exc:st.error('無法建立行程表備份：'+str(exc))
-        imported=st.file_uploader('⬆ 選擇本地行程表備份',type=['json'],key='unified_schedule_import')
-        if imported:
-            try:
-                rows=read_schedule_backup(imported.getvalue())
-                st.info('已讀取 '+str(len(rows))+' 張行程卡。')
-                confirmed=st.checkbox('確認匯入行程表'+('（完全覆蓋）' if overwrite else '（合併）'),key='unified_schedule_confirm')
-                if st.button('套用本地行程表',disabled=not confirmed,key='unified_schedule_apply'):
-                    restore_schedule_backup(rows,'取代現有行程表' if overwrite else '合併行程（相同 ID 更新）')
-                    st.success('行程表已匯入。')
-                    st.rerun()
-            except Exception as exc:st.error('備份格式或匯入失敗：'+str(exc))
-
 if st.session_state.get('main_page')=='📅 行程表':
     st.title('📅 行程表')
-    unified_schedule_sync_panel()
     st.caption('行程卡編輯後會先保存在本機 SQLite 或瀏覽器 IndexedDB。下方可另外匯出獨立的行程表備份，並從本地檔案還原。')
     try:
         schedule_backup_cards=c.table('schedule_cards').select('*').eq('owner_id',uid).execute().data or []
@@ -2076,8 +2009,8 @@ if st.session_state.get('main_page')=='📅 行程表':
                     except Exception as exc:st.error('建立失敗：'+str(exc))
     st.stop()
 
-if st.session_state.get('main_page')=='⚙️ 設定':
-    st.title('⚙️ 設定')
+if st.session_state.get('main_page')=='💾 本地服務':
+    st.title('💾 本地服務')
     st.caption("帳號管理 · 資源回收區 · 本地備份")
     st.selectbox('下載檔案格式',options=['ainote','zip'],key='download_format',help='兩種副檔名使用相同的 AINOTE ZIP 封裝結構。')
     st.info("瀏覽器不能自行建立 D 槽資料夾。建議先建立 D:\\AInoteManagement，再授權此資料夾；不支援時改用下載。")
@@ -2094,31 +2027,58 @@ if st.session_state.get('main_page')=='⚙️ 設定':
             if cc[1].button('還原',key='restore_'+n['id']):
                 try:restore_note(n['id']);st.rerun()
                 except Exception as exc:st.error('還原失敗：'+str(exc))
-    with st.container():
-        st.markdown('#### 預設儲存路徑')
-        st.caption('在支援的瀏覽器選擇本機資料夾，之後優先寫入該資料夾。瀏覽器可能要求重新授權；手機或不支援的瀏覽器改用下載。')
-        if STORAGE_MODE=='sqlite':
-            path_col,open_col=st.columns([4,1])
-            path_col.code(str(db_root))
-            if open_col.button('📂 開啟資料夾',key='open_sqlite_folder'):
-                try:
-                    import subprocess,sys
-                    db_root.mkdir(parents=True,exist_ok=True)
-                    if sys.platform=='win32':os.startfile(str(db_root))
-                    elif sys.platform=='darwin':subprocess.Popen(['open',str(db_root)])
-                    else:subprocess.Popen(['xdg-open',str(db_root)])
-                    st.success('已要求本機開啟資料夾')
-                except Exception as exc:st.error('無法開啟資料夾：'+str(exc))
-        else:
-            st.caption('IndexedDB 位於瀏覽器內，沒有可由網站直接開啟的 Windows 固定路徑。下方按鈕可開啟瀏覽器資料夾選擇器。')
-        local_component(mode='settings',key='local_save_settings_v1',default=None)
-    with st.container():
-        st.markdown('#### 📂 本地化｜資料夾與自動載入')
-        st.caption('選擇電腦上的資料夾，管理本地備份與自動載入。開啟自動載入後，重新整理會檢查資料夾內更新的文件及行程表。手機或不支援資料夾存取的瀏覽器可使用匯入、下載功能。')
-        auto_load_component(mode='settings',key='auto_load_settings_v631',default=None)
-        if st.session_state.get('_auto_load_report'):
-            st.caption('最近一次自動載入：')
-            for report in st.session_state['_auto_load_report'][:30]:st.caption(report)
+    from local_service import pack,restore,tree,safe_folder
+    st.subheader('📂 本地資料夾')
+    st.caption('本地服務提供文件預覽、備份下載、還原上傳及行程表同步。使用瀏覽器儲存時，網站無法直接讀寫您裝置的任意路徑。')
+    if STORAGE_MODE=='sqlite':
+        st.info('SQLite 模式：以下路徑屬於執行 Streamlit 的電腦；若部署於雲端，它不是訪客手機或電腦的資料夾。')
+        chosen_path=st.text_input('本地資料保存資料夾',value=str(db_root),key='local_service_folder')
+        if st.button('確認資料夾',key='local_service_folder_check'):
+            try:
+                folder=safe_folder(chosen_path)
+                st.session_state['_local_service_folder']=str(folder)
+                st.success('已確認資料夾：'+str(folder))
+            except Exception as exc:st.error(str(exc))
+        st.caption('目前資料庫仍使用啟動時設定的 BV_TEXT_DATA_DIR；變更資料庫位置需重新啟動服務，避免執行中切換造成資料損毀。')
+    else:
+        st.info('瀏覽器模式：資料存於此瀏覽器的 IndexedDB。可使用下方備份下載／上傳；資料夾自動載入需要瀏覽器另外授權。')
+        with st.expander('瀏覽器資料夾授權與自動載入',expanded=False):
+            local_component(mode='settings',key='local_service_folder_permission',default=None)
+            auto_load_component(mode='settings',key='local_service_autoload',default=None)
+            for report in st.session_state.get('_auto_load_report',[])[:10]:st.caption(str(report))
+    st.subheader('🗂️ 本地 Explorer 預覽')
+    if st.button('重新整理文件結構',key='local_service_refresh'):
+        progress=sync_progress()
+        progress(0.2,'正在讀取本地文件…')
+        st.session_state['_local_service_tree']=tree(local_db.export_snapshot(uid)['notes'])
+        progress(1,'本地文件清單已更新')
+    st.code(st.session_state.get('_local_service_tree','點擊「重新整理文件結構」以查看本地文件。'),language=None)
+    st.subheader('📦 文件備份與還原')
+    scope=st.selectbox('資料範圍',['all','notes','schedule'],format_func=lambda x:{'all':'全部資料','notes':'文件與圖片','schedule':'行程表與每日任務'}[x],key='local_service_scope')
+    replace=st.checkbox('完全覆蓋（未勾選則按 UUID/ID 合併，時間較新的資料優先）',key='local_service_replace',value=False)
+    progress=sync_progress()
+    progress(0.2,'正在準備本地備份…')
+    try:
+        local_bytes=pack(local_db,uid,scope)
+        progress(1,'備份已準備完成')
+        st.download_button('⬇ 下載本地'+{'all':'完整備份','notes':'文件','schedule':'行程表'}[scope],data=local_bytes,file_name='BV-Text_'+scope+'.zip',mime='application/zip',key='local_service_download',use_container_width=True)
+    except Exception as exc:st.error('備份準備失敗：'+str(exc))
+    uploaded=st.file_uploader('⬆ 上傳本地備份（BV-Text ZIP）',type=['zip'],key='local_service_upload')
+    if uploaded is not None:
+        st.warning('匯入前請先下載一份完整備份。完全覆蓋會移除目標範圍內未包含的資料。')
+        confirm=st.checkbox('我已確認匯入範圍與覆蓋方式',key='local_service_confirm')
+        if st.button('開始匯入',disabled=not confirm,key='local_service_restore',type='primary'):
+            bar=sync_progress()
+            try:
+                bar(0.15,'正在檢查備份檔案…')
+                result=restore(local_db,uid,uploaded.getvalue(),scope,replace)
+                bar(0.9,'正在更新工作區…')
+                mark_local_change()
+                st.session_state.pop('_local_service_tree',None)
+                bar(1,'本地匯入完成')
+                st.success('匯入完成：'+str(result))
+            except Exception as exc:st.error('匯入失敗：'+str(exc))
+    st.caption('行程表操作：選擇「行程表與每日任務」，下載為匯出，上傳並確認為匯入。')
     with st.container():
         st.markdown('#### 帳號註銷')
         st.warning('此操作不可復原：永久刪除帳號、筆記、資料夾、圖片與附件。請先下載 .ainote 備份。')
@@ -2158,46 +2118,7 @@ if st.session_state.get('main_page')=='⚙️ 設定':
                     st.error('註銷請求失敗，請檢查網路及 Edge Function 部署狀態。')
     st.stop()
 
-DEMO_GUIDE = """# BV-Text｜入門教學與操作指南
-
-## 目錄
-1. [第一次使用](#第一次使用)
-2. [Explorer 文件操作](#explorer-文件操作)
-3. [圖文筆記與目錄](#圖文筆記與目錄)
-4. [本地化與雲端化](#本地化與雲端化)
-5. [行程表與每日任務](#行程表與每日任務)
-6. [備份與還原](#備份與還原)
-7. [常見問題](#常見問題)
-
-## 第一次使用
-登入後進入「筆記工作區」。點選左側「＋組別」建立分類，接著使用「＋資料夾」或「＋文件」新增內容。輸入名稱並確認即可建立；未完成前離開會取消新增。
-
-## Explorer 文件操作
-- **電腦：** 對文件按滑鼠右鍵，開啟操作選單。
-- **手機：** 先點選文件，再按上方「操作」即可開啟選單；不需要長按。
-- 選擇「完全單一閱讀」可專心閱讀；「完全單一編輯」可修改內容。
-- 「重新命名」、「複製」、「剪下」、「貼上」可整理文件。
-- 「移動回收桶」可暫時移除文件；「永久刪除」無法復原。
-
-## 圖文筆記與目錄
-圖文文件可使用 Markdown 標題、表格、圖片與 `$$...$$` 數學公式。選取文字後可加入目錄，並使用快速定位跳至相應段落。貼上圖片後請確認儲存成功。
-
-## 本地化與雲端化
-「本地化」是將備份保存在自己的裝置；「雲端化」是上傳至已登入的雲端帳號。從 Explorer 選取文件，使用操作選單或「功能」管理。設定頁的「本地化」可授權資料夾並啟用自動載入。雲端與本地資料不會因為名稱相同就自動同步。
-
-## 行程表與每日任務
-在「行程表」新增行程卡、設定日期及時間；每日任務可獨立勾選完成。使用頁面中的「保存行程表到本地」與「從本地選擇行程表載入」備份或還原。
-
-## 備份與還原
-定期下載 `.ainote` 或 `.zip` 備份，並確認檔案可以重新匯入。重要文件建議同時保留本地與雲端副本。執行覆蓋或永久刪除前請先備份。
-
-## 常見問題
-**手機無法選擇資料夾？** 部分瀏覽器不支援資料夾授權，可改用下載與上傳。
-
-**換裝置後文件不見？** 瀏覽器 IndexedDB 是裝置及網站專屬資料；請從備份或雲端還原。
-
-**雲端上傳失敗？** 請檢查網路、登入狀態及 Supabase 存取權限，並保留本地備份。
-"""
+DEMO_GUIDE = '# BV-Text｜使用教學與操作目錄\n\n## 目錄\n1. 第一次使用與資料保存\n2. Explorer 文件管理\n3. 建立、編輯及閱讀筆記\n4. 目錄與快速定位\n5. 行程表及每日任務\n6. 雲端同步\n7. 本地化及備份\n8. 手機與電腦操作差異\n9. 常見問題與資料安全\n\n## 1. 第一次使用與資料保存\n登入後開啟筆記工作區，從左側 Explorer 建立文件。瀏覽器版本主要使用 IndexedDB 保存資料；清除網站資料前，請先完成備份。不同裝置的資料不會自動共用。\n\n## 2. Explorer 文件管理\n使用 Explorer 上方「＋文件」建立文件；按「操作」可查看文件操作。電腦使用滑鼠右鍵開啟文件選單，手機在操作模式下直接點選文件即可開啟。重新命名與移動不應當作建立新文件。\n\n## 3. 建立、編輯及閱讀筆記\n選取文件後進入閱讀或編輯模式。圖文文件支援 Markdown 標題、表格、圖片及數學公式。完成後按保存；切換文件前也請確認保存成功。\n\n## 4. 目錄與快速定位\n在圖文文件中建立目錄項目後，使用快速定位前往對應段落。編輯與閱讀模式的定位可能不同，請確認目前模式。\n\n## 5. 行程表及每日任務\n切換至行程表建立行程卡和每日任務。雲端服務提供上傳、下載行程表：勾選完全覆蓋會以來源取代目標；未勾選則嘗試合併。現有版本對修改時間的比較仍有限制，正式資料請先備份。\n\n## 6. 雲端同步\n在雲端服務頁查看雲端 Explorer、上傳或下載資料。第一次同步前先下載獨立備份，避免覆蓋本地內容。需要正常的 Supabase 權限與網路連線。\n\n## 7. 本地化及備份\n設定頁的「本地化」區域可管理自動載入路徑。瀏覽器可能要求授權讀取資料夾；手機或不支援的瀏覽器可能無法使用資料夾選擇器。本地化並不等於自動與雲端同步。\n\n## 8. 手機與電腦操作差異\n電腦：對 Explorer 文件按滑鼠右鍵。手機：先按「操作」，再點選文件以開啟操作選單。操作後請檢查是否保存成功。\n\n## 9. 常見問題與資料安全\n看不到文件：確認所在工作區及是否完成載入。同步失敗：檢查網路、登入狀態與 Supabase 權限。圖片失效：檢查資源是否完整保存。刪除、覆蓋或重置前，務必保留可驗證的備份。\n'
 AI_PROMPT_GUIDE = '# AI提示詞｜AINOTE 單一圖文文件封包規格\n\n請將你接下來的對話文本打包成能載入 ainote 的 ZIP 文件，並且只能由一個圖文文件組成。對話內容需要有圖片說明，減少 SVG 圖的使用，數學公式必須使用 $$數學式$$。\n\n## ZIP 結構（版本 1）\n\n```text\nconversation.ainote （ZIP 格式）\n├── manifest.json\n├── structure.json\n├── documents/\n│   └── <document-uuid>.md\n└── assets/               # 有圖片時才需要\n    └── <asset-uuid>.png\n```\n\n`manifest.json` 範例（使用實際 UUID，不可照抄示意值）：\n\n```json\n{"format":"ainote","version":1,"root_id":"<document-uuid>","name":"對話筆記"}\n```\n\n`structure.json` 必須是陣列，而且**只能有一個節點**，例如：\n\n```json\n[{"id":"<document-uuid>","parent_id":null,"kind":"COMPOSITE","title":"對話筆記","content":"# 對話筆記\\n內容…","has_page":true,"position":1}]\n```\n\n根節點就是這個 `COMPOSITE` 文件，不需要建立 GROUP 或 FOLD。`manifest.root_id` 必須與文件 `id` 一致。`documents/<document-uuid>.md` 存放同一份完整 Markdown 內容。所有 JSON 必須是 UTF-8。\n\n## 文字與圖片要求\n- 完整保留對話順序、標題、段落、清單、表格、程式碼及文字說明。\n- 只能有一個圖文文件；不得拆成多份文件或額外建立資料夾節點。\n- 優先使用 PNG、JPG、WebP 圖片；圖片應放在 `assets/`，並在內容以 `asset://<asset-uuid>` 引用。不要僅使用失效的外部圖片 URL。\n- 減少 SVG 圖，盡可能以一般圖片與文字說明呈現。\n- 所有獨立數學公式使用 `$$數學式$$`，例如：\n\n$$E=mc^2$$\n\n- 封包完成後，確認 ZIP 能解壓、UUID 關聯正確、圖片確實存在、文件內容完整，並提供 ZIP。\n'
 
 if not selected:

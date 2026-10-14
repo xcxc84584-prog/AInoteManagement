@@ -1,4 +1,4 @@
-<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>body{margin:0;font:13px system-ui;color:#dbe4f0}button{border:1px solid #60738d;border-radius:6px;padding:8px;background:#22364d;color:white}#state{margin:7px 0;color:#aab9c9;overflow-wrap:anywhere}</style></head><body><label id="toggleWrap" style="display:block;margin:4px 0"><input type="checkbox" id="autoEnabled" checked> 重新整理後將更新的本地文件載入 Explorer</label><button id="pick">選擇／重新授權本地化 資料夾</button><div id="state">尚未選擇本地化 路徑</div><script>
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>body{margin:0;font:13px system-ui;color:#dbe4f0}button{border:1px solid #60738d;border-radius:6px;padding:8px;background:#22364d;color:white}#state{margin:7px 0;color:#aab9c9;overflow-wrap:anywhere}</style></head><body><label id="toggleWrap" style="display:block;margin:4px 0"><input type="checkbox" id="autoEnabled" checked> 重新整理後自動載入文件至 Explorer</label><button id="pick">選擇／重新授權自動 Load 資料夾</button><div id="state">尚未選擇自動 Load 路徑</div><script>
 const button=document.getElementById('pick'),state=document.getElementById('state'),toggle=document.getElementById('autoEnabled'),toggleWrap=document.getElementById('toggleWrap');let running=false,initialized=false;
 function send(type,data){parent.postMessage({isStreamlitMessage:true,type,...data},'*')}
 function height(){send('streamlit:setFrameHeight',{height:document.body.scrollHeight+12})}
@@ -33,7 +33,7 @@ async function run(handle){
    const nonce=crypto.randomUUID();await set('pending:'+nonce,files.map(f=>({name:f.name,digest:f.digest})));
    send('streamlit:setComponentValue',{value:{action:'batch',files,nonce}});
    state.textContent='發現 '+files.length+' 份新／更新檔案，正在匯入';
-  }else state.textContent='本地化：'+handle.name+'（沒有新檔案）';
+  }else state.textContent='自動 Load：'+handle.name+'（沒有新檔案）';
  }catch(e){state.textContent='自動載入失敗：'+e.message}finally{running=false;height()}
 }
 toggle.onchange=async()=>{await set('enabled',toggle.checked);state.textContent=toggle.checked?'已啟用自動載入':'已停用自動載入';height()};
@@ -50,7 +50,7 @@ button.onclick=async()=>{
 };
 window.addEventListener('message',async e=>{
  if(e.data?.type!=='streamlit:render')return;const mode=e.data.args?.mode||'settings';button.style.display=mode==='background'?'none':'';state.style.display=mode==='background'?'none':'';toggleWrap.style.display=mode==='background'?'none':'block';height();for(const item of e.data.args?.ack||[]){if(item.name&&item.digest)await set('digest:'+item.name,item.digest)}if(initialized)return;initialized=true;
- try{const enabled=(await get('enabled'))!==false;toggle.checked=enabled;const h=await get('load-folder');if(h){button.textContent='更換／重新授權本地化 資料夾';if(enabled)await run(h)}else if(!enabled)state.textContent='已停用自動載入'}catch(e){state.textContent='無法讀取本地化 設定：'+e.message}
+ try{const enabled=(await get('enabled'))!==false;toggle.checked=enabled;const h=await get('load-folder');if(h){button.textContent='更換／重新授權自動 Load 資料夾';if(enabled)await run(h)}else if(!enabled)state.textContent='已停用自動載入'}catch(e){state.textContent='無法讀取自動 Load 設定：'+e.message}
 });
 send('streamlit:componentReady',{apiVersion:1});height();
 </script></body></html>
