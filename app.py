@@ -1052,7 +1052,7 @@ def explorer_functions_dialog():
     if selected:
         if st.button('📂 本地化目前選取文件',key='dialog_localize_selected',width='stretch'):
             try:
-                from local_repository import repository,transfer
+                from local_repository import repository,transfer,delete_subtree
                 target=repository(st.session_state,STORAGE_MODE,db_root,uid)
                 st.success('本地化完成：'+str(transfer(local_db,target,uid,selected['id'])))
             except Exception as exc:st.error('本地化失敗：'+str(exc))
@@ -1129,7 +1129,7 @@ with st.sidebar:
                 st.session_state['_explorer_show_functions_dialog']=True
                 st.rerun()
             if action=='localize' and nid in byid:
-                from local_repository import repository,transfer
+                from local_repository import repository,transfer,delete_subtree
                 target=repository(st.session_state,STORAGE_MODE,db_root,uid)
                 result=transfer(local_db,target,uid,nid)
                 st.session_state['operation_notice']='本地化完成：'+str(result)
@@ -2057,7 +2057,7 @@ if st.session_state.get('main_page')=='💾 本地服務':
             local_component(mode='settings',key='local_service_folder_permission',default=None)
             auto_load_component(mode='settings',key='local_service_autoload',default=None)
             for report in st.session_state.get('_auto_load_report',[])[:10]:st.caption(str(report))
-    from local_repository import repository,transfer
+    from local_repository import repository,transfer,delete_subtree
     repo=repository(st.session_state,STORAGE_MODE,db_root,uid)
     st.subheader('🗂️ Explorer-Local（獨立資料庫）')
     st.caption('此區與工作區完全獨立。只有按下上傳或下載才會傳輸文件，不會自動同步。')
@@ -2067,7 +2067,9 @@ if st.session_state.get('main_page')=='💾 本地服務':
     available=[r for r in local_rows if not r.get('is_deleted')]
     if available:
         names={str(r['id']):str(r.get('title') or '未命名')+' ('+str(r.get('kind'))+')' for r in available}
-        st.markdown('##### Explorer-Local 文件樹（點擊選取）')
+        st.markdown('##### Explorer-Local 文件樹')
+        import html
+        import streamlit.components.v1 as components
         by_local_id={str(r['id']):r for r in available}
         local_children={}
         for local_item in available:
@@ -2075,24 +2077,37 @@ if st.session_state.get('main_page')=='💾 本地服務':
             local_children.setdefault(local_parent if local_parent in by_local_id else '',[]).append(local_item)
         for local_group in local_children.values():
             local_group.sort(key=lambda r:(r.get('position') or 0,str(r.get('title') or '')))
-        local_tree_order=[]
-        def walk_local(parent='',depth=0,visited=None):
+        def local_tree_html(parent='',visited=None):
             visited=set() if visited is None else visited
+            output=[]
             for entry in local_children.get(parent,[]):
-                entry_id=str(entry['id'])
-                if entry_id in visited:continue
-                local_tree_order.append((entry_id,depth))
-                walk_local(entry_id,depth+1,visited|{entry_id})
-        walk_local()
+                eid=str(entry['id'])
+                if eid in visited:continue
+                kind=str(entry.get('kind') or 'FILE').upper()
+                icon={'GROUP':'📁','FOLD':'📁','SUBFILE':'📁','FOLDER':'📁','COMPOSITE':'📝','GRAPH':'🖼️','HANDWRITE':'✍️','TABLE':'▦'}.get(kind,'📄')
+                nested=local_tree_html(eid,visited|{eid})
+                output.append('<li class="tree-item"><div class="tree-node" data-id="'+html.escape(eid,quote=True)+'" tabindex="0"><span class="toggle">'+('▸' if nested else ' ')+'</span><span class="node-icon">'+icon+'</span><span class="node-name">'+html.escape(str(entry.get('title') or '未命名'))+'</span><span class="node-kind">'+html.escape(kind)+'</span></div>')
+                if nested:output.append('<ul class="children" hidden>'+nested+'</ul>')
+                output.append('</li>')
+            return ''.join(output)
+        local_markup='''<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><style>
+        *{box-sizing:border-box}body{margin:0;padding:10px;background:#1e222a;color:#e3e8f1;font:13px system-ui,sans-serif}
+        .tree,.children{list-style:none;margin:0;padding-left:0}.children{margin-left:13px;padding-left:12px;border-left:1px solid #59677c}
+        .tree-item{position:relative}.children>.tree-item:before{content:'';position:absolute;top:16px;left:-12px;width:11px;border-top:1px solid #59677c}
+        .tree-node{display:flex;align-items:center;gap:7px;min-height:32px;padding:4px 7px;border-radius:5px;cursor:pointer;user-select:none}
+        .tree-node:hover,.tree-node:focus{background:#354354;outline:none}.tree-node.selected{background:#405673}
+        .toggle{width:13px;flex:none;cursor:pointer;color:#cbd5e1}.node-icon{width:19px;text-align:center}
+        .node-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.node-kind{font-size:10px;color:#a4b0c2}
+        </style></head><body><ul class="tree">'''+local_tree_html()+'''</ul><script>
+        let selected='';function toggle(node){const child=node.parentElement.querySelector(':scope > .children');if(!child)return;child.hidden=!child.hidden;node.querySelector('.toggle').textContent=child.hidden?'▸':'▾'}
+        document.querySelectorAll('.tree-node').forEach(node=>{node.querySelector('.toggle').onclick=e=>{e.stopPropagation();toggle(node)};node.ondblclick=()=>toggle(node);node.onclick=()=>{document.querySelectorAll('.tree-node.selected').forEach(n=>n.classList.remove('selected'));node.classList.add('selected');selected=node.dataset.id;window.Streamlit.setComponentValue(selected)};});
+        </script></body></html>'''
+        local_component_tree=components.declare_component('bv_local_tree_select_v6253',path=str(Path(__file__).parent/'components'/'cloud_tree_select'))
+        clicked_local_id=local_component_tree(markup=local_markup,selected=st.session_state.get('local_repo_selected',''),key='local_tree_selection_bridge',default=None)
+        if isinstance(clicked_local_id,str) and clicked_local_id in names and clicked_local_id!=st.session_state.get('local_repo_selected'):
+            st.session_state['local_repo_selected']=clicked_local_id
         if st.session_state.get('local_repo_selected') not in names:
             st.session_state['local_repo_selected']=next(iter(names))
-        for local_id,local_depth in local_tree_order:
-            local_entry=by_local_id[local_id]
-            local_icon='📁' if local_entry.get('kind') in ('GROUP','FOLD','SUBFILE') else '📄'
-            local_title=str(local_entry.get('title') or '未命名')
-            if st.button(('　'*min(local_depth,12))+local_icon+' '+local_title, key='local_tree_'+local_id, use_container_width=True, type='primary' if st.session_state['local_repo_selected']==local_id else 'secondary'):
-                st.session_state['local_repo_selected']=local_id
-                st.rerun()
         chosen=st.selectbox('下載 Explorer-Local 文件',list(names),format_func=lambda x:names[x],key='local_repo_selected')
         with st.expander('預覽選取文件',expanded=True):
             item=next(r for r in available if str(r['id'])==chosen)
@@ -2110,7 +2125,6 @@ if st.session_state.get('main_page')=='💾 本地服務':
             confirm_local=st.checkbox('確認刪除選取文件及其子文件',key='local_repo_delete_confirm')
             if st.button('永久刪除 Explorer-Local 文件',key='local_repo_delete',disabled=not confirm_local,type='secondary'):
                 try:
-                    from local_repository import delete_subtree
                     result=delete_subtree(repo,uid,chosen)
                     st.session_state.pop('local_repo_selected',None)
                     st.session_state['local_repo_delete_confirm']=False

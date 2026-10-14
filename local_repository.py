@@ -60,6 +60,9 @@ def delete_subtree(db,owner,nid):
     removed_paths={a.get('storage_path') for a in removed_assets}-used_paths
     for path in removed_paths:snap['media'].pop(path,None)
     db.import_snapshot(owner,snap,replace=True)
+    # LocalDB media entries are managed in its SQLite media table.
     if removed_paths:
-        db.storage.from_('note-images').remove([x for x in removed_paths if x])
+        with db.lock,db.conn:
+            for path in removed_paths:
+                db.conn.execute('DELETE FROM media WHERE path=?',(path,))
     return {'files':len(ids),'assets':len(removed_assets)}
